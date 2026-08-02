@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: familywatch
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm --prefix server install && npm --prefix client install && npm --prefix client run build
+    startCommand: node server/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ADMIN_PIN
+        generateValue: false
+        value: 1234
