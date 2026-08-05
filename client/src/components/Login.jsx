@@ -3,7 +3,7 @@ import { Capacitor } from '@capacitor/core'
 
 const IS_NATIVE = Capacitor.isNativePlatform()
 
-export default function Login({ onLogin, status }) {
+export default function Login({ onLogin, status, error }) {
   const [name, setName]           = useState('')
   const [serverUrl, setServerUrl] = useState(() => localStorage.getItem('meeee_server') || '')
 
@@ -47,6 +47,8 @@ export default function Login({ onLogin, status }) {
               required
             />
           )}
+
+          {error && <div className="login-error">{error}</div>}
 
           <button
             type="submit"

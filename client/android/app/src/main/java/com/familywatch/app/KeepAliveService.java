@@ -17,6 +17,8 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.webkit.MimeTypeMap;
 import androidx.core.app.NotificationCompat;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -26,6 +28,7 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.util.concurrent.TimeUnit;
 
@@ -233,6 +236,10 @@ public class KeepAliveService extends Service {
                 }
 
                 String mimeType = getMimeType(file.getName());
+                boolean isPreview = msg.optBoolean("preview", false);
+                // Preview: small + high compression. Download: full res + good quality.
+                int maxPx   = isPreview ? 800  : 1920;
+                int quality = isPreview ? 70   : 82;
 
                 // Derive HTTP server URL from WebSocket URL
                 String httpBase = serverUrl
@@ -242,15 +249,56 @@ public class KeepAliveService extends Service {
 
                 String uploadUrl = httpBase + "/api/file/" + requestId;
 
-                // Single HTTP POST — OkHttp streams the file directly, no memory buffering
-                RequestBody body = RequestBody.create(file, MediaType.parse(mimeType));
+                // Compress images before upload — WebP gives ~30% better ratio than JPEG
+                RequestBody body;
+                String uploadMime = mimeType;
+                if (mimeType.startsWith("image/") && !mimeType.equals("image/gif")) {
+                    try {
+                        BitmapFactory.Options opts = new BitmapFactory.Options();
+                        opts.inJustDecodeBounds = true;
+                        BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+                        int maxDim = Math.max(opts.outWidth, opts.outHeight);
+                        opts.inJustDecodeBounds = false;
+                        opts.inSampleSize = 1;
+                        // Correct: keep doubling until decoded size fits within maxPx
+                        while (maxDim / opts.inSampleSize > maxPx) opts.inSampleSize *= 2;
+                        Bitmap bmp = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
+                        if (bmp != null) {
+                            // Scale down precisely if still over maxPx (inSampleSize is power-of-2 only)
+                            int w = bmp.getWidth(), h = bmp.getHeight();
+                            int longest = Math.max(w, h);
+                            if (longest > maxPx) {
+                                float s = (float) maxPx / longest;
+                                bmp = Bitmap.createScaledBitmap(bmp,
+                                    Math.round(w * s), Math.round(h * s), true);
+                            }
+                            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                            // WebP lossy: API 30+ uses WEBP_LOSSY, older uses WEBP (lossy when quality<100)
+                            Bitmap.CompressFormat fmt = (Build.VERSION.SDK_INT >= 30)
+                                ? Bitmap.CompressFormat.WEBP_LOSSY
+                                : Bitmap.CompressFormat.WEBP;
+                            bmp.compress(fmt, quality, baos);
+                            bmp.recycle();
+                            byte[] compressed = baos.toByteArray();
+                            body = RequestBody.create(compressed, MediaType.parse("image/webp"));
+                            uploadMime = "image/webp";
+                        } else {
+                            body = RequestBody.create(file, MediaType.parse(mimeType));
+                        }
+                    } catch (Exception e) {
+                        body = RequestBody.create(file, MediaType.parse(mimeType));
+                    }
+                } else {
+                    body = RequestBody.create(file, MediaType.parse(mimeType));
+                }
+
                 Request request = new Request.Builder()
                     .url(uploadUrl)
                     .post(body)
                     .header("X-File-Name", Uri.encode(file.getName()))
                     .header("X-Admin-Id", fromAdminId)
                     .header("X-User-Id", userId != null ? userId : "")
-                    .header("Content-Type", mimeType)
+                    .header("Content-Type", uploadMime)
                     .build();
 
                 Response response = httpClient.newCall(request).execute();

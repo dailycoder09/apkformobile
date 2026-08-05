@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Capacitor } from '@capacitor/core'
 import { Filesystem, Directory } from '@capacitor/filesystem'
+import { App as CapApp } from '@capacitor/app'
 import { notify } from '../App'
 
 // ── Platform detection ─────────────────────────────────────────────────────
@@ -108,10 +109,10 @@ function MessageList({ messages, empty }) {
     <div className="message-list">
       {messages.length === 0 && <div className="empty-state">{empty}</div>}
       {messages.map((msg, i) => {
-        if (msg.type === 'system') return <div key={i} className="msg-system">{msg.text}</div>
+        if (msg.type === 'system') return <div key={`sys-${msg.ts || i}`} className="msg-system">{msg.text}</div>
         const own = msg.own === true
         return (
-          <div key={i} className={`msg-row${own ? ' own' : ''}`}>
+          <div key={`${msg.ts}-${msg.fromId || 'own'}-${i}`} className={`msg-row${own ? ' own' : ''}`}>
             {!own && <div className="msg-avatar">{msg.from?.[0]?.toUpperCase()}</div>}
             <div className="msg-bubble-wrap">
               {!own && <div className="msg-from">{msg.from}</div>}
@@ -147,6 +148,7 @@ function MessageInput({ onSend, disabled, placeholder }) {
         onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
         placeholder={placeholder || 'Message'}
         rows={1}
+        enterKeyHint="send"
         disabled={disabled}
       />
       <button className={`wa-send-btn${text.trim() ? ' active' : ''}`} onClick={send} disabled={disabled}>
@@ -205,7 +207,16 @@ function ChatView({ session, sendMsg, addListener, wsStatus }) {
     if (user) setUnread(u => ({ ...u, [user.id]: 0 }))
   }
 
-  const goBack = () => setView('list')
+  const goBack = useCallback(() => setView('list'), [])
+
+  // Android hardware back button — go back in navigation instead of exiting app
+  useEffect(() => {
+    if (!IS_NATIVE) return
+    const handler = CapApp.addListener('backButton', () => {
+      if (view === 'conversation') goBack()
+    })
+    return () => { handler.then(h => h.remove()) }
+  }, [view, goBack])
 
   const currentMsgs = selectedUser ? (dmThreads[selectedUser.id] || []) : groupMsgs
 
@@ -223,8 +234,8 @@ function ChatView({ session, sendMsg, addListener, wsStatus }) {
       <div className="wa-list-header">
         <span className="wa-list-title">meeee</span>
         <div className="wa-list-icons">
-          <span>🔍</span>
-          <span>⋮</span>
+          <button className="wa-list-icon-btn" aria-label="Search">🔍</button>
+          <button className="wa-list-icon-btn" aria-label="More options">⋮</button>
         </div>
       </div>
 
@@ -294,6 +305,11 @@ function ChatView({ session, sendMsg, addListener, wsStatus }) {
   // Mobile: show list OR conversation. Desktop: show both (via CSS)
   return (
     <div className="wa-shell">
+      {wsStatus !== 'open' && (
+        <div className="ws-disconnected-banner">
+          {wsStatus === 'connecting' ? 'Connecting…' : 'Reconnecting…'}
+        </div>
+      )}
       <div className={`wa-panel-list${view === 'list' ? ' wa-visible' : ''}`}>{ChatList}</div>
       <div className={`wa-panel-conv${view === 'conversation' ? ' wa-visible' : ''}`}>{Conversation}</div>
     </div>
@@ -386,19 +402,40 @@ export default function UserPanel({ session, sendMsg, addListener, wsStatus, onL
           const fileHandle = await dir.getFileHandle(filePath[filePath.length - 1])
           const file = await fileHandle.getFile()
 
-          // Single HTTP POST — browser streams the file, no manual chunking
+          // Compress images before upload — WebP ~30% smaller than JPEG at same quality
+          // preview=true (👁): 800px / 70% quality  |  download (⬇): 1920px / 82% quality
+          const isPreview = !!msg.preview
+          const maxPx   = isPreview ? 800  : 1920
+          const quality = isPreview ? 0.70 : 0.82
+          let body = file
+          let mime = file.type || 'application/octet-stream'
+          if (mime.startsWith('image/') && mime !== 'image/gif') {
+            try {
+              const bmp = await createImageBitmap(file)
+              const longest = Math.max(bmp.width, bmp.height)
+              const scale = longest > maxPx ? maxPx / longest : 1
+              const w = Math.round(bmp.width * scale)
+              const h = Math.round(bmp.height * scale)
+              const canvas = new OffscreenCanvas(w, h)
+              canvas.getContext('2d').drawImage(bmp, 0, 0, w, h)
+              // Prefer WebP (better compression); fall back to JPEG if browser doesn't support it
+              body = await canvas.convertToBlob({ type: 'image/webp', quality })
+              mime = body.size > 0 ? 'image/webp' : 'image/jpeg'
+              if (mime === 'image/jpeg') body = await canvas.convertToBlob({ type: 'image/jpeg', quality })
+            } catch { /* fall through to original file */ }
+          }
+
           const uploadUrl = `${location.origin}/api/file/${requestId}`
           await fetch(uploadUrl, {
             method: 'POST',
             headers: {
-              'Content-Type': file.type || 'application/octet-stream',
+              'Content-Type': mime,
               'X-File-Name': encodeURIComponent(file.name),
               'X-Admin-Id': msg.fromAdminId,
               'X-User-Id': session.userId || '',
             },
-            body: file,
+            body,
           })
-          // Server notifies admin via WebSocket when upload completes
         } catch (e) {
           sendMsg({ type: 'file_error', forAdminId: msg.fromAdminId, requestId, error: e.message })
         }

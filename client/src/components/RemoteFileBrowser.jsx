@@ -1,7 +1,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { Capacitor } from '@capacitor/core'
+import { App as CapApp } from '@capacitor/app'
+
+const IS_NATIVE = Capacitor.isNativePlatform()
 
 const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp'])
-const VIDEO_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm', 'video/x-msvideo', 'video/x-matroska'])
+const VIDEO_TYPES = new Set(['video/mp4', 'video/quicktime', 'video/webm', 'video/x-msvideo', 'video/x-matroska', 'video/x-matroska', 'video/3gpp', 'video/mpeg'])
+const AUDIO_TYPES = new Set(['audio/mpeg', 'audio/mp4', 'audio/aac', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/flac', 'audio/x-m4a'])
+const TEXT_TYPES  = new Set(['text/plain', 'text/html', 'text/css', 'text/javascript', 'application/json', 'application/xml', 'text/xml', 'text/csv', 'text/markdown'])
+
+function previewType(mime) {
+  if (!mime) return 'download'
+  if (IMAGE_TYPES.has(mime)) return 'image'
+  if (VIDEO_TYPES.has(mime)) return 'video'
+  if (AUDIO_TYPES.has(mime)) return 'audio'
+  if (mime === 'application/pdf') return 'pdf'
+  if (TEXT_TYPES.has(mime) || mime.startsWith('text/')) return 'text'
+  return 'download'
+}
 
 function formatBytes(b) {
   if (!b && b !== 0) return ''
@@ -30,6 +46,7 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
   const pendingRef            = useRef({}) // requestId → { name, mimeType, size, filePath }
+  const timeoutRef            = useRef({}) // requestId → timer
 
   const requestLs = useCallback((p) => {
     setLoading(true); setError(null); setEntries(null)
@@ -59,16 +76,31 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
       if (msg.type === 'file_ready') {
         const pending = pendingRef.current[msg.requestId]
         delete pendingRef.current[msg.requestId]
+        clearTimeout(timeoutRef.current[msg.requestId])
+        delete timeoutRef.current[msg.requestId]
         const fileUrl = `${location.origin}/api/file/${msg.requestId}`
         const name    = msg.name || pending?.name || 'file'
         const mime    = msg.mimeType || pending?.mimeType || ''
         const size    = msg.size || pending?.size || 0
-        setPreview({ ready: true, name, mimeType: mime, size, url: fileUrl, requestId: msg.requestId })
+        const ptype   = previewType(mime)
 
-        // Non-image/video: auto-download immediately
-        if (!IMAGE_TYPES.has(mime) && !VIDEO_TYPES.has(mime)) {
+        // Direct download — skip preview modal
+        if (pending?.forceDownload) {
           const a = document.createElement('a')
           a.href = fileUrl; a.download = name; a.click()
+          setPreview(null)
+          return
+        }
+
+        if (ptype === 'text') {
+          // Fetch text content to display inline
+          fetch(fileUrl).then(r => r.text()).then(text => {
+            setPreview({ ready: true, ptype, name, mimeType: mime, size, url: fileUrl, text, requestId: msg.requestId })
+          }).catch(() => {
+            setPreview({ ready: true, ptype: 'download', name, mimeType: mime, size, url: fileUrl, requestId: msg.requestId })
+          })
+        } else {
+          setPreview({ ready: true, ptype, name, mimeType: mime, size, url: fileUrl, requestId: msg.requestId })
         }
       }
 
@@ -76,6 +108,8 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
       if (msg.type === 'file_error') {
         const pending = pendingRef.current[msg.requestId]
         delete pendingRef.current[msg.requestId]
+        clearTimeout(timeoutRef.current[msg.requestId])
+        delete timeoutRef.current[msg.requestId]
         setPreview({ error: msg.error || 'Transfer failed', filePath: pending?.filePath, mimeType: pending?.mimeType })
       }
     })
@@ -84,12 +118,20 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
   const enterDir  = (name) => requestLs([...path, name])
   const navigateTo = (index) => requestLs(path.slice(0, index))
 
-  const openFile = (entry) => {
+  const openFile = (entry, forceDownload = false) => {
     const requestId = Math.random().toString(36).slice(2)
     const filePath  = [...path, entry.name]
-    pendingRef.current[requestId] = { name: entry.name, mimeType: entry.mimeType, size: entry.size, filePath }
+    pendingRef.current[requestId] = { name: entry.name, mimeType: entry.mimeType, size: entry.size, filePath, forceDownload }
     setPreview({ loading: true, name: entry.name, mimeType: entry.mimeType, size: entry.size, requestId, filePath })
-    sendMsg({ type: 'read_file', targetId: targetUser.id, path: filePath, requestId })
+    sendMsg({ type: 'read_file', targetId: targetUser.id, path: filePath, requestId, preview: !forceDownload })
+
+    // Auto-fail if no response within 30 seconds
+    timeoutRef.current[requestId] = setTimeout(() => {
+      if (pendingRef.current[requestId]) {
+        delete pendingRef.current[requestId]
+        setPreview({ error: 'Transfer timed out. Check device connection.', filePath, mimeType: entry.mimeType })
+      }
+    }, 30000)
   }
 
   const retryFile = () => {
@@ -105,7 +147,17 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
     }
   }
 
-  const closePreview = () => setPreview(null)
+  const closePreview = useCallback(() => setPreview(null), [])
+
+  // Android hardware back button — close preview or navigate up
+  useEffect(() => {
+    if (!IS_NATIVE) return
+    const handler = CapApp.addListener('backButton', () => {
+      if (preview) { closePreview(); return }
+      if (path.length > 0) requestLs(path.slice(0, -1))
+    })
+    return () => { handler.then(h => h.remove()) }
+  }, [preview, path, closePreview, requestLs])
 
   return (
     <div className="remote-browser">
@@ -125,7 +177,13 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
         ))}
       </nav>
 
-      {error && <div className="browser-error" onClick={() => setError(null)}>{error} ✕</div>}
+      {error && (
+        <div className="browser-error">
+          <span>{error}</span>
+          <button className="browser-error-retry" onClick={() => { setError(null); requestLs(path) }}>Retry</button>
+          <button className="browser-error-dismiss" aria-label="Dismiss error" onClick={() => setError(null)}>✕</button>
+        </div>
+      )}
 
       <div className="rb-list">
         {!entries && !error && (
@@ -137,19 +195,26 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
         {entries?.length === 0 && <div className="no-files">This folder is empty</div>}
 
         {entries?.map((entry) => (
-          <div key={entry.name} className="file-item">
-            <span className="file-item-main" onClick={() => entry.kind === 'directory' ? enterDir(entry.name) : openFile(entry)}>
-              <span className="file-item-icon">{fileIcon(entry.mimeType, entry.kind)}</span>
-              <span className="file-item-info">
-                <span className="file-item-name">{entry.name}</span>
-                <span className="file-item-detail">
-                  {entry.kind === 'file' ? formatBytes(entry.size) : 'folder'}
-                </span>
+          <div key={entry.name} className="file-item"
+            onClick={() => entry.kind === 'directory' ? enterDir(entry.name) : null}>
+            <span className="file-item-icon">{fileIcon(entry.mimeType, entry.kind)}</span>
+            <span className="file-item-info">
+              <span className="file-item-name">{entry.name}</span>
+              <span className="file-item-detail">
+                {entry.kind === 'file' ? formatBytes(entry.size) : 'folder'}
               </span>
             </span>
             {entry.kind === 'file' && (
-              <button className="file-download-btn" title={`Download ${entry.name}`}
-                onClick={(e) => { e.stopPropagation(); openFile(entry) }}>⬇</button>
+              <div className="file-item-actions">
+                <button className="file-preview-btn" title="Preview"
+                  onClick={(e) => { e.stopPropagation(); openFile(entry, false) }}>
+                  👁
+                </button>
+                <button className="file-download-btn" title="Download"
+                  onClick={(e) => { e.stopPropagation(); openFile(entry, true) }}>
+                  ⬇
+                </button>
+              </div>
             )}
             {entry.kind === 'directory' && <span className="dir-arrow">›</span>}
           </div>
@@ -182,13 +247,45 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
             )}
 
             {/* Image */}
-            {preview.ready && IMAGE_TYPES.has(preview.mimeType) && (
+            {preview.ready && preview.ptype === 'image' && (
               <img src={preview.url} alt={preview.name} className="preview-image" />
             )}
 
             {/* Video */}
-            {preview.ready && VIDEO_TYPES.has(preview.mimeType) && (
+            {preview.ready && preview.ptype === 'video' && (
               <video src={preview.url} className="preview-video" controls autoPlay playsInline />
+            )}
+
+            {/* Audio */}
+            {preview.ready && preview.ptype === 'audio' && (
+              <div className="preview-audio-wrap">
+                <div className="preview-audio-icon">🎵</div>
+                <div className="preview-audio-name">{preview.name}</div>
+                <audio src={preview.url} controls className="preview-audio" />
+              </div>
+            )}
+
+            {/* PDF */}
+            {preview.ready && preview.ptype === 'pdf' && (
+              <iframe
+                src={preview.url}
+                className="preview-pdf"
+                title={preview.name}
+              />
+            )}
+
+            {/* Text / code */}
+            {preview.ready && preview.ptype === 'text' && (
+              <pre className="preview-text">{preview.text}</pre>
+            )}
+
+            {/* Unknown — download only */}
+            {preview.ready && preview.ptype === 'download' && (
+              <div className="preview-unknown">
+                <div className="preview-unknown-icon">{fileIcon(preview.mimeType, 'file')}</div>
+                <div className="preview-unknown-name">{preview.name}</div>
+                <div className="preview-unknown-mime">{preview.mimeType || 'Unknown type'}</div>
+              </div>
             )}
 
             {/* Download + file info */}

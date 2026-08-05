@@ -40,7 +40,7 @@ function AdminDMView({ targetUser, session, sendMsg, addListener, wsStatus, onBa
         {messages.map((msg, i) => {
           const own = msg.own === true
           return (
-            <div key={i} className={`msg-row${own ? ' own' : ''}`}>
+            <div key={`${msg.ts}-${msg.fromId || 'own'}-${i}`} className={`msg-row${own ? ' own' : ''}`}>
               {!own && <div className="msg-avatar">{msg.from?.[0]?.toUpperCase()}</div>}
               <div className="msg-bubble-wrap">
                 <div className={`msg-bubble${own ? ' own' : ''}`}><p>{msg.text}</p></div>
@@ -59,6 +59,7 @@ function AdminDMView({ targetUser, session, sendMsg, addListener, wsStatus, onBa
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } }}
           placeholder={`Message ${targetUser.name}…`}
           rows={1}
+          enterKeyHint="send"
           disabled={wsStatus !== 'open'}
         />
         <button className="send-btn" onClick={send} disabled={wsStatus !== 'open' || !text.trim()}>➤</button>
@@ -124,18 +125,18 @@ export default function AdminPanel({ session, sendMsg, addListener, wsStatus, on
           ) : (
             <ul className="user-list">
               {users.map((user) => (
-                <li key={user.id} className={`user-item ${selectedUser?.id === user.id ? 'selected' : ''}`}>
-                  <span className="user-avatar" onClick={() => selectUser(user)}>
-                    {user.name[0].toUpperCase()}
-                  </span>
-                  <span className="user-item-name" onClick={() => selectUser(user)}>
-                    {user.name}
-                  </span>
+                <li key={user.id}
+                  className={`user-item ${selectedUser?.id === user.id ? 'selected' : ''}`}
+                  onClick={() => selectUser(user)}
+                >
+                  <span className="user-avatar">{user.name[0].toUpperCase()}</span>
+                  <span className="user-item-name">{user.name}</span>
                   <span className="user-item-actions">
                     <button
                       className="dm-icon-btn"
                       title={`Message ${user.name}`}
-                      onClick={() => openDM(user)}
+                      aria-label={`Message ${user.name}`}
+                      onClick={(e) => { e.stopPropagation(); openDM(user) }}
                     >
                       💬{dmUnread[user.id] > 0 && <sup>{dmUnread[user.id]}</sup>}
                     </button>

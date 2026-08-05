@@ -65,6 +65,7 @@ export default function App() {
   const [wsStatus, setWsStatus]   = useState('idle')
   const [session, setSession]     = useState(null)
   const [updateInfo, setUpdateInfo] = useState(null) // { apkUrl } if update available
+  const [loginError, setLoginError] = useState(null)
   const wsRef          = useRef(null)
   const reconnectRef   = useRef(null)
   const authPayloadRef = useRef(null)
@@ -117,9 +118,10 @@ export default function App() {
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data)
       if (msg.type === 'auth_ok') {
+        setLoginError(null)
         setSession({ role: msg.role, userId: msg.userId, name: msg.name || 'Admin', initialUsers: msg.users || [] })
       } else if (msg.type === 'auth_fail') {
-        alert(msg.reason || 'Authentication failed')
+        setLoginError(msg.reason || 'Authentication failed')
         ws.close()
         setWsStatus('idle')
         return
@@ -184,7 +186,7 @@ export default function App() {
       {!session ? (
         autoPin
           ? <div className="auto-login-screen"><div className="auto-login-spinner">◌</div></div>
-          : <Login onLogin={login} status={wsStatus} />
+          : <Login onLogin={login} status={wsStatus} error={loginError} />
       ) : session.role === 'admin' ? (
         <AdminPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} />
       ) : (
