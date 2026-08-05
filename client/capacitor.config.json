@@ -1,0 +1,13 @@
+{
+  "appId": "com.familywatch.app",
+  "appName": "meeee",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "Filesystem": {
+      "iosScheme": "capacitor"
+    }
+  }
+}
