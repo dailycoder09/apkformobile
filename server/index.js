@@ -439,6 +439,8 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     if (!meta) return
+    // If this WS was superseded by a reconnect (meta.ws updated to new socket), ignore its close
+    if (meta.ws !== ws && meta.role !== 'admin') return
     byWs.delete(ws)
     if (meta.role === 'admin') {
       admins.delete(meta.userId)
