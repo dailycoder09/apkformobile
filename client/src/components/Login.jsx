@@ -1,20 +1,18 @@
 import { useState } from 'react'
-import { Capacitor } from '@capacitor/core'
 
-const IS_NATIVE = Capacitor.isNativePlatform()
+// Server URL baked in at build time — child just enters their name
+const SERVER_URL = 'https://familywatch.duckdns.org'
 
 export default function Login({ onLogin, status, error }) {
-  const [name, setName]           = useState('')
-  const [serverUrl, setServerUrl] = useState(() => localStorage.getItem('meeee_server') || '')
+  const [name, setName] = useState('')
 
   const busy = status === 'connecting'
 
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!name.trim()) return
-    if (IS_NATIVE && !serverUrl.trim()) return
-    if (serverUrl.trim()) localStorage.setItem('meeee_server', serverUrl.trim())
-    onLogin('user', name.trim(), '', serverUrl.trim())
+    localStorage.setItem('meeee_server', SERVER_URL)
+    onLogin('user', name.trim(), '', SERVER_URL)
   }
 
   return (
@@ -36,24 +34,12 @@ export default function Login({ onLogin, status, error }) {
             required
           />
 
-          {/* Server URL only shown on native APK */}
-          {IS_NATIVE && (
-            <input
-              className="login-input"
-              type="url"
-              placeholder="Server URL (wss://…)"
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
-              required
-            />
-          )}
-
           {error && <div className="login-error">{error}</div>}
 
           <button
             type="submit"
             className="login-btn"
-            disabled={busy || !name.trim() || (IS_NATIVE && !serverUrl.trim())}
+            disabled={busy || !name.trim()}
           >
             {busy ? 'Connecting…' : 'Get Started'}
           </button>
