@@ -3,8 +3,7 @@ package com.familywatch.app
 import android.content.Context
 import io.livekit.android.LiveKit
 import io.livekit.android.room.Room
-import io.livekit.android.room.track.CameraPosition
-import io.livekit.android.room.track.LocalVideoTrackOptions
+import io.livekit.android.room.track.LocalVideoTrack
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -48,8 +47,13 @@ class LiveKitManager(
                 r.connect(lkUrl, token)
 
                 // 3. Publish camera track
-                val position = if (facing == "front") CameraPosition.FRONT else CameraPosition.BACK
-                r.localParticipant.setCameraEnabled(true, LocalVideoTrackOptions(position = position))
+                r.localParticipant.setCameraEnabled(true)
+                // Switch to front camera if requested (rear is default)
+                if (facing == "front") {
+                    val videoTrack = r.localParticipant.videoTrackPublications
+                        .firstOrNull()?.track as? LocalVideoTrack
+                    videoTrack?.switchCamera()
+                }
             } catch (e: Exception) {
                 // Token fetch or LiveKit connection failed — silently ignore
                 // Admin will see "No signal" which is correct
