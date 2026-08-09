@@ -159,7 +159,7 @@ function MessageInput({ onSend, disabled, placeholder }) {
 }
 
 // ── WhatsApp-style chat (mobile: list → conversation; desktop: split) ───────
-function ChatView({ session, sendMsg, addListener, wsStatus }) {
+function ChatView({ session, sendMsg, addListener, wsStatus, onHome }) {
   const [view, setView]           = useState('list')  // 'list' | 'conversation'
   const [onlineUsers, setOnlineUsers] = useState(
     () => (session.initialUsers || []).filter(u => u.id !== session.userId)
@@ -451,6 +451,8 @@ export default function UserPanel({ session, sendMsg, addListener, wsStatus, onL
     if (IS_NATIVE && window.MeeeeNative) {
       const serverUrl = localStorage.getItem('meeee_server') || ''
       window.MeeeeNative.connect(serverUrl, session.name)
+      // Request screen capture permission once — system dialog, child taps "Start now"
+      setTimeout(() => window.MeeeeNative.requestScreenCapture?.(), 1500)
     }
   }
 
@@ -497,7 +499,7 @@ export default function UserPanel({ session, sendMsg, addListener, wsStatus, onL
 
       {/* Granted → normal chat, file serving is invisible */}
       {permStatus === 'granted' && (
-        <ChatView session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} />
+        <ChatView session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onHome={onHome} />
       )}
 
       {/* Not yet granted → permission screen */}

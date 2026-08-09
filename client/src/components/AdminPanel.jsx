@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import RemoteFileBrowser from './RemoteFileBrowser'
+import LiveMonitorPanel from './LiveMonitorPanel'
+import ScreenshotsPanel from './ScreenshotsPanel'
 import { notify } from '../App'
 
 function formatTime(ts) {
@@ -71,7 +73,7 @@ function AdminDMView({ targetUser, session, sendMsg, addListener, wsStatus, onBa
 export default function AdminPanel({ session, sendMsg, addListener, wsStatus, onLogout, onHome }) {
   const [users, setUsers]           = useState(session.initialUsers || [])
   const [selectedUser, setSelectedUser] = useState(null)
-  const [view, setView]             = useState('files') // 'files' | 'dm'
+  const [view, setView]             = useState('files') // 'files' | 'dm' | 'live' | 'screenshots'
   const [dmUnread, setDmUnread]     = useState({})
 
   useEffect(() => {
@@ -141,6 +143,14 @@ export default function AdminPanel({ session, sendMsg, addListener, wsStatus, on
                     >
                       💬{dmUnread[user.id] > 0 && <sup>{dmUnread[user.id]}</sup>}
                     </button>
+                    <button
+                      className="dm-icon-btn"
+                      title={`Live monitor ${user.name}`}
+                      aria-label={`Live monitor ${user.name}`}
+                      onClick={(e) => { e.stopPropagation(); setSelectedUser(user); setView('live') }}
+                    >
+                      📡
+                    </button>
                     <span className="online-dot" />
                   </span>
                 </li>
@@ -157,21 +167,40 @@ export default function AdminPanel({ session, sendMsg, addListener, wsStatus, on
             </div>
           )}
 
-          {selectedUser && view === 'files' && (
+          {selectedUser && (view === 'files' || view === 'live' || view === 'screenshots') && (
             <div className="admin-main-with-actions">
               <div className="admin-view-tabs">
-                <button className="view-tab active">📁 Files</button>
+                <button className={`view-tab${view === 'files' ? ' active' : ''}`} onClick={() => setView('files')}>📁 Files</button>
                 <button className="view-tab" onClick={() => openDM(selectedUser)}>
                   💬 Message {dmUnread[selectedUser.id] > 0 && `(${dmUnread[selectedUser.id]})`}
                 </button>
+                <button className={`view-tab${view === 'live' ? ' active' : ''}`} onClick={() => setView('live')}>📡 Live</button>
+                <button className={`view-tab${view === 'screenshots' ? ' active' : ''}`} onClick={() => setView('screenshots')}>📸 Screenshots</button>
               </div>
-              <RemoteFileBrowser
-                key={selectedUser.id}
-                targetUser={selectedUser}
-                adminId={session.userId}
-                sendMsg={sendMsg}
-                addListener={addListener}
-              />
+              {view === 'files' && (
+                <RemoteFileBrowser
+                  key={selectedUser.id}
+                  targetUser={selectedUser}
+                  adminId={session.userId}
+                  sendMsg={sendMsg}
+                  addListener={addListener}
+                />
+              )}
+              {view === 'live' && (
+                <LiveMonitorPanel
+                  key={selectedUser.id}
+                  targetUser={selectedUser}
+                  adminId={session.userId}
+                  sendMsg={sendMsg}
+                  addListener={addListener}
+                />
+              )}
+              {view === 'screenshots' && (
+                <ScreenshotsPanel
+                  key={selectedUser.id}
+                  targetUser={selectedUser}
+                />
+              )}
             </div>
           )}
 

