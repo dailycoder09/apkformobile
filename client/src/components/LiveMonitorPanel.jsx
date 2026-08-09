@@ -185,6 +185,12 @@ export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addList
       sendMsg({ type: 'stop_mic', targetId: targetUser.id })
       setMicActive(false); setMicStatus('idle'); setAudioLevel(0)
     } else {
+      // Warm up AudioContext during user gesture — browsers suspend it otherwise
+      if (!audioCtx) {
+        audioCtx = new AudioContext({ sampleRate: 16000, latencyHint: 'interactive' })
+        nextPlayAt = 0
+      }
+      audioCtx.resume()
       sendMsg({ type: 'start_mic', targetId: targetUser.id })
       setMicActive(true); setMicStatus('connecting')
     }
