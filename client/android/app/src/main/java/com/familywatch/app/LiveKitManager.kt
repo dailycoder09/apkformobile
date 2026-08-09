@@ -50,8 +50,9 @@ class LiveKitManager(
                 r.localParticipant.setCameraEnabled(true)
                 // Switch to front camera if requested (rear is default)
                 if (facing == "front") {
-                    val videoTrack = r.localParticipant.videoTrackPublications
-                        .firstOrNull()?.track as? LocalVideoTrack
+                    val videoTrack = r.localParticipant.trackPublications.values
+                        .mapNotNull { it.track as? LocalVideoTrack }
+                        .firstOrNull()
                     videoTrack?.switchCamera()
                 }
             } catch (e: Exception) {
