@@ -74,3 +74,18 @@ jobs:
           name: meeee-v${{ steps.version.outputs.version }}
           path: meeee.apk
           retention-days: 30
+
+      - name: Deploy server to GCP VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: familywatch.duckdns.org
+          username: fatemasayed760
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd ~/chat-pwa
+            git pull origin main
+            npm --prefix server install --production
+            npm --prefix client install
+            npm --prefix client run build
+            sudo systemctl restart familywatch
+            echo "✓ Server deployed"
