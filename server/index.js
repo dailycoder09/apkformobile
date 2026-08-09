@@ -166,9 +166,10 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server, path: '/ws' })
 
-const admins = new Map()   // userId → { ws, userId, name }
-const users  = new Map()   // userId → { ws, userId, name }
-const byWs   = new Map()   // ws → meta
+const admins       = new Map()   // userId → { ws, userId, name }
+const users        = new Map()   // userId → { ws, userId, name }
+const byWs         = new Map()   // ws → meta
+const transactions = new Map()   // userId → transaction[]
 
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
@@ -282,8 +283,24 @@ wss.on('connection', (ws) => {
         return
       }
 
+      // ── Admin commands ── transactions ─────────────
+      if (meta.role === 'admin' && msg.type === 'transactions_get') {
+        const list = transactions.get(msg.userId) || []
+        send(ws, { type: 'transactions_list', userId: msg.userId, transactions: list })
+        return
+      }
+
       // ── User messages ───────────────────────────────
       if (meta.role === 'user') {
+        // Transaction added by user (manual or SMS-parsed) — store + broadcast to admins
+        if (msg.type === 'transaction_add') {
+          const txn = { ...msg.transaction, userId: meta.userId, userName: meta.name }
+          if (!transactions.has(meta.userId)) transactions.set(meta.userId, [])
+          transactions.get(meta.userId).unshift(txn)
+          broadcastToAdmins({ type: 'transaction_new', transaction: txn, fromUserId: meta.userId, fromUserName: meta.name })
+          return
+        }
+
         if (['ls_result', 'file_result', 'file_start', 'file_chunk', 'file_end', 'file_error'].includes(msg.type)) {
           const admin = admins.get(msg.forAdminId)
           // Use primary userId for bg connections so RemoteFileBrowser filter matches

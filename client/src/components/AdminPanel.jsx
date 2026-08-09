@@ -68,7 +68,7 @@ function AdminDMView({ targetUser, session, sendMsg, addListener, wsStatus, onBa
   )
 }
 
-export default function AdminPanel({ session, sendMsg, addListener, wsStatus, onLogout }) {
+export default function AdminPanel({ session, sendMsg, addListener, wsStatus, onLogout, onHome }) {
   const [users, setUsers]           = useState(session.initialUsers || [])
   const [selectedUser, setSelectedUser] = useState(null)
   const [view, setView]             = useState('files') // 'files' | 'dm'
@@ -110,6 +110,7 @@ export default function AdminPanel({ session, sendMsg, addListener, wsStatus, on
           <span className="admin-badge">Admin</span>
           <span className={`status-dot status-${wsStatus}`} />
         </div>
+        <button className="home-nav-btn" onClick={onHome} aria-label="Home">🏠</button>
         <button className="logout-btn" onClick={onLogout}>Logout</button>
       </header>
 

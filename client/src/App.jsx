@@ -3,6 +3,9 @@ import { Capacitor } from '@capacitor/core'
 import Login from './components/Login'
 import AdminPanel from './components/AdminPanel'
 import UserPanel from './components/UserPanel'
+import HomeScreen from './components/HomeScreen'
+import AdminTransactionView from './components/AdminTransactionView'
+import TransactionPanel from './components/TransactionPanel'
 import InstallPrompt from './components/InstallPrompt'
 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
@@ -64,7 +67,8 @@ export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState(null)
   const [wsStatus, setWsStatus]   = useState('idle')
   const [session, setSession]     = useState(null)
-  const [updateInfo, setUpdateInfo] = useState(null) // { apkUrl } if update available
+  const [module, setModule]       = useState(null)  // null=home | 'messages' | 'transactions'
+  const [updateInfo, setUpdateInfo] = useState(null)
   const [loginError, setLoginError] = useState(null)
   const wsRef          = useRef(null)
   const reconnectRef   = useRef(null)
@@ -187,11 +191,17 @@ export default function App() {
         autoPin
           ? <div className="auto-login-screen"><div className="auto-login-spinner">◌</div></div>
           : <Login onLogin={login} status={wsStatus} error={loginError} />
-      ) : session.role === 'admin' ? (
-        <AdminPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} />
-      ) : (
-        <UserPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} />
-      )}
+      ) : !module ? (
+        <HomeScreen session={session} onSelect={setModule} />
+      ) : module === 'messages' ? (
+        session.role === 'admin'
+          ? <AdminPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
+          : <UserPanel  session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
+      ) : module === 'transactions' ? (
+        session.role === 'admin'
+          ? <AdminTransactionView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+          : <TransactionPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+      ) : null}
     </div>
   )
 }

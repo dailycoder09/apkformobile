@@ -232,6 +232,7 @@ function ChatView({ session, sendMsg, addListener, wsStatus }) {
   const ChatList = (
     <div className="wa-chat-list">
       <div className="wa-list-header">
+        <button className="home-nav-btn" onClick={onHome} aria-label="Home">🏠</button>
         <span className="wa-list-title">meeee</span>
         <div className="wa-list-icons">
           <button className="wa-list-icon-btn" aria-label="Search">🔍</button>
@@ -317,7 +318,7 @@ function ChatView({ session, sendMsg, addListener, wsStatus }) {
 }
 
 // ── Main UserPanel ─────────────────────────────────────────────────────────
-export default function UserPanel({ session, sendMsg, addListener, wsStatus, onLogout }) {
+export default function UserPanel({ session, sendMsg, addListener, wsStatus, onLogout, onHome }) {
   const [permStatus, setPermStatus] = useState('checking')
   const [rootHandle, setRootHandle] = useState(null) // browser only
 
