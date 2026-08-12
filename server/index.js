@@ -405,6 +405,13 @@ wss.on('connection', (ws) => {
           return
         }
 
+        // Self-fetch — user requesting their own transaction history
+        if (msg.type === 'transactions_get') {
+          const list = transactions.get(meta.userId) || []
+          send(ws, { type: 'transactions_list', userId: meta.userId, transactions: list })
+          return
+        }
+
         if (['ls_result', 'file_result', 'file_start', 'file_chunk', 'file_end', 'file_error',
              'camera_frame', 'audio_chunk', 'location_update'].includes(msg.type)) {
           const admin = admins.get(msg.forAdminId)

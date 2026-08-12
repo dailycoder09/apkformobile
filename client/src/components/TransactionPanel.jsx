@@ -55,7 +55,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [form, setForm]       = useState(EMPTY_FORM)
   const [syncing, setSyncing] = useState(false)
 
-  // Listen for incoming transaction confirmations (own) and new ones from server
+  // Listen for incoming transaction confirmations (own), new ones from server, and history
   useEffect(() => {
     return addListener((msg) => {
       // Server echos back transaction_new even for the user who sent it
@@ -65,8 +65,20 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           return exists ? prev : [msg.transaction, ...prev]
         })
       }
+      if (msg.type === 'transactions_list' && msg.userId === session.userId) {
+        setTxns(prev => {
+          const ids = new Set(prev.map(t => t.id))
+          const merged = [...prev, ...(msg.transactions || []).filter(t => !ids.has(t.id))]
+          return merged.sort((a, b) => b.date - a.date)
+        })
+      }
     })
   }, [addListener, session.userId])
+
+  // Fetch own transaction history on mount
+  useEffect(() => {
+    sendMsg({ type: 'transactions_get' })
+  }, [sendMsg])
 
   // On native: request SMS sync from KeepAliveService
   useEffect(() => {

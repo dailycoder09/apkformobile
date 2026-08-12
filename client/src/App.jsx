@@ -5,9 +5,12 @@ import Login from './components/Login'
 import AdminPanel from './components/AdminPanel'
 import UserPanel from './components/UserPanel'
 import HomeScreen from './components/HomeScreen'
+import Dashboard from './components/Dashboard'
 import AdminTransactionView from './components/AdminTransactionView'
 import TransactionPanel from './components/TransactionPanel'
 import InstallPrompt from './components/InstallPrompt'
+import BottomNav from './components/BottomNav'
+import NamazTracker from './components/NamazTracker'
 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
 const IS_NATIVE = Capacitor.isNativePlatform()
@@ -49,6 +52,17 @@ function UpdateBanner({ apkUrl, onDismiss }) {
   )
 }
 
+function ComingSoon({ title, icon, onHome }) {
+  return (
+    <div className="coming-soon">
+      <div className="coming-soon-icon">{icon}</div>
+      <h2 className="coming-soon-title">{title}</h2>
+      <p className="coming-soon-text">This is coming soon.</p>
+      <button className="coming-soon-btn" onClick={onHome}>Back to Home</button>
+    </div>
+  )
+}
+
 function buildWsUrl(serverUrl) {
   if (serverUrl) {
     const base = serverUrl.trim().replace(/\/$/, '')
@@ -68,7 +82,7 @@ export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState(null)
   const [wsStatus, setWsStatus]   = useState('idle')
   const [session, setSession]     = useState(null)
-  const [module, setModule]       = useState(null)  // null=home | 'messages' | 'transactions'
+  const [module, setModule]       = useState(null)  // null=home | 'messages' | 'transactions' | 'namaz' | 'workout'
   const [updateInfo, setUpdateInfo] = useState(null)
   const [loginError, setLoginError] = useState(null)
   const wsRef          = useRef(null)
@@ -354,17 +368,31 @@ export default function App() {
         autoPin
           ? <div className="auto-login-screen"><div className="auto-login-spinner">◌</div></div>
           : <Login onLogin={login} status={wsStatus} error={loginError} />
-      ) : !module ? (
-        <HomeScreen session={session} onSelect={setModule} />
-      ) : module === 'messages' ? (
-        session.role === 'admin'
-          ? <AdminPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
-          : <UserPanel  session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
-      ) : module === 'transactions' ? (
-        session.role === 'admin'
-          ? <AdminTransactionView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
-          : <TransactionPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
-      ) : null}
+      ) : (
+        <>
+          {!module ? (
+            session.role === 'admin'
+              ? <HomeScreen session={session} onSelect={setModule} />
+              : <Dashboard session={session} onSelect={setModule} sendMsg={sendMsg} addListener={addListener} />
+          ) : module === 'messages' ? (
+            session.role === 'admin'
+              ? <AdminPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
+              : <UserPanel  session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
+          ) : module === 'transactions' ? (
+            session.role === 'admin'
+              ? <AdminTransactionView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+              : <TransactionPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+          ) : module === 'namaz' ? (
+            <NamazTracker />
+          ) : module === 'workout' ? (
+            <ComingSoon title="Workout" icon="💪" onHome={() => setModule(null)} />
+          ) : null}
+
+          {session.role !== 'admin' && (
+            <BottomNav active={module} onNavigate={setModule} />
+          )}
+        </>
+      )}
     </div>
   )
 }

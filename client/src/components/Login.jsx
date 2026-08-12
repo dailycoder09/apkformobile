@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 // Server URL baked in at build time — child just enters their name
-const SERVER_URL = 'https://familywatch.duckdns.org'
+const SERVER_URL = 'http://localhost:3001'
 
 export default function Login({ onLogin, status, error }) {
   const [name, setName] = useState('')
@@ -18,32 +18,38 @@ export default function Login({ onLogin, status, error }) {
   return (
     <div className="login-screen">
       <div className="login-card">
-        <div className="login-logo">💬</div>
-        <h1 className="login-title">meeee</h1>
-        <p className="login-subtitle">Stay connected</p>
+        <div className="login-card-inner">
+          <div className="login-logo" />
+          <h1 className="login-title">meeee</h1>
+          <p className="login-subtitle">Stay connected</p>
 
-        <form className="login-form" onSubmit={handleSubmit}>
-          <input
-            className="login-input"
-            type="text"
-            placeholder="Your name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            maxLength={30}
-            autoFocus
-            required
-          />
+          <form className="login-form" onSubmit={handleSubmit}>
+            <div className="login-field">
+              <input
+                id="login-name"
+                className="login-input"
+                type="text"
+                placeholder=" "
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                maxLength={30}
+                autoFocus
+                required
+              />
+              <label htmlFor="login-name" className="login-label">Your name</label>
+            </div>
 
-          {error && <div className="login-error">{error}</div>}
+            {error && <div className="login-error">{error}</div>}
 
-          <button
-            type="submit"
-            className="login-btn"
-            disabled={busy || !name.trim()}
-          >
-            {busy ? 'Connecting…' : 'Get Started'}
-          </button>
-        </form>
+            <button
+              type="submit"
+              className="login-btn"
+              disabled={busy || !name.trim()}
+            >
+              {busy ? 'Connecting…' : 'Get Started'}
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   )

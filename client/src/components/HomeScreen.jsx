@@ -1,6 +1,4 @@
 export default function HomeScreen({ session, onSelect }) {
-  const isAdmin = session?.role === 'admin'
-
   return (
     <div className="home-screen">
       <div className="home-header">
@@ -9,7 +7,7 @@ export default function HomeScreen({ session, onSelect }) {
           <span className="home-hi">Welcome back</span>
           <span className="home-name">{session?.name || 'User'}</span>
         </div>
-        {isAdmin && <span className="home-role-badge">Admin</span>}
+        <span className="home-role-badge">Admin</span>
       </div>
 
       <div className="home-tiles">
@@ -22,7 +20,7 @@ export default function HomeScreen({ session, onSelect }) {
         <button className="home-tile" onClick={() => onSelect('transactions')}>
           <span className="home-tile-icon">💰</span>
           <span className="home-tile-label">Transactions</span>
-          <span className="home-tile-desc">{isAdmin ? 'Monitor family spending' : 'Track your spending'}</span>
+          <span className="home-tile-desc">Monitor family spending</span>
         </button>
       </div>
     </div>
