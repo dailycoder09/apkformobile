@@ -1,9 +1,60 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getPrayerTimes, CITY_PRESETS, tzOffsetHoursFromZone } from '../utils/prayerTimes'
+import {
+  getPrayerTimes, CITY_PRESETS, tzOffsetHoursFromZone,
+  CALC_METHODS, ASR_MADHABS, getQiblaBearing, getHijriDate,
+} from '../utils/prayerTimes'
+import { notify, requestNotificationPermission } from '../App'
+import DuasPage from './DuasPage'
 
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search'
 const STREAK_MILESTONES = [7, 30, 100]
 const CONFETTI_COLORS = ['#1f4d43', '#d97706', '#7c9a8e', '#f4c95d']
+
+const ANALYTICS_RANGES = [
+  { key: 'week', label: 'This week', days: 7 },
+  { key: 'month', label: 'This month', days: 30 },
+  { key: '3m', label: 'Last 3 months', days: 90 },
+  { key: 'year', label: 'This year', days: 365 },
+  { key: 'all', label: 'All time', days: null },
+]
+
+const WEEKDAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0]
+const WEEKDAY_SHORT = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+const HERO_RING_R = 52
+const HERO_RING_CIRC = 2 * Math.PI * HERO_RING_R
+const REASON_DONUT_R = 16
+const REASON_DONUT_CIRC = 2 * Math.PI * REASON_DONUT_R
+const COMPASS_LABELS = ['North', 'Northeast', 'East', 'Southeast', 'South', 'Southwest', 'West', 'Northwest']
+
+function compassLabel(bearing) {
+  return COMPASS_LABELS[Math.round(bearing / 45) % 8]
+}
+
+// Point at `angleDeg` clockwise from North (12 o'clock), `radius` from center.
+function compassPoint(angleDeg, radius, cx = 60, cy = 60) {
+  const rad = (angleDeg * Math.PI) / 180
+  return { x: cx + radius * Math.sin(rad), y: cy - radius * Math.cos(rad) }
+}
+
+const COMPASS_TICKS = Array.from({ length: 12 }, (_, i) => i * 30)
+const COMPASS_CARDINALS = [
+  { label: 'N', angle: 0 },
+  { label: 'E', angle: 90 },
+  { label: 'S', angle: 180 },
+  { label: 'W', angle: 270 },
+]
+
+function heatLevel(day) {
+  if (!day) return -1
+  const ratio = day.ontime / PRAYERS.length
+  if (ratio <= 0) return 0
+  if (ratio <= 0.2) return 1
+  if (ratio <= 0.4) return 2
+  if (ratio <= 0.6) return 3
+  if (ratio <= 0.8) return 4
+  return 5
+}
 
 const PRAYERS = [
   { key: 'fajr', en: 'Fajr', ar: 'الفجر' },
@@ -37,6 +88,18 @@ function todayKey(d = new Date()) {
 
 function readNamaz() {
   try { return JSON.parse(localStorage.getItem('meeee_namaz') || '{}') } catch { return {} }
+}
+
+function readQada() {
+  try { return JSON.parse(localStorage.getItem('meeee_namaz_qada') || '{}') } catch { return {} }
+}
+
+function readSetting(key, fallback) {
+  return localStorage.getItem(key) || fallback
+}
+
+function readBoolSetting(key) {
+  return localStorage.getItem(key) === '1'
 }
 
 function formatTime(d) {
@@ -97,6 +160,78 @@ export default function NamazTracker() {
   const [expandedPrayer, setExpandedPrayer] = useState(null)
   const [now, setNow] = useState(() => new Date())
   const [showAnalytics, setShowAnalytics] = useState(false)
+  const [analyticsRange, setAnalyticsRange] = useState('month')
+  const [showQada, setShowQada] = useState(false)
+  const [qada, setQada] = useState(readQada)
+  const [showQadaCalc, setShowQadaCalc] = useState(false)
+  const [showDuas, setShowDuas] = useState(false)
+  const [qadaCalcFrom, setQadaCalcFrom] = useState('')
+  const [qadaCalcTo, setQadaCalcTo] = useState(() => todayKey())
+  const [qadaCalcPrayers, setQadaCalcPrayers] = useState(() => {
+    const all = {}
+    PRAYERS.forEach((p) => { all[p.key] = true })
+    return all
+  })
+  const [showSettings, setShowSettings] = useState(false)
+  const [heroPage, setHeroPage] = useState(0)
+  const heroCarouselRef = useRef(null)
+
+  function handleHeroScroll() {
+    const el = heroCarouselRef.current
+    if (!el || !el.clientWidth) return
+    setHeroPage(Math.round(el.scrollLeft / el.clientWidth))
+  }
+  const [calcMethod, setCalcMethod] = useState(() => readSetting('meeee_namaz_method', 'mwl'))
+  const [asrMadhab, setAsrMadhab] = useState(() => readSetting('meeee_namaz_madhab', 'shafi'))
+  const [remindersEnabled, setRemindersEnabled] = useState(() => readBoolSetting('meeee_namaz_reminders'))
+  const [customReminderTimes, setCustomReminderTimes] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('meeee_namaz_reminder_times') || '{}') } catch { return {} }
+  })
+  const [enabledPrayerReminders, setEnabledPrayerReminders] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('meeee_namaz_reminder_prayers') || '{}') } catch { return {} }
+  })
+  const remindedRef = useRef(new Set())
+  const alarmCtxRef = useRef(null)
+
+  function ensureAlarmContext() {
+    if (!alarmCtxRef.current) {
+      const Ctx = window.AudioContext || window.webkitAudioContext
+      if (Ctx) alarmCtxRef.current = new Ctx()
+    }
+    if (alarmCtxRef.current?.state === 'suspended') alarmCtxRef.current.resume()
+  }
+
+  // Classic 4-beep alarm pattern, synthesized so no audio asset is needed.
+  function playAlarmSound() {
+    const ctx = alarmCtxRef.current
+    if (!ctx) return
+    const startAt = ctx.currentTime
+    for (let i = 0; i < 4; i++) {
+      const beepStart = startAt + i * 0.5
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = 'square'
+      osc.frequency.value = 880
+      gain.gain.setValueAtTime(0.0001, beepStart)
+      gain.gain.exponentialRampToValueAtTime(0.3, beepStart + 0.02)
+      gain.gain.exponentialRampToValueAtTime(0.0001, beepStart + 0.3)
+      osc.connect(gain).connect(ctx.destination)
+      osc.start(beepStart)
+      osc.stop(beepStart + 0.35)
+    }
+  }
+
+  function toTimeInputValue(d) {
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+
+  function setPrayerReminderTime(key, value) {
+    setCustomReminderTimes((prev) => ({ ...prev, [key]: value }))
+  }
+
+  function togglePrayerReminder(key) {
+    setEnabledPrayerReminders((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
@@ -144,11 +279,28 @@ export default function NamazTracker() {
     return () => clearTimeout(t)
   }, [citySearch])
 
+  useEffect(() => { localStorage.setItem('meeee_namaz_method', calcMethod) }, [calcMethod])
+  useEffect(() => { localStorage.setItem('meeee_namaz_madhab', asrMadhab) }, [asrMadhab])
+  useEffect(() => { localStorage.setItem('meeee_namaz_reminders', remindersEnabled ? '1' : '0') }, [remindersEnabled])
+  useEffect(() => { localStorage.setItem('meeee_namaz_reminder_times', JSON.stringify(customReminderTimes)) }, [customReminderTimes])
+  useEffect(() => { localStorage.setItem('meeee_namaz_reminder_prayers', JSON.stringify(enabledPrayerReminders)) }, [enabledPrayerReminders])
+
+  const prayerOptions = useMemo(() => {
+    const method = CALC_METHODS.find((m) => m.key === calcMethod) || CALC_METHODS[0]
+    const madhab = ASR_MADHABS.find((m) => m.key === asrMadhab) || ASR_MADHABS[0]
+    return {
+      fajrAngle: method.fajrAngle,
+      ishaAngle: method.ishaAngle,
+      ishaIntervalMinutes: method.ishaIntervalMinutes,
+      asrShadowFactor: madhab.shadowFactor,
+    }
+  }, [calcMethod, asrMadhab])
+
   const times = useMemo(() => {
     if (!location) return null
     const tzOffsetHours = location.tz ? tzOffsetHoursFromZone(location.tz) : (location.tzOffsetHours ?? 0)
-    return getPrayerTimes(new Date(), location.lat, location.lng, tzOffsetHours)
-  }, [location])
+    return getPrayerTimes(new Date(), location.lat, location.lng, tzOffsetHours, prayerOptions)
+  }, [location, prayerOptions])
 
   const nextPrayer = useMemo(() => {
     if (!times || !location) return null
@@ -158,9 +310,102 @@ export default function NamazTracker() {
     const tomorrow = new Date(now)
     tomorrow.setDate(tomorrow.getDate() + 1)
     const tzOffsetHours = location.tz ? tzOffsetHoursFromZone(location.tz) : (location.tzOffsetHours ?? 0)
-    const tomorrowTimes = getPrayerTimes(tomorrow, location.lat, location.lng, tzOffsetHours)
+    const tomorrowTimes = getPrayerTimes(tomorrow, location.lat, location.lng, tzOffsetHours, prayerOptions)
     return { key: 'fajr', en: 'Fajr', time: tomorrowTimes.fajr }
-  }, [times, location, now])
+  }, [times, location, now, prayerOptions])
+
+  const prevPrayerTime = useMemo(() => {
+    if (!times || !location) return null
+    let prev = null
+    for (const p of PRAYERS) {
+      if (times[p.key] <= now) prev = times[p.key]
+    }
+    if (prev) return prev
+    const yesterday = new Date(now)
+    yesterday.setDate(yesterday.getDate() - 1)
+    const tzOffsetHours = location.tz ? tzOffsetHoursFromZone(location.tz) : (location.tzOffsetHours ?? 0)
+    const yTimes = getPrayerTimes(yesterday, location.lat, location.lng, tzOffsetHours, prayerOptions)
+    return yTimes.isha
+  }, [times, location, now, prayerOptions])
+
+  useEffect(() => {
+    if (!remindersEnabled || !times) return
+    PRAYERS.forEach((p) => {
+      if (!enabledPrayerReminders[p.key]) return
+      const custom = customReminderTimes[p.key]
+      let target = times[p.key]
+      if (custom) {
+        const [h, m] = custom.split(':').map(Number)
+        target = new Date(times[p.key])
+        target.setHours(h, m, 0, 0)
+      }
+      const msUntil = target - now
+      if (msUntil > 1000 || msUntil < -1000) return
+      const fireKey = `${todayKey(target)}-${p.key}`
+      if (remindedRef.current.has(fireKey)) return
+      remindedRef.current.add(fireKey)
+      notify(`${p.en} reminder`, `It's time for ${p.en} prayer.`)
+      playAlarmSound()
+    })
+  }, [now, times, remindersEnabled, customReminderTimes, enabledPrayerReminders])
+
+  function toggleReminders() {
+    setRemindersEnabled((prev) => {
+      const next = !prev
+      if (next) {
+        requestNotificationPermission()
+        ensureAlarmContext()
+      }
+      return next
+    })
+  }
+
+  const qibla = useMemo(() => {
+    if (!location) return null
+    const bearing = getQiblaBearing(location.lat, location.lng)
+    const tip = compassPoint(bearing, 52)
+    return { bearing, label: compassLabel(bearing), tip }
+  }, [location])
+
+  const hijriLabel = useMemo(() => getHijriDate(new Date()), [])
+
+  const qadaTotals = useMemo(() => {
+    let owed = 0
+    let completed = 0
+    PRAYERS.forEach((p) => {
+      const entry = qada[p.key]
+      if (!entry) return
+      owed += entry.owed
+      completed += entry.completed
+    })
+    return { owed, completed }
+  }, [qada])
+
+  const qadaCalcPreview = useMemo(() => {
+    if (!qadaCalcFrom || !qadaCalcTo) return null
+    const from = new Date(`${qadaCalcFrom}T00:00:00`)
+    const to = new Date(`${qadaCalcTo}T00:00:00`)
+    if (isNaN(from) || isNaN(to) || to < from) return null
+    const days = Math.round((to - from) / 86400000) + 1
+    const prayerCount = PRAYERS.filter((p) => qadaCalcPrayers[p.key]).length
+    if (!prayerCount) return null
+    return { days, prayerCount, total: days * prayerCount }
+  }, [qadaCalcFrom, qadaCalcTo, qadaCalcPrayers])
+
+  const heroRingFraction = useMemo(() => {
+    if (!nextPrayer || !prevPrayerTime) return 0
+    const total = nextPrayer.time - prevPrayerTime
+    if (total <= 0) return 0
+    return Math.min(1, Math.max(0, (now - prevPrayerTime) / total))
+  }, [nextPrayer, prevPrayerTime, now])
+
+  const heroRingTip = useMemo(() => {
+    const angle = heroRingFraction * 2 * Math.PI
+    return {
+      x: 60 + HERO_RING_R * Math.cos(angle),
+      y: 60 + HERO_RING_R * Math.sin(angle),
+    }
+  }, [heroRingFraction])
 
   const todayData = namazData[todayKey()] || {}
 
@@ -188,6 +433,44 @@ export default function NamazTracker() {
       localStorage.setItem('meeee_namaz', JSON.stringify(next))
       return next
     })
+  }
+
+  function addQadaOwed(prayerKey) {
+    setQada((prev) => {
+      const entry = prev[prayerKey] || { owed: 0, completed: 0 }
+      const next = { ...prev, [prayerKey]: { ...entry, owed: entry.owed + 1 } }
+      localStorage.setItem('meeee_namaz_qada', JSON.stringify(next))
+      return next
+    })
+  }
+
+  function completeQada(prayerKey) {
+    setQada((prev) => {
+      const entry = prev[prayerKey] || { owed: 0, completed: 0 }
+      if (entry.owed <= 0) return prev
+      const next = { ...prev, [prayerKey]: { owed: entry.owed - 1, completed: entry.completed + 1 } }
+      localStorage.setItem('meeee_namaz_qada', JSON.stringify(next))
+      return next
+    })
+  }
+
+  function toggleQadaCalcPrayer(key) {
+    setQadaCalcPrayers((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  function applyQadaCalc() {
+    if (!qadaCalcPreview) return
+    const selected = PRAYERS.filter((p) => qadaCalcPrayers[p.key])
+    setQada((prev) => {
+      const next = { ...prev }
+      selected.forEach((p) => {
+        const entry = next[p.key] || { owed: 0, completed: 0 }
+        next[p.key] = { ...entry, owed: entry.owed + qadaCalcPreview.days }
+      })
+      localStorage.setItem('meeee_namaz_qada', JSON.stringify(next))
+      return next
+    })
+    setShowQadaCalc(false)
   }
 
   function pickCity(preset) {
@@ -296,114 +579,165 @@ export default function NamazTracker() {
     }
   }, [namazData, calendarMonth])
 
-  const last14Days = useMemo(() => {
+  const rangeBounds = useMemo(() => {
+    const end = new Date(); end.setHours(0, 0, 0, 0)
+    const opt = ANALYTICS_RANGES.find((o) => o.key === analyticsRange)
+    if (opt.days) {
+      const start = new Date(end)
+      start.setDate(start.getDate() - (opt.days - 1))
+      return { start, end }
+    }
+    const keys = Object.keys(namazData).sort()
+    const start = keys.length ? new Date(`${keys[0]}T00:00:00`) : new Date(end)
+    return { start, end }
+  }, [analyticsRange, namazData])
+
+  const rangeDays = useMemo(() => {
     const days = []
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i)
-      const dayData = namazData[todayKey(d)] || {}
-      const { ontime, kaza } = summarize(dayData)
-      days.push({ key: todayKey(d), label: String(d.getDate()), ontime, kaza })
+    const cursor = new Date(rangeBounds.start)
+    while (cursor <= rangeBounds.end) {
+      const key = todayKey(cursor)
+      const { ontime, kaza, total } = summarize(namazData[key] || {})
+      days.push({ key, date: new Date(cursor), ontime, kaza, total })
+      cursor.setDate(cursor.getDate() + 1)
     }
     return days
-  }, [namazData])
+  }, [rangeBounds, namazData])
+
+  const rangeStats = useMemo(() => {
+    let ontime = 0
+    let kaza = 0
+    rangeDays.forEach((d) => { ontime += d.ontime; kaza += d.kaza })
+    const total = rangeDays.length * PRAYERS.length
+    const missed = Math.max(0, total - ontime - kaza)
+    return { ontime, kaza, missed, percent: total ? Math.round((ontime / total) * 100) : 0 }
+  }, [rangeDays])
+
+  const heatmapCells = useMemo(() => {
+    const cells = Array.from({ length: rangeBounds.start.getDay() }, () => null)
+    rangeDays.forEach((d) => cells.push(d))
+    while (cells.length % 7 !== 0) cells.push(null)
+    return cells
+  }, [rangeDays, rangeBounds])
 
   const prayerBreakdown = useMemo(() => {
     return PRAYERS.map((p) => {
       let ontime = 0
       let kaza = 0
-      Object.values(namazData).forEach((dayData) => {
-        const s = getStatus(dayData, p.key)
+      rangeDays.forEach((d) => {
+        const s = getStatus(namazData[d.key] || {}, p.key)
         if (s === 'ontime') ontime++
         else if (s === 'kaza') kaza++
       })
       const total = ontime + kaza
       return { key: p.key, en: p.en, percent: total ? Math.round((ontime / total) * 100) : 0, total }
     })
-  }, [namazData])
+  }, [rangeDays, namazData])
 
-  const topReasons = useMemo(() => {
-    const counts = {}
-    Object.values(namazData).forEach((dayData) => {
-      PRAYERS.forEach((p) => {
-        const entry = getEntry(dayData, p.key)
-        if (entry.status === 'kaza' && entry.reason.trim()) {
-          const norm = entry.reason.trim()
-          const lower = norm.toLowerCase()
-          if (!counts[lower]) counts[lower] = { text: norm, count: 0 }
-          counts[lower].count++
-        }
-      })
+  const weekdayStats = useMemo(() => {
+    const buckets = Array.from({ length: 7 }, () => ({ ontime: 0, total: 0 }))
+    rangeDays.forEach((d) => {
+      const wd = d.date.getDay()
+      buckets[wd].ontime += d.ontime
+      buckets[wd].total += d.ontime + d.kaza
     })
-    return Object.values(counts).sort((a, b) => b.count - a.count).slice(0, 5)
-  }, [namazData])
-
-  const last6Months = useMemo(() => {
-    const months = []
-    const now = new Date()
-    for (let i = 5; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate()
-      const isCurrent = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
-      const daysToCount = isCurrent ? now.getDate() : daysInMonth
-      let ontime = 0
-      for (let day = 1; day <= daysToCount; day++) {
-        const dayData = namazData[todayKey(new Date(d.getFullYear(), d.getMonth(), day))] || {}
-        ontime += summarize(dayData).ontime
+    return WEEKDAY_ORDER.map((wd, i) => {
+      const b = buckets[wd]
+      return {
+        label: WEEKDAY_SHORT[i],
+        fullLabel: WEEKDAY_LABELS[wd],
+        percent: b.total ? Math.round((b.ontime / b.total) * 100) : 0,
+        total: b.total,
       }
-      const total = daysToCount * 5
-      months.push({
-        key: `${d.getFullYear()}-${d.getMonth()}`,
-        label: d.toLocaleDateString('en-IN', { month: 'short' }),
-        percent: total ? Math.round((ontime / total) * 100) : 0,
-      })
-    }
-    return months
-  }, [namazData])
+    })
+  }, [rangeDays])
 
   const bestWeekday = useMemo(() => {
-    const buckets = Array.from({ length: 7 }, () => ({ ontime: 0, total: 0 }))
-    Object.entries(namazData).forEach(([key, dayData]) => {
-      const wd = new Date(`${key}T00:00:00`).getDay()
-      const s = summarize(dayData)
-      buckets[wd].ontime += s.ontime
-      buckets[wd].total += s.total
-    })
-    const labels = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
     let best = null
-    buckets.forEach((b, i) => {
-      if (b.total === 0) return
-      const percent = Math.round((b.ontime / b.total) * 100)
-      if (!best || percent > best.percent) best = { label: labels[i], percent }
+    weekdayStats.forEach((w) => {
+      if (w.total === 0) return
+      if (!best || w.percent > best.percent) best = { label: w.fullLabel, percent: w.percent }
     })
     return best
-  }, [namazData])
+  }, [weekdayStats])
 
-  const allTimeStats = useMemo(() => {
-    const keys = Object.keys(namazData)
-    if (keys.length === 0) return null
-    const sorted = keys.slice().sort()
-    const start = new Date(`${sorted[0]}T00:00:00`)
-    const today = new Date()
-    today.setHours(0, 0, 0, 0)
-    const daysTracked = Math.round((today - start) / 86400000) + 1
+  const trendBuckets = useMemo(() => {
+    if (rangeDays.length === 0) return []
+    const bucketSize = Math.max(1, Math.ceil(rangeDays.length / 30))
+    const buckets = []
+    for (let i = 0; i < rangeDays.length; i += bucketSize) {
+      const slice = rangeDays.slice(i, i + bucketSize)
+      const ontime = slice.reduce((s, d) => s + d.ontime, 0)
+      const kaza = slice.reduce((s, d) => s + d.kaza, 0)
+      const total = slice.length * PRAYERS.length
+      const last = slice[slice.length - 1]
+      buckets.push({
+        key: last.key,
+        label: bucketSize === 1 ? String(last.date.getDate()) : `${slice[0].date.getDate()}–${last.date.getDate()}`,
+        ontimePct: total ? ontime / total : 0,
+        kazaPct: total ? kaza / total : 0,
+        ontime,
+        kaza,
+      })
+    }
+    return buckets
+  }, [rangeDays])
+
+  const comparisonStats = useMemo(() => {
+    if (analyticsRange === 'all' || rangeDays.length === 0) return null
+    const lengthDays = rangeDays.length
+    const prevEnd = new Date(rangeBounds.start)
+    prevEnd.setDate(prevEnd.getDate() - 1)
+    const prevStart = new Date(prevEnd)
+    prevStart.setDate(prevStart.getDate() - (lengthDays - 1))
     let ontime = 0
-    let kaza = 0
-    Object.values(namazData).forEach((dayData) => {
-      const s = summarize(dayData)
-      ontime += s.ontime
-      kaza += s.kaza
+    let total = 0
+    const cursor = new Date(prevStart)
+    while (cursor <= prevEnd) {
+      ontime += summarize(namazData[todayKey(cursor)] || {}).ontime
+      total += PRAYERS.length
+      cursor.setDate(cursor.getDate() + 1)
+    }
+    return {
+      currentPercent: rangeStats.percent,
+      previousPercent: total ? Math.round((ontime / total) * 100) : 0,
+    }
+  }, [analyticsRange, rangeBounds, rangeDays.length, namazData, rangeStats.percent])
+
+  const reasonBreakdown = useMemo(() => {
+    const counts = {}
+    let namedCount = 0
+    let blankCount = 0
+    rangeDays.forEach((d) => {
+      const dayData = namazData[d.key] || {}
+      PRAYERS.forEach((p) => {
+        const entry = getEntry(dayData, p.key)
+        if (entry.status !== 'kaza') return
+        const norm = entry.reason.trim()
+        if (!norm) { blankCount++; return }
+        const lower = norm.toLowerCase()
+        if (!counts[lower]) counts[lower] = { text: norm, count: 0 }
+        counts[lower].count++
+        namedCount++
+      })
     })
-    const total = Math.max(daysTracked, 1) * 5
-    const missed = Math.max(0, total - ontime - kaza)
-    return { ontime, kaza, missed, total }
-  }, [namazData])
+    const sorted = Object.values(counts).sort((a, b) => b.count - a.count)
+    const top = sorted.slice(0, 2)
+    const topCount = top.reduce((s, r) => s + r.count, 0)
+    const otherCount = namedCount - topCount + blankCount
+    const total = namedCount + blankCount
+    if (total === 0) return null
+    const items = top.map((r) => ({ label: r.text, count: r.count, percent: Math.round((r.count / total) * 100) }))
+    if (otherCount > 0) items.push({ label: 'Other', count: otherCount, percent: Math.round((otherCount / total) * 100) })
+    return { items, total }
+  }, [rangeDays, namazData])
 
   const todayQuote = QUOTES[dayOfYear(new Date()) % QUOTES.length]
-  const circumference = 2 * Math.PI * 42
-  const ringOffset = circumference * (1 - Math.min(streak / 30, 1))
   const dateLabel = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })
   const expandedEntry = expandedPrayer ? getEntry(todayData, expandedPrayer) : null
   const expandedMeta = expandedPrayer ? PRAYERS.find((p) => p.key === expandedPrayer) : null
+
+  if (showDuas) return <DuasPage onBack={() => setShowDuas(false)} />
 
   return (
     <div className="namaz-screen">
@@ -427,6 +761,7 @@ export default function NamazTracker() {
       {!nextPrayer && (
         <div className="namaz-header">
           <h1 className="namaz-title">{dateLabel}</h1>
+          {hijriLabel && <p className="namaz-hijri">{hijriLabel} AH</p>}
           {locStatus === 'loading' && <p className="namaz-loc-status">Finding your location…</p>}
         </div>
       )}
@@ -467,31 +802,191 @@ export default function NamazTracker() {
       )}
 
       {nextPrayer && (
-        <div className="namaz-hero">
-          <svg className="namaz-hero-skyline" viewBox="0 0 300 80" preserveAspectRatio="none" aria-hidden="true">
-            <rect x="10" y="50" width="14" height="30" />
-            <polygon points="17,30 24,50 10,50" />
-            <rect x="60" y="35" width="30" height="45" />
-            <circle cx="75" cy="30" r="18" />
-            <rect x="130" y="20" width="40" height="60" />
-            <circle cx="150" cy="18" r="24" />
-            <polygon points="150,-4 156,18 144,18" />
-            <rect x="210" y="35" width="30" height="45" />
-            <circle cx="225" cy="30" r="18" />
-            <rect x="276" y="50" width="14" height="30" />
-            <polygon points="283,30 290,50 276,50" />
-          </svg>
-          <div className="namaz-hero-top">
-            <span className="namaz-hero-date">{dateLabel}</span>
-            <button className="namaz-hero-loc" onClick={() => setShowPicker((v) => !v)}>
-              📍 {location?.city || 'Current location'}
+        <>
+          <div className="namaz-hero-carousel" ref={heroCarouselRef} onScroll={handleHeroScroll}>
+            <div className="namaz-hero-page">
+              <div className="namaz-hero">
+                <div className="namaz-hero-aura" aria-hidden="true" />
+                <div className="namaz-hero-top">
+                  <span className="namaz-hero-date-group">
+                    <span className="namaz-hero-date">{dateLabel}</span>
+                    {hijriLabel && <span className="namaz-hero-hijri">{hijriLabel} AH</span>}
+                  </span>
+                  <span className="namaz-hero-top-actions">
+                    <button className="namaz-hero-loc" onClick={() => setShowPicker((v) => !v)}>
+                      <span className="material-symbols-outlined namaz-hero-loc-icon">location_on</span>
+                      {location?.city || 'Current location'}
+                    </button>
+                    <button className="namaz-hero-gear" onClick={() => setShowDuas(true)} aria-label="Duas">
+                      <span className="material-symbols-outlined">menu_book</span>
+                    </button>
+                    <button className="namaz-hero-gear" onClick={() => setShowSettings((v) => !v)} aria-label="Prayer settings">
+                      <span className="material-symbols-outlined">settings</span>
+                    </button>
+                  </span>
+                </div>
+                <h2 className="namaz-hero-heading">Next Prayer: {nextPrayer.en}</h2>
+                <p className="namaz-hero-sub">Time remaining</p>
+                <div className="namaz-ring-wrap">
+                  <svg className="namaz-ring" viewBox="0 0 120 120">
+                    <circle className="namaz-ring-bg" cx="60" cy="60" r={HERO_RING_R} />
+                    <circle
+                      className="namaz-ring-fill"
+                      cx="60" cy="60" r={HERO_RING_R}
+                      strokeDasharray={HERO_RING_CIRC}
+                      strokeDashoffset={HERO_RING_CIRC * (1 - heroRingFraction)}
+                    />
+                    <circle className="namaz-ring-tip-ping" cx={heroRingTip.x} cy={heroRingTip.y} r="5" />
+                    <circle className="namaz-ring-tip-dot" cx={heroRingTip.x} cy={heroRingTip.y} r="4.5" />
+                  </svg>
+                  <div className="namaz-ring-center">
+                    <span className="namaz-ring-time">{formatTime(nextPrayer.time)}</span>
+                    <span className="namaz-ring-countdown">{formatCountdown(nextPrayer.time - now)}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {qibla && (
+              <div className="namaz-hero-page">
+                <div className="namaz-hero namaz-hero--qibla">
+                  <div className="namaz-hero-aura" aria-hidden="true" />
+                  <div className="namaz-hero-top">
+                    <span className="namaz-hero-date-group">
+                      <span className="namaz-hero-date">Qibla Direction</span>
+                      <span className="namaz-hero-hijri">Face the Kaaba</span>
+                    </span>
+                    <span className="namaz-hero-top-actions">
+                      <button className="namaz-hero-loc" onClick={() => setShowPicker((v) => !v)}>
+                        <span className="material-symbols-outlined namaz-hero-loc-icon">location_on</span>
+                        {location?.city || 'Current location'}
+                      </button>
+                    </span>
+                  </div>
+                  <h2 className="namaz-hero-heading">{Math.round(qibla.bearing)}° {qibla.label}</h2>
+                  <p className="namaz-hero-sub">Direction from true North</p>
+                  <div className="namaz-ring-wrap">
+                    <svg className="namaz-compass" viewBox="0 0 120 120">
+                      <circle className="namaz-ring-bg" cx="60" cy="60" r={HERO_RING_R} />
+                      {COMPASS_TICKS.map((angle) => {
+                        const major = angle % 90 === 0
+                        const p1 = compassPoint(angle, major ? 40 : 44)
+                        const p2 = compassPoint(angle, 48)
+                        return (
+                          <line
+                            key={angle}
+                            x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y}
+                            className={`namaz-compass-tick${major ? ' namaz-compass-tick--major' : ''}`}
+                          />
+                        )
+                      })}
+                      {COMPASS_CARDINALS.map((c) => {
+                        const p = compassPoint(c.angle, 30)
+                        return (
+                          <text key={c.label} x={p.x} y={p.y + 4} textAnchor="middle" className="namaz-compass-label">
+                            {c.label}
+                          </text>
+                        )
+                      })}
+                      <g style={{ transform: `rotate(${qibla.bearing}deg)`, transformOrigin: '60px 60px' }}>
+                        <line x1="60" y1="60" x2="60" y2="16" className="namaz-compass-needle-shadow" />
+                        <line x1="60" y1="60" x2="60" y2="16" className="namaz-compass-needle" />
+                      </g>
+                      <circle cx="60" cy="60" r="5" className="namaz-compass-hub" />
+                    </svg>
+                    <div
+                      className="namaz-compass-kaaba"
+                      style={{ left: `${(qibla.tip.x / 120) * 100}%`, top: `${(qibla.tip.y / 120) * 100}%` }}
+                    >
+                      <span className="material-symbols-outlined">mosque</span>
+                    </div>
+                  </div>
+                  <p className="namaz-compass-caption">🕋 The gold arrow points toward the Kaaba</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {qibla && (
+            <div className="namaz-hero-dots">
+              <span className={`namaz-hero-dot${heroPage === 0 ? ' active' : ''}`} />
+              <span className={`namaz-hero-dot${heroPage === 1 ? ' active' : ''}`} />
+            </div>
+          )}
+        </>
+      )}
+
+      {showSettings && (
+        <div className="namaz-settings-panel">
+          <div className="namaz-settings-row">
+            <label className="namaz-settings-label">Calculation method</label>
+            <select value={calcMethod} onChange={(e) => setCalcMethod(e.target.value)}>
+              {CALC_METHODS.map((m) => (
+                <option key={m.key} value={m.key}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="namaz-settings-row">
+            <label className="namaz-settings-label">Asr calculation</label>
+            <select value={asrMadhab} onChange={(e) => setAsrMadhab(e.target.value)}>
+              {ASR_MADHABS.map((m) => (
+                <option key={m.key} value={m.key}>{m.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="namaz-settings-row namaz-settings-row--toggle">
+            <label className="namaz-settings-label">Prayer time reminders</label>
+            <button
+              className={`namaz-toggle-switch${remindersEnabled ? ' on' : ''}`}
+              onClick={toggleReminders}
+              role="switch"
+              aria-checked={remindersEnabled}
+            >
+              <span className="namaz-toggle-knob" />
             </button>
           </div>
-          <div className="namaz-hero-content">
-            <span className="namaz-hero-label">{nextPrayer.en}</span>
-            <span className="namaz-hero-time">{formatTime(nextPrayer.time)}</span>
-            <span className="namaz-hero-sub">Time remaining</span>
-            <span className="namaz-hero-countdown">{formatCountdown(nextPrayer.time - now)}</span>
+          {remindersEnabled && times && (
+            <div className="namaz-reminder-times">
+              <p className="namaz-settings-hint">Choose which prayers to be reminded for, and when.</p>
+              {PRAYERS.map((p) => {
+                const isOn = !!enabledPrayerReminders[p.key]
+                return (
+                  <div key={p.key} className={`namaz-settings-row namaz-reminder-row${isOn ? ' active' : ''}`}>
+                    <label className="namaz-reminder-check">
+                      <input
+                        type="checkbox"
+                        checked={isOn}
+                        onChange={() => togglePrayerReminder(p.key)}
+                      />
+                      <span className="namaz-settings-label">{p.en}</span>
+                    </label>
+                    <input
+                      type="time"
+                      className="namaz-time-input"
+                      disabled={!isOn}
+                      value={customReminderTimes[p.key] || toTimeInputValue(times[p.key])}
+                      onChange={(e) => setPrayerReminderTime(p.key, e.target.value)}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {nextPrayer && (
+        <div className="namaz-streak-card">
+          <div className="namaz-streak-card-icon">
+            <span className="material-symbols-outlined">local_fire_department</span>
+          </div>
+          <div className="namaz-streak-card-info">
+            <h3 className="namaz-streak-card-title">Current Streak</h3>
+            <p className="namaz-streak-card-sub">Keep it up!</p>
+          </div>
+          <div className="namaz-streak-card-value">
+            <span className="namaz-streak-card-num">{streak}</span>
+            <span className="namaz-streak-card-unit">Days</span>
           </div>
         </div>
       )}
@@ -526,13 +1021,13 @@ export default function NamazTracker() {
                   className={`namaz-status-btn namaz-status-btn--ontime${expandedEntry.status === 'ontime' ? ' active' : ''}`}
                   onClick={() => setStatus(expandedPrayer, 'ontime')}
                 >
-                  ✓ On time
+                  <span className="material-symbols-outlined">check_circle</span> On time
                 </button>
                 <button
                   className={`namaz-status-btn namaz-status-btn--kaza${expandedEntry.status === 'kaza' ? ' active' : ''}`}
                   onClick={() => setStatus(expandedPrayer, 'kaza')}
                 >
-                  ⏰ Kaza
+                  <span className="material-symbols-outlined">schedule</span> Kaza
                 </button>
               </div>
               {expandedEntry.status === 'kaza' && (
@@ -548,6 +1043,7 @@ export default function NamazTracker() {
           )}
         </>
       )}
+
 
       <div className="namaz-section">
         <div className="namaz-cal-header">
@@ -628,120 +1124,188 @@ export default function NamazTracker() {
       </div>
 
       <div className="namaz-section">
+        <button className="namaz-analytics-toggle" onClick={() => setShowQada((v) => !v)}>
+          <span className="namaz-analytics-toggle-label">
+            <span className="namaz-analytics-toggle-icon"><span className="material-symbols-outlined">event_repeat</span></span>
+            Qada Tracker
+            {qadaTotals.owed > 0 && <span className="namaz-qada-badge">{qadaTotals.owed}</span>}
+          </span>
+          <span className={`namaz-analytics-chevron${showQada ? ' open' : ''}`}>
+            <span className="material-symbols-outlined">expand_more</span>
+          </span>
+        </button>
+
+        {showQada && (
+          <div className="namaz-analytics">
+            <p className="namaz-settings-hint">Track prayers you owe as makeup, and log them off as you complete them.</p>
+            <div className="namaz-stat-grid">
+              <div className="namaz-stat-card namaz-stat-card--missed">
+                <span className="namaz-stat-icon"><span className="material-symbols-outlined">event_busy</span></span>
+                <span className="namaz-stat-val">{qadaTotals.owed}</span>
+                <span className="namaz-stat-label">Total owed</span>
+              </div>
+              <div className="namaz-stat-card namaz-stat-card--ontime">
+                <span className="namaz-stat-icon"><span className="material-symbols-outlined">task_alt</span></span>
+                <span className="namaz-stat-val">{qadaTotals.completed}</span>
+                <span className="namaz-stat-label">Made up</span>
+              </div>
+            </div>
+
+            <div className="namaz-analytics-block">
+              <button className="namaz-qada-calc-toggle" onClick={() => setShowQadaCalc((v) => !v)}>
+                <span className="material-symbols-outlined">calculate</span>
+                Calculate missed prayers from a date range
+                <span className={`material-symbols-outlined namaz-analytics-chevron${showQadaCalc ? ' open' : ''}`}>expand_more</span>
+              </button>
+
+              {showQadaCalc && (
+                <div className="namaz-qada-calc">
+                  <div className="namaz-qada-calc-dates">
+                    <label className="namaz-qada-calc-date-field">
+                      <span className="namaz-settings-label">From</span>
+                      <input type="date" value={qadaCalcFrom} onChange={(e) => setQadaCalcFrom(e.target.value)} className="namaz-time-input" />
+                    </label>
+                    <label className="namaz-qada-calc-date-field">
+                      <span className="namaz-settings-label">To</span>
+                      <input type="date" value={qadaCalcTo} onChange={(e) => setQadaCalcTo(e.target.value)} className="namaz-time-input" />
+                    </label>
+                  </div>
+                  <p className="namaz-settings-hint">Which prayers were missed every day in that range?</p>
+                  <div className="namaz-prayer-chips">
+                    {PRAYERS.map((p) => (
+                      <button
+                        key={p.key}
+                        className={`namaz-prayer-chip${qadaCalcPrayers[p.key] ? ' active' : ''}`}
+                        onClick={() => toggleQadaCalcPrayer(p.key)}
+                      >
+                        {p.en}
+                      </button>
+                    ))}
+                  </div>
+                  {qadaCalcPreview ? (
+                    <p className="namaz-qada-calc-preview">
+                      {qadaCalcPreview.days.toLocaleString()} days × {qadaCalcPreview.prayerCount} prayer{qadaCalcPreview.prayerCount > 1 ? 's' : ''}
+                      {' '}= <strong>{qadaCalcPreview.total.toLocaleString()}</strong> qada prayers
+                    </p>
+                  ) : (
+                    <p className="namaz-qada-calc-preview namaz-qada-calc-preview--empty">Pick a valid date range and at least one prayer.</p>
+                  )}
+                  <button className="namaz-qada-calc-apply" onClick={applyQadaCalc} disabled={!qadaCalcPreview}>
+                    Add to Qada
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="namaz-analytics-block">
+              <h3 className="namaz-analytics-title">By prayer</h3>
+              {PRAYERS.map((p) => {
+                const entry = qada[p.key] || { owed: 0, completed: 0 }
+                return (
+                  <div key={p.key} className="namaz-qada-row">
+                    <span className="namaz-qada-name">{p.en}</span>
+                    <span className="namaz-qada-owed">{entry.owed} owed</span>
+                    <button className="namaz-qada-btn namaz-qada-btn--add" onClick={() => addQadaOwed(p.key)} aria-label={`Add missed ${p.en}`}>
+                      <span className="material-symbols-outlined">add</span>
+                    </button>
+                    <button
+                      className="namaz-qada-btn namaz-qada-btn--done"
+                      onClick={() => completeQada(p.key)}
+                      disabled={entry.owed === 0}
+                      aria-label={`Mark one ${p.en} qada as made up`}
+                    >
+                      <span className="material-symbols-outlined">check</span>
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="namaz-section">
         <button className="namaz-analytics-toggle" onClick={() => setShowAnalytics((v) => !v)}>
-          <span>📊 Analytics</span>
-          <span className={`namaz-analytics-chevron${showAnalytics ? ' open' : ''}`}>▾</span>
+          <span className="namaz-analytics-toggle-label">
+            <span className="namaz-analytics-toggle-icon"><span className="material-symbols-outlined">bar_chart</span></span>
+            Detailed Analytics
+          </span>
+          <span className={`namaz-analytics-chevron${showAnalytics ? ' open' : ''}`}>
+            <span className="material-symbols-outlined">expand_more</span>
+          </span>
         </button>
 
         {showAnalytics && (
           <div className="namaz-analytics">
-            <div className="namaz-analytics-block">
-              <h3 className="namaz-analytics-title">Streak</h3>
-              <div className="namaz-streak">
-                <svg viewBox="0 0 100 100" className="namaz-streak-ring">
-                  <circle cx="50" cy="50" r="42" className="namaz-streak-bg" />
-                  <circle
-                    cx="50" cy="50" r="42"
-                    className="namaz-streak-fill"
-                    transform="rotate(-90 50 50)"
-                    strokeDasharray={circumference}
-                    strokeDashoffset={ringOffset}
-                  />
-                </svg>
-                <div className="namaz-streak-center">
-                  <span className="namaz-streak-count">🔥 {streak}</span>
-                  <span className="namaz-streak-label">day streak</span>
-                </div>
-              </div>
-              <div className="namaz-streak-compare">
-                <div className="namaz-streak-compare-item">
-                  <span className="namaz-streak-compare-val">🔥 {streak}</span>
-                  <span className="namaz-streak-compare-label">Current</span>
-                </div>
-                <div className="namaz-streak-compare-item">
-                  <span className="namaz-streak-compare-val">🏆 {longestStreak}</span>
-                  <span className="namaz-streak-compare-label">Best ever</span>
-                </div>
-              </div>
-            </div>
-
-            {allTimeStats && (
-              <div className="namaz-analytics-block">
-                <h3 className="namaz-analytics-title">All-time totals</h3>
-                <div className="namaz-donut-wrap">
-                  <svg viewBox="0 0 100 100" className="namaz-donut">
-                    <g transform="rotate(-90 50 50)">
-                      {(() => {
-                        const r = 40
-                        const circumference = 2 * Math.PI * r
-                        const segments = [
-                          { value: allTimeStats.ontime, className: 'namaz-donut-seg--ontime' },
-                          { value: allTimeStats.kaza, className: 'namaz-donut-seg--kaza' },
-                          { value: allTimeStats.missed, className: 'namaz-donut-seg--missed' },
-                        ]
-                        let cumulative = 0
-                        return segments.map((seg, i) => {
-                          const fraction = allTimeStats.total ? seg.value / allTimeStats.total : 0
-                          const dash = fraction * circumference
-                          const circle = (
-                            <circle
-                              key={i}
-                              cx="50" cy="50" r={r}
-                              className={`namaz-donut-seg ${seg.className}`}
-                              strokeDasharray={`${dash} ${circumference - dash}`}
-                              strokeDashoffset={-cumulative}
-                            />
-                          )
-                          cumulative += dash
-                          return circle
-                        })
-                      })()}
-                    </g>
-                  </svg>
-                  <div className="namaz-donut-center">
-                    <span className="namaz-donut-total">{allTimeStats.ontime + allTimeStats.kaza}</span>
-                    <span className="namaz-donut-total-label">logged</span>
-                  </div>
-                </div>
-                <div className="namaz-cal-legend">
-                  <span className="namaz-cal-legend-item"><span className="namaz-cal-pdot namaz-cal-pdot--ontime" /> On time ({allTimeStats.ontime})</span>
-                  <span className="namaz-cal-legend-item"><span className="namaz-cal-pdot namaz-cal-pdot--kaza" /> Kaza ({allTimeStats.kaza})</span>
-                  <span className="namaz-cal-legend-item"><span className="namaz-cal-pdot" /> Missed ({allTimeStats.missed})</span>
-                </div>
-              </div>
-            )}
-
-            <div className="namaz-analytics-block">
-              <h3 className="namaz-analytics-title">Last 14 days</h3>
-              <div className="namaz-trend-chart">
-                {last14Days.map((d) => (
-                  <div key={d.key} className="namaz-trend-bar-wrap" title={`${d.ontime} on time, ${d.kaza} kaza`}>
-                    <div className="namaz-trend-bar">
-                      <span className="namaz-trend-seg namaz-trend-seg--kaza" style={{ height: `${(d.kaza / 5) * 40}px` }} />
-                      <span className="namaz-trend-seg namaz-trend-seg--ontime" style={{ height: `${(d.ontime / 5) * 40}px` }} />
-                    </div>
-                    <span className="namaz-trend-label">{d.label}</span>
-                  </div>
+            <label className="namaz-analytics-filter">
+              <span className="material-symbols-outlined namaz-analytics-filter-icon">calendar_month</span>
+              <select
+                value={analyticsRange}
+                onChange={(e) => setAnalyticsRange(e.target.value)}
+                aria-label="Analytics time range"
+              >
+                {ANALYTICS_RANGES.map((r) => (
+                  <option key={r.key} value={r.key}>{r.label}</option>
                 ))}
+              </select>
+              <span className="material-symbols-outlined namaz-analytics-filter-chevron">expand_more</span>
+            </label>
+
+            <div className="namaz-stat-grid">
+              <div className="namaz-stat-card namaz-stat-card--ontime">
+                <span className="namaz-stat-icon"><span className="material-symbols-outlined">check_circle</span></span>
+                <span className="namaz-stat-val">{rangeStats.ontime}</span>
+                <span className="namaz-stat-label">On time</span>
+              </div>
+              <div className="namaz-stat-card namaz-stat-card--kaza">
+                <span className="namaz-stat-icon"><span className="material-symbols-outlined">schedule</span></span>
+                <span className="namaz-stat-val">{rangeStats.kaza}</span>
+                <span className="namaz-stat-label">Kaza</span>
+              </div>
+              <div className="namaz-stat-card namaz-stat-card--missed">
+                <span className="namaz-stat-icon"><span className="material-symbols-outlined">cancel</span></span>
+                <span className="namaz-stat-val">{rangeStats.missed}</span>
+                <span className="namaz-stat-label">Missed</span>
+              </div>
+              <div className="namaz-stat-card namaz-stat-card--rate">
+                <span className="namaz-stat-icon"><span className="material-symbols-outlined">trending_up</span></span>
+                <span className="namaz-stat-val">{rangeStats.percent}%</span>
+                <span className="namaz-stat-label">On-time rate</span>
+              </div>
+              <div className="namaz-stat-card namaz-stat-card--streak">
+                <span className="namaz-stat-icon"><span className="material-symbols-outlined">local_fire_department</span></span>
+                <span className="namaz-stat-val">{streak}</span>
+                <span className="namaz-stat-label">Current streak</span>
+              </div>
+              <div className="namaz-stat-card namaz-stat-card--best">
+                <span className="namaz-stat-icon"><span className="material-symbols-outlined">trophy</span></span>
+                <span className="namaz-stat-val">{longestStreak}</span>
+                <span className="namaz-stat-label">Best streak</span>
               </div>
             </div>
 
             <div className="namaz-analytics-block">
-              <h3 className="namaz-analytics-title">Last 6 months</h3>
-              <div className="namaz-trend-chart">
-                {last6Months.map((m) => (
-                  <div key={m.key} className="namaz-trend-bar-wrap" title={`${m.label}: ${m.percent}% on time`}>
-                    <div className="namaz-trend-bar">
-                      <span className="namaz-trend-seg namaz-trend-seg--ontime" style={{ height: `${(m.percent / 100) * 40}px` }} />
-                    </div>
-                    <span className="namaz-trend-label">{m.label}</span>
-                  </div>
-                ))}
+              <h3 className="namaz-analytics-title">Daily heatmap</h3>
+              <div className="namaz-heatmap-wrap">
+                <div className="namaz-heatmap-grid">
+                  {heatmapCells.map((d, i) => (
+                    <span
+                      key={d ? d.key : `pad-${i}`}
+                      className={`namaz-heat-cell${d ? ` namaz-heat-${heatLevel(d)}` : ' namaz-heat-pad'}${d?.kaza ? ' namaz-heat-haskaza' : ''}`}
+                      title={d ? `${d.date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} — ${d.ontime} on time, ${d.kaza} kaza` : undefined}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="namaz-heat-legend">
+                <span>Less</span>
+                {[0, 1, 2, 3, 4, 5].map((l) => <span key={l} className={`namaz-heat-cell namaz-heat-${l}`} />)}
+                <span>More</span>
               </div>
             </div>
 
             <div className="namaz-analytics-block">
-              <h3 className="namaz-analytics-title">By prayer (all time)</h3>
+              <h3 className="namaz-analytics-title">By prayer</h3>
               {prayerBreakdown.map((p) => (
                 <div key={p.key} className="namaz-breakdown-row">
                   <span className="namaz-breakdown-label">{p.en}</span>
@@ -753,26 +1317,103 @@ export default function NamazTracker() {
               ))}
             </div>
 
-            {bestWeekday && (
-              <div className="namaz-analytics-block">
-                <h3 className="namaz-analytics-title">Best day of the week</h3>
-                <p className="namaz-insight-text">
-                  You're most consistent on <strong>{bestWeekday.label}</strong> — {bestWeekday.percent}% on time.
-                </p>
-              </div>
-            )}
+            <div className="namaz-comparative">
+              <h3 className="namaz-analytics-title">Comparative Insights</h3>
 
-            {topReasons.length > 0 && (
-              <div className="namaz-analytics-block">
-                <h3 className="namaz-analytics-title">Common kaza reasons</h3>
-                {topReasons.map((r) => (
-                  <div key={r.text} className="namaz-reasons-row">
-                    <span className="namaz-reasons-text">{r.text}</span>
-                    <span className="namaz-reasons-count">{r.count}×</span>
+              {trendBuckets.length > 0 && (
+                <div className="namaz-analytics-block namaz-analytics-block--boxed">
+                  <p className="namaz-block-caption">On-time vs. Kaza trend</p>
+                  <div className="namaz-trend-chart">
+                    {trendBuckets.map((b) => (
+                      <div key={b.key} className="namaz-trend-bar-wrap" title={`${b.label}: ${b.ontime} on time, ${b.kaza} kaza`}>
+                        <div className="namaz-trend-bar">
+                          <span className="namaz-trend-seg namaz-trend-seg--kaza" style={{ height: `${b.kazaPct * 100}%` }} />
+                          <span className="namaz-trend-seg namaz-trend-seg--ontime" style={{ height: `${b.ontimePct * 100}%` }} />
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                  <div className="namaz-trend-footer">
+                    <span>{trendBuckets[0].label}</span>
+                    <span>Today</span>
+                  </div>
+                </div>
+              )}
+
+              {comparisonStats && (
+                <div className="namaz-analytics-block namaz-analytics-block--boxed">
+                  <p className="namaz-block-caption">This period vs. previous</p>
+                  <div className="namaz-compare-row">
+                    <span className="namaz-compare-label">Current</span>
+                    <div className="namaz-compare-bar"><span className="namaz-compare-fill namaz-compare-fill--current" style={{ width: `${comparisonStats.currentPercent}%` }} /></div>
+                    <span className="namaz-compare-val">{comparisonStats.currentPercent}%</span>
+                  </div>
+                  <div className="namaz-compare-row">
+                    <span className="namaz-compare-label">Previous</span>
+                    <div className="namaz-compare-bar"><span className="namaz-compare-fill namaz-compare-fill--previous" style={{ width: `${comparisonStats.previousPercent}%` }} /></div>
+                    <span className="namaz-compare-val">{comparisonStats.previousPercent}%</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="namaz-analytics-block namaz-analytics-block--boxed">
+                <p className="namaz-block-caption">Weekday performance</p>
+                <div className="namaz-weekday-chart">
+                  {weekdayStats.map((w) => (
+                    <div key={w.fullLabel} className="namaz-weekday-bar-wrap" title={`${w.fullLabel}: ${w.percent}%`}>
+                      <div className="namaz-weekday-bar" style={{ height: `${Math.max(w.percent, w.total ? 4 : 2)}%` }} />
+                    </div>
+                  ))}
+                </div>
+                <div className="namaz-weekday-labels">
+                  {weekdayStats.map((w, i) => <span key={i}>{w.label}</span>)}
+                </div>
+                {bestWeekday && (
+                  <p className="namaz-block-footnote">
+                    Most consistent: <strong>{bestWeekday.label}</strong> ({bestWeekday.percent}%)
+                  </p>
+                )}
               </div>
-            )}
+
+              {reasonBreakdown && (
+                <div className="namaz-analytics-block namaz-analytics-block--boxed namaz-reasons-block">
+                  <svg viewBox="0 0 36 36" className="namaz-reasons-donut">
+                    <circle cx="18" cy="18" r={REASON_DONUT_R} fill="none" stroke="rgba(0,0,0,0.06)" strokeWidth="4" />
+                    {(() => {
+                      let cumulative = 0
+                      return reasonBreakdown.items.map((item, i) => {
+                        const dash = (item.percent / 100) * REASON_DONUT_CIRC
+                        const color = item.label === 'Other' ? 'var(--namaz-muted)' : i === 0 ? 'var(--namaz-missed)' : 'var(--namaz-gold)'
+                        const el = (
+                          <circle
+                            key={i}
+                            cx="18" cy="18" r={REASON_DONUT_R}
+                            fill="none" stroke={color} strokeWidth="4"
+                            strokeDasharray={`${dash} ${REASON_DONUT_CIRC - dash}`}
+                            strokeDashoffset={-cumulative}
+                            transform="rotate(-90 18 18)"
+                          />
+                        )
+                        cumulative += dash
+                        return el
+                      })
+                    })()}
+                  </svg>
+                  <div className="namaz-reasons-legend">
+                    <p className="namaz-block-caption">Missed reasons</p>
+                    {reasonBreakdown.items.map((item, i) => (
+                      <div key={item.label} className="namaz-reasons-legend-item">
+                        <span
+                          className="namaz-reasons-dot"
+                          style={{ background: item.label === 'Other' ? 'var(--namaz-muted)' : i === 0 ? 'var(--namaz-missed)' : 'var(--namaz-gold)' }}
+                        />
+                        <span>{item.label} ({item.percent}%)</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

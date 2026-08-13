@@ -37,16 +37,21 @@
   --kaza:           #fb923c;
   --pastel-kaza:    #fde5cf;
 
-  /* Namaz screen — distinct teal/cream palette, scoped to .namaz-* only */
+  /* Namaz screen — warm cream base + gold/amber accent, scoped to .namaz-* only */
   --namaz-bg-from:     #f8f6ee;
   --namaz-bg-to:       #eef2ea;
   --namaz-card:        #fffdf8;
-  --namaz-teal:        #1f4d43;
-  --namaz-teal-dark:   #163830;
-  --namaz-teal-pastel: #dcece7;
-  --namaz-muted:       #6b7a74;
+  --namaz-teal:        #0f8a58;
+  --namaz-teal-dark:   #2a2410;
+  --namaz-teal-pastel: #d9f2e6;
+  --namaz-muted:       #8a8171;
   --namaz-kaza:        #d97706;
   --namaz-kaza-pastel: #fbe6cf;
+  --namaz-missed:        #ba1a1a;
+  --namaz-missed-pastel: #ffdad6;
+  --namaz-gold:          #c9a227;
+  --namaz-gold-dark:     #8a6d1f;
+  --namaz-gold-pastel:   #f7ecc7;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -447,18 +452,36 @@ button { font-family: inherit; cursor: pointer; }
 .dash-activity-amount--neg { color: #dc2626; }
 .dash-activity-time { font-size: 11px; color: var(--ink-muted); }
 
-/* ── Namaz tracker (teal/cream palette) ─────────── */
+/* ── Namaz tracker (gold/cream palette) ─────────── */
+.namaz-screen .material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+  vertical-align: middle;
+}
 .namaz-screen {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%231f4d43' stroke-opacity='0.07' stroke-width='1'%3E%3Crect x='16' y='16' width='28' height='28'/%3E%3Crect x='16' y='16' width='28' height='28' transform='rotate(45 30 30)'/%3E%3C/g%3E%3C/svg%3E") repeat,
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%23c9a227' stroke-opacity='0.08' stroke-width='1'%3E%3Crect x='16' y='16' width='28' height='28'/%3E%3Crect x='16' y='16' width='28' height='28' transform='rotate(45 30 30)'/%3E%3C/g%3E%3C/svg%3E") repeat,
               linear-gradient(160deg, var(--namaz-bg-from), var(--namaz-bg-to));
   background-size: 60px 60px, cover;
   padding: 24px 20px 32px;
 }
 .namaz-header { margin-bottom: 10px; }
-.namaz-title { font-size: 20px; font-weight: 700; color: var(--namaz-teal); }
+.namaz-title { font-size: 20px; font-weight: 700; color: var(--namaz-gold-dark); }
+.namaz-hijri { font-size: 12px; color: var(--namaz-muted); margin-top: 2px; }
 
 .namaz-loc-status { font-size: 13px; color: var(--namaz-muted); margin-bottom: 12px; }
 .namaz-city-picker {
@@ -469,7 +492,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .namaz-city-btn {
   background: var(--namaz-card);
-  color: var(--namaz-teal);
+  color: var(--namaz-gold-dark);
   border: none;
   border-radius: 999px;
   padding: 8px 16px;
@@ -491,13 +514,13 @@ button { font-family: inherit; cursor: pointer; }
   width: 100%;
   background: transparent;
   border: none;
-  border-bottom: 2px solid var(--namaz-teal-pastel);
+  border-bottom: 2px solid var(--namaz-gold-pastel);
   padding: 8px 4px;
   font-size: 14px;
   color: var(--namaz-teal-dark);
   outline: none;
 }
-.namaz-search-input:focus { border-bottom-color: var(--namaz-teal); }
+.namaz-search-input:focus { border-bottom-color: var(--namaz-gold); }
 .namaz-manual-error { font-size: 12px; color: #b3441c; }
 .namaz-search-results {
   display: flex;
@@ -513,78 +536,307 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 13px;
   color: var(--namaz-teal-dark);
 }
-.namaz-search-result:hover { background: var(--namaz-teal-pastel); }
+.namaz-search-result:hover { background: var(--namaz-gold-pastel); }
 
-/* Next-prayer hero */
+.namaz-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--namaz-card);
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-soft);
+  margin-bottom: 16px;
+}
+.namaz-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.namaz-settings-label { font-size: 13px; font-weight: 600; color: var(--namaz-teal-dark); }
+.namaz-settings-row select {
+  background: var(--namaz-gold-pastel);
+  border: none;
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--namaz-gold-dark);
+  max-width: 55%;
+  text-align: right;
+}
+.namaz-settings-hint { font-size: 11px; color: var(--namaz-muted); margin: -2px 0 2px; }
+.namaz-reminder-times { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; border-top: 1px solid rgba(0,0,0,0.06); }
+.namaz-time-input {
+  background: var(--namaz-gold-pastel);
+  border: none;
+  border-radius: 10px;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--namaz-gold-dark);
+}
+.namaz-time-input:disabled { opacity: 0.4; }
+.namaz-reminder-row { opacity: 0.55; transition: opacity 0.15s; }
+.namaz-reminder-row.active { opacity: 1; }
+.namaz-reminder-check { display: flex; align-items: center; gap: 8px; }
+.namaz-reminder-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--namaz-gold);
+}
+.namaz-toggle-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(0,0,0,0.15);
+  flex-shrink: 0;
+  transition: background 0.2s ease;
+}
+.namaz-toggle-switch.on { background: var(--namaz-gold); }
+.namaz-toggle-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 0.2s ease;
+}
+.namaz-toggle-switch.on .namaz-toggle-knob { transform: translateX(18px); }
+
+.namaz-hero-carousel {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.namaz-hero-carousel::-webkit-scrollbar { display: none; }
+.namaz-hero-page {
+  flex: 0 0 100%;
+  scroll-snap-align: start;
+  min-width: 0;
+}
+.namaz-hero-dots { display: flex; justify-content: center; gap: 6px; margin: 10px 0 16px; }
+.namaz-hero-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(0,0,0,0.15); transition: background 0.2s, transform 0.2s; }
+.namaz-hero-dot.active { background: var(--namaz-gold); transform: scale(1.3); }
+
+.namaz-compass { width: 100%; height: 100%; }
+.namaz-compass-tick { stroke: var(--namaz-gold-pastel); stroke-width: 1.5; }
+.namaz-compass-tick--major { stroke: var(--namaz-gold); stroke-width: 2.5; }
+.namaz-compass-label { font-size: 11px; font-weight: 700; fill: var(--namaz-gold-dark); }
+.namaz-compass-needle-shadow { stroke: rgba(0,0,0,0.18); stroke-width: 6; stroke-linecap: round; }
+.namaz-compass-needle { stroke: var(--namaz-gold); stroke-width: 4; stroke-linecap: round; filter: drop-shadow(0 0 3px rgba(201,162,39,0.6)); }
+.namaz-compass-hub { fill: var(--namaz-teal-dark); }
+.namaz-compass-kaaba {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--namaz-gold);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  transform: translate(-50%, -50%);
+}
+.namaz-compass-kaaba .material-symbols-outlined { font-size: 15px; color: var(--namaz-teal-dark); }
+.namaz-compass-caption { font-size: 11px; color: var(--namaz-muted); text-align: center; margin-top: 10px; }
+
+/* Next-prayer hero — circular countdown ring */
 .namaz-hero {
   position: relative;
   overflow: hidden;
-  background: var(--namaz-card);
-  border-radius: 20px;
-  padding: 24px 16px 56px;
-  margin-bottom: 20px;
-  box-shadow: var(--shadow-soft);
+  background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0.7));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 24px;
+  padding: 20px 16px 26px;
+  margin-bottom: 16px;
+  box-shadow: 0 14px 34px rgba(122,94,20,0.14), inset 0 1px 0 rgba(255,255,255,0.9);
   text-align: center;
 }
 .namaz-hero::before {
   content: '';
   position: absolute;
-  top: -20px;
-  right: -20px;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: var(--namaz-teal);
-  opacity: 0.12;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 0%, var(--namaz-gold-pastel), transparent 65%);
+  opacity: 0.6;
   pointer-events: none;
+  animation: namaz-glow-breathe 6s ease-in-out infinite;
 }
-.namaz-hero-skyline {
+@keyframes namaz-glow-breathe {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.08); }
+}
+.namaz-hero-aura {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  height: 64px;
-  color: var(--namaz-teal);
-  opacity: 0.1;
-  fill: currentColor;
+  inset: -60%;
+  background: conic-gradient(
+    from 0deg,
+    var(--namaz-gold-pastel),
+    var(--namaz-kaza-pastel),
+    #fff8e8,
+    var(--namaz-gold-pastel) 50%,
+    #fff,
+    var(--namaz-kaza-pastel),
+    var(--namaz-gold-pastel)
+  );
+  opacity: 0.4;
+  filter: blur(22px);
   pointer-events: none;
+  animation: namaz-aura-spin 16s linear infinite;
+}
+@keyframes namaz-aura-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .namaz-hero::before, .namaz-hero-aura { animation: none; }
 }
 .namaz-hero-top {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
+.namaz-hero-date-group { display: flex; flex-direction: column; gap: 1px; }
 .namaz-hero-date { font-size: 11px; color: var(--namaz-muted); }
+.namaz-hero-hijri { font-size: 10px; color: var(--namaz-gold-dark); font-weight: 600; }
+.namaz-hero-top-actions { display: flex; align-items: center; gap: 8px; }
 .namaz-hero-loc {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   background: none;
   border: none;
   font-size: 11px;
-  color: var(--namaz-muted);
+  font-weight: 600;
+  color: var(--namaz-gold-dark);
   padding: 0;
 }
-.namaz-hero-content {
+.namaz-hero-loc-icon { font-size: 14px !important; }
+.namaz-hero-gear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.7);
+  color: var(--namaz-gold-dark);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+  flex-shrink: 0;
+}
+.namaz-hero-gear .material-symbols-outlined { font-size: 15px; }
+.namaz-hero-heading {
   position: relative;
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--namaz-teal-dark);
+  margin-bottom: 2px;
+}
+.namaz-hero-sub { position: relative; font-size: 12px; color: var(--namaz-muted); margin-bottom: 14px; }
+
+.namaz-ring-wrap {
+  position: relative;
+  width: 168px;
+  height: 168px;
+  margin: 0 auto;
+}
+.namaz-ring { width: 100%; height: 100%; transform: rotate(-90deg); }
+.namaz-ring-bg { fill: none; stroke: var(--namaz-gold-pastel); stroke-width: 8; }
+.namaz-ring-fill {
+  fill: none;
+  stroke: var(--namaz-gold);
+  stroke-width: 9;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.3s ease;
+  filter: drop-shadow(0 0 5px rgba(201,162,39,0.45));
+}
+.namaz-ring-tip-dot {
+  fill: var(--namaz-gold);
+  filter: drop-shadow(0 0 4px rgba(201,162,39,0.8));
+  animation: namaz-ring-dot-pulse 2.4s ease-in-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+.namaz-ring-tip-ping {
+  fill: none;
+  stroke: var(--namaz-gold);
+  stroke-width: 2;
+  animation: namaz-ring-ping 2.4s ease-out infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+@keyframes namaz-ring-dot-pulse {
+  0%, 100% { r: 4.5; }
+  50% { r: 6; }
+}
+@keyframes namaz-ring-ping {
+  0% { r: 5; opacity: 0.6; }
+  100% { r: 16; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .namaz-ring-tip-dot, .namaz-ring-tip-ping { animation: none; }
+}
+.namaz-ring-center {
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
+  gap: 4px;
 }
-.namaz-hero-label { font-size: 14px; font-weight: 700; color: var(--namaz-teal); text-transform: uppercase; letter-spacing: 1px; }
-.namaz-hero-time { font-size: 40px; font-weight: 800; color: var(--namaz-teal-dark); line-height: 1.1; }
-.namaz-hero-sub { font-size: 12px; color: var(--namaz-muted); margin-top: 6px; }
-.namaz-hero-countdown {
-  font-size: 20px;
+.namaz-ring-time { font-size: 34px; font-weight: 800; color: var(--namaz-teal-dark); line-height: 1; letter-spacing: -0.5px; }
+.namaz-ring-countdown {
+  font-size: 15px;
   font-weight: 700;
-  color: var(--namaz-teal);
-  letter-spacing: 2px;
+  color: var(--namaz-gold-dark);
+  letter-spacing: 1.5px;
   font-variant-numeric: tabular-nums;
-  background: var(--namaz-teal-pastel);
-  border-radius: 10px;
-  padding: 4px 14px;
-  margin-top: 6px;
 }
+
+.namaz-streak-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(255,255,255,0.65));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 18px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 8px 20px rgba(122,94,20,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
+}
+.namaz-streak-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--namaz-gold-pastel), #fff);
+  color: var(--namaz-gold-dark);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.9);
+  flex-shrink: 0;
+}
+.namaz-streak-card-icon .material-symbols-outlined { font-size: 24px; font-variation-settings: 'FILL' 1; }
+.namaz-streak-card-info { flex: 1; min-width: 0; }
+.namaz-streak-card-title { font-size: 14px; font-weight: 700; color: var(--namaz-teal-dark); }
+.namaz-streak-card-sub { font-size: 12px; color: var(--namaz-muted); }
+.namaz-streak-card-value { display: flex; align-items: baseline; gap: 4px; flex-shrink: 0; }
+.namaz-streak-card-num { font-size: 26px; font-weight: 800; color: var(--namaz-gold-dark); }
+.namaz-streak-card-unit { font-size: 11px; color: var(--namaz-muted); font-weight: 600; }
 
 /* Horizontal prayer row */
 .namaz-row {
@@ -617,7 +869,7 @@ button { font-family: inherit; cursor: pointer; }
   opacity: 0.25;
   pointer-events: none;
 }
-.namaz-row-col.active { background: var(--namaz-teal-pastel); }
+.namaz-row-col.active { background: var(--namaz-gold-pastel); }
 .namaz-row-col--ontime::after { background: var(--namaz-teal); }
 .namaz-row-col--kaza::after { background: var(--namaz-kaza); }
 .namaz-row-col--ontime, .namaz-row-col--kaza { animation: namaz-pop 0.35s ease; }
@@ -701,6 +953,10 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-card-actions { display: flex; gap: 8px; }
 .namaz-status-btn {
   flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   border: none;
   border-radius: 10px;
   padding: 8px;
@@ -708,6 +964,7 @@ button { font-family: inherit; cursor: pointer; }
   font-weight: 600;
   transition: background 0.15s, color 0.15s;
 }
+.namaz-status-btn .material-symbols-outlined { font-size: 15px; }
 .namaz-status-btn--ontime { background: var(--namaz-teal-pastel); color: var(--namaz-teal-dark); }
 .namaz-status-btn--kaza { background: var(--namaz-kaza-pastel); color: #9a5c14; }
 .namaz-status-btn--ontime.active { background: var(--namaz-teal); color: #fff; }
@@ -722,36 +979,6 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--namaz-teal-dark);
   outline: none;
 }
-
-.namaz-streak {
-  position: relative;
-  width: 110px;
-  height: 110px;
-  margin: 0 auto 12px;
-}
-.namaz-streak-ring { width: 100%; height: 100%; }
-.namaz-streak-bg {
-  fill: none;
-  stroke: rgba(0,0,0,0.08);
-  stroke-width: 8;
-}
-.namaz-streak-fill {
-  fill: none;
-  stroke: var(--namaz-teal);
-  stroke-width: 8;
-  stroke-linecap: round;
-  transition: stroke-dashoffset 0.3s ease;
-}
-.namaz-streak-center {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-}
-.namaz-streak-count { font-size: 18px; font-weight: 700; color: var(--namaz-teal-dark); }
-.namaz-streak-label { font-size: 11px; color: var(--namaz-muted); }
 
 .namaz-section { margin-bottom: 24px; }
 .namaz-section-title { font-size: 15px; font-weight: 700; color: var(--namaz-teal-dark); margin-bottom: 10px; }
@@ -820,7 +1047,7 @@ button { font-family: inherit; cursor: pointer; }
   transition: background 0.15s;
 }
 .namaz-cal-cell--blank { visibility: hidden; }
-.namaz-cal-cell--today { background: var(--namaz-teal-pastel); }
+.namaz-cal-cell--today { background: var(--namaz-gold-pastel); }
 .namaz-cal-daynum { font-size: 12px; font-weight: 600; color: var(--namaz-teal-dark); }
 .namaz-cal-dots {
   display: flex;
@@ -887,7 +1114,7 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-hadith {
   position: relative;
   overflow: hidden;
-  background: var(--namaz-teal-pastel);
+  background: linear-gradient(135deg, var(--namaz-gold-pastel), #fff);
   border-radius: 16px;
   padding: 16px;
   text-align: center;
@@ -900,7 +1127,7 @@ button { font-family: inherit; cursor: pointer; }
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: var(--namaz-teal);
+  background: var(--namaz-gold);
   opacity: 0.15;
   pointer-events: none;
 }
@@ -908,124 +1135,642 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-hadith-ref { font-size: 12px; color: var(--namaz-muted); font-weight: 600; }
 
 .namaz-analytics-toggle {
+  position: relative;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  background: var(--namaz-card);
-  border: none;
-  border-radius: 14px;
-  padding: 12px 16px;
+  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(255,255,255,0.65));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 16px;
+  padding: 13px 16px;
   font-size: 14px;
   font-weight: 700;
   color: var(--namaz-teal-dark);
-  box-shadow: var(--shadow-soft);
+  box-shadow: 0 8px 20px rgba(31,77,67,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
 }
-.namaz-analytics-chevron { color: var(--namaz-muted); transition: transform 0.2s; }
+.namaz-analytics-toggle-label { display: flex; align-items: center; gap: 9px; }
+.namaz-analytics-toggle-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: var(--namaz-gold-dark);
+  background: linear-gradient(135deg, var(--namaz-gold-pastel), #fff);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.8);
+}
+.namaz-analytics-toggle-icon .material-symbols-outlined { font-size: 16px; }
+.namaz-analytics-chevron { display: flex; color: var(--namaz-muted); transition: transform 0.2s; }
+.namaz-analytics-chevron .material-symbols-outlined { font-size: 20px; }
 .namaz-analytics-chevron.open { transform: rotate(180deg); }
+
 .namaz-analytics {
+  position: relative;
   margin-top: 12px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  background: var(--namaz-card);
-  border-radius: 16px;
-  padding: 16px;
-  box-shadow: var(--shadow-soft);
+  gap: 18px;
+  background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.68));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255,255,255,0.75);
+  border-radius: 22px;
+  padding: 18px;
+  box-shadow: 0 16px 40px rgba(31,77,67,0.14), inset 0 1px 0 rgba(255,255,255,0.9);
 }
 .namaz-analytics-title {
   font-size: 11px;
   font-weight: 700;
   color: var(--namaz-muted);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 10px;
+  letter-spacing: 0.6px;
+  margin-bottom: 12px;
 }
 
-.namaz-streak-compare { display: flex; gap: 12px; }
-.namaz-streak-compare-item {
+.namaz-analytics-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: linear-gradient(135deg, #fff, var(--namaz-gold-pastel));
+  border: 1px solid rgba(255,255,255,0.8);
+  border-radius: 999px;
+  padding: 10px 16px;
+  box-shadow: 0 4px 12px rgba(31,77,67,0.08), inset 0 1px 0 rgba(255,255,255,0.9);
+}
+.namaz-analytics-filter-icon { font-size: 15px !important; color: var(--namaz-gold-dark); }
+.namaz-analytics-filter select {
   flex: 1;
+  background: transparent;
+  border: none;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--namaz-teal-dark);
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.namaz-analytics-filter-chevron { color: var(--namaz-gold-dark); font-size: 16px !important; }
+
+.namaz-stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.namaz-stat-card {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  background: var(--namaz-bg-from);
-  border-radius: 12px;
-  padding: 10px;
+  align-items: flex-start;
+  gap: 4px;
+  border-radius: 18px;
+  padding: 14px 14px 12px;
+  box-shadow: 0 6px 16px rgba(31,77,67,0.08), inset 0 1px 0 rgba(255,255,255,0.7);
 }
-.namaz-streak-compare-val { font-size: 16px; font-weight: 700; color: var(--namaz-teal-dark); }
-.namaz-streak-compare-label { font-size: 11px; color: var(--namaz-muted); }
-
-.namaz-donut-wrap {
-  position: relative;
-  width: 120px;
-  height: 120px;
-  margin: 0 auto 12px;
-}
-.namaz-donut { width: 100%; height: 100%; }
-.namaz-donut-seg { fill: none; stroke-width: 14; }
-.namaz-donut-seg--ontime { stroke: var(--namaz-teal); }
-.namaz-donut-seg--kaza { stroke: var(--namaz-kaza); }
-.namaz-donut-seg--missed { stroke: rgba(0,0,0,0.1); }
-.namaz-donut-center {
+.namaz-stat-card::before {
+  content: '';
   position: absolute;
   inset: 0;
+  background: linear-gradient(160deg, rgba(255,255,255,0.55), rgba(255,255,255,0) 55%);
+  pointer-events: none;
+}
+.namaz-stat-card::after {
+  content: '';
+  position: absolute;
+  top: -20px;
+  right: -20px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  opacity: 0.35;
+  pointer-events: none;
+  filter: blur(1px);
+}
+.namaz-stat-card--ontime { background: linear-gradient(160deg, var(--namaz-teal-pastel), #fdfcf6); }
+.namaz-stat-card--ontime::after { background: var(--namaz-teal); }
+.namaz-stat-card--ontime .namaz-stat-val { color: var(--namaz-teal); }
+.namaz-stat-card--kaza { background: linear-gradient(160deg, var(--namaz-kaza-pastel), #fdfcf6); }
+.namaz-stat-card--kaza::after { background: var(--namaz-kaza); }
+.namaz-stat-card--kaza .namaz-stat-val { color: var(--namaz-kaza); }
+.namaz-stat-card--missed { background: linear-gradient(160deg, var(--namaz-missed-pastel), #fdfcf6); }
+.namaz-stat-card--missed::after { background: var(--namaz-missed); }
+.namaz-stat-card--missed .namaz-stat-val { color: var(--namaz-missed); }
+.namaz-stat-card--rate { background: linear-gradient(160deg, var(--namaz-bg-from), #fdfcf6); }
+.namaz-stat-card--rate::after { background: var(--namaz-muted); }
+.namaz-stat-card--rate .namaz-stat-val { color: var(--namaz-teal-dark); }
+.namaz-stat-card--streak { background: linear-gradient(160deg, var(--namaz-gold-pastel), #fdfcf6); }
+.namaz-stat-card--streak::after { background: var(--namaz-gold); }
+.namaz-stat-card--streak .namaz-stat-val { color: var(--namaz-gold-dark); }
+.namaz-stat-card--best { background: linear-gradient(160deg, var(--namaz-gold-pastel), #fdfcf6); }
+.namaz-stat-card--best::after { background: var(--namaz-gold); }
+.namaz-stat-card--best .namaz-stat-val { color: var(--namaz-gold-dark); }
+
+.namaz-stat-card--ontime .namaz-stat-icon { color: var(--namaz-teal); }
+.namaz-stat-card--kaza .namaz-stat-icon { color: var(--namaz-kaza); }
+.namaz-stat-card--missed .namaz-stat-icon { color: var(--namaz-missed); }
+.namaz-stat-card--rate .namaz-stat-icon { color: var(--namaz-teal-dark); }
+.namaz-stat-card--streak .namaz-stat-icon,
+.namaz-stat-card--best .namaz-stat-icon { color: var(--namaz-gold-dark); }
+.namaz-stat-icon .material-symbols-outlined { font-size: 16px; }
+.namaz-stat-icon {
+  position: relative;
+  z-index: 1;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  font-size: 14px;
+  background: rgba(255,255,255,0.75);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 3px rgba(0,0,0,0.05);
+  margin-bottom: 2px;
 }
-.namaz-donut-total { font-size: 20px; font-weight: 700; color: var(--namaz-teal-dark); }
-.namaz-donut-total-label { font-size: 10px; color: var(--namaz-muted); }
+.namaz-stat-val { position: relative; z-index: 1; font-size: 22px; font-weight: 800; letter-spacing: -0.3px; }
+.namaz-stat-label { position: relative; z-index: 1; font-size: 11px; font-weight: 600; color: var(--namaz-muted); }
+
+.namaz-heatmap-wrap {
+  overflow-x: auto;
+  padding: 12px;
+  background: rgba(255,255,255,0.5);
+  border-radius: 14px;
+  box-shadow: inset 0 1px 4px rgba(31,77,67,0.06);
+}
+.namaz-heatmap-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, 13px);
+  grid-auto-columns: 13px;
+  gap: 3px;
+  width: max-content;
+}
+.namaz-heat-cell {
+  width: 13px;
+  height: 13px;
+  border-radius: 4px;
+  background: rgba(0,0,0,0.06);
+  position: relative;
+  transition: transform 0.15s;
+}
+.namaz-heat-cell.namaz-heat-pad { background: transparent; }
+.namaz-heat-cell.namaz-heat-1 { background: linear-gradient(135deg, var(--namaz-gold-pastel), color-mix(in srgb, var(--namaz-gold) 30%, white)); }
+.namaz-heat-cell.namaz-heat-2 { background: color-mix(in srgb, var(--namaz-gold) 50%, white); }
+.namaz-heat-cell.namaz-heat-3 { background: color-mix(in srgb, var(--namaz-gold) 70%, white); }
+.namaz-heat-cell.namaz-heat-4 { background: linear-gradient(135deg, var(--namaz-gold), color-mix(in srgb, var(--namaz-gold) 85%, white)); }
+.namaz-heat-cell.namaz-heat-5 {
+  background: linear-gradient(135deg, var(--namaz-gold), var(--namaz-gold-dark));
+  box-shadow: 0 0 6px rgba(201,162,39,0.5);
+}
+.namaz-heat-cell.namaz-heat-haskaza::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--namaz-kaza);
+  box-shadow: 0 0 0 1px #fff;
+}
+.namaz-heat-legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--namaz-muted);
+}
+.namaz-heat-legend .namaz-heat-cell { width: 10px; height: 10px; }
+
+.namaz-breakdown-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.namaz-breakdown-row:last-child { margin-bottom: 0; }
+.namaz-breakdown-label { width: 56px; font-size: 12px; font-weight: 700; color: var(--namaz-teal-dark); }
+.namaz-breakdown-bar {
+  flex: 1;
+  height: 9px;
+  background: rgba(0,0,0,0.06);
+  border-radius: 999px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.05);
+}
+.namaz-breakdown-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--namaz-gold), var(--namaz-gold-dark));
+}
+.namaz-breakdown-val { width: 38px; text-align: right; font-size: 12px; font-weight: 700; color: var(--namaz-teal-dark); }
+
+.namaz-qada-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--namaz-missed);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.namaz-qada-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.namaz-qada-row:last-child { margin-bottom: 0; }
+.namaz-qada-name { flex: 1; font-size: 13px; font-weight: 700; color: var(--namaz-teal-dark); }
+.namaz-qada-owed { font-size: 12px; color: var(--namaz-muted); font-weight: 600; }
+.namaz-qada-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  flex-shrink: 0;
+}
+.namaz-qada-btn .material-symbols-outlined { font-size: 16px; }
+.namaz-qada-btn--add { background: var(--namaz-kaza-pastel); color: var(--namaz-kaza); }
+.namaz-qada-btn--done { background: var(--namaz-teal-pastel); color: var(--namaz-teal); }
+.namaz-qada-btn--done:disabled { opacity: 0.35; }
+
+.namaz-qada-calc-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: var(--namaz-gold-pastel);
+  border: none;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--namaz-gold-dark);
+  text-align: left;
+}
+.namaz-qada-calc-toggle .material-symbols-outlined:first-child { font-size: 16px; }
+.namaz-qada-calc-toggle .namaz-analytics-chevron { margin-left: auto; font-size: 16px; transition: transform 0.2s; }
+.namaz-qada-calc-toggle .namaz-analytics-chevron.open { transform: rotate(180deg); }
+
+.namaz-qada-calc { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; }
+.namaz-qada-calc-dates { display: flex; gap: 10px; }
+.namaz-qada-calc-date-field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.namaz-qada-calc-date-field .namaz-time-input { width: 100%; text-align: left; }
+
+.namaz-prayer-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.namaz-prayer-chip {
+  background: rgba(0,0,0,0.05);
+  border: none;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--namaz-muted);
+}
+.namaz-prayer-chip.active { background: var(--namaz-gold); color: #fff; }
+
+.namaz-qada-calc-preview { font-size: 13px; color: var(--namaz-teal-dark); }
+.namaz-qada-calc-preview strong { color: var(--namaz-gold-dark); font-size: 15px; }
+.namaz-qada-calc-preview--empty { color: var(--namaz-muted); font-style: italic; }
+.namaz-qada-calc-apply {
+  background: linear-gradient(90deg, var(--namaz-gold), var(--namaz-gold-dark));
+  border: none;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+}
+.namaz-qada-calc-apply:disabled { opacity: 0.4; }
+
+.namaz-comparative { display: flex; flex-direction: column; gap: 14px; }
+.namaz-analytics-block--boxed {
+  background: linear-gradient(160deg, rgba(255,255,255,0.85), rgba(255,255,255,0.55));
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 4px 14px rgba(122,94,20,0.06);
+}
+.namaz-block-caption { font-size: 12px; font-weight: 700; color: var(--namaz-teal-dark); margin-bottom: 12px; }
+.namaz-block-footnote { font-size: 12px; color: var(--namaz-muted); margin-top: 10px; text-align: center; }
+.namaz-block-footnote strong { color: var(--namaz-gold-dark); }
 
 .namaz-trend-chart {
   display: flex;
   align-items: flex-end;
-  gap: 5px;
+  gap: 3px;
+  height: 72px;
   overflow-x: auto;
   padding-bottom: 2px;
 }
-.namaz-trend-bar-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
+.namaz-trend-bar-wrap { flex: 1; min-width: 4px; height: 100%; display: flex; align-items: flex-end; }
 .namaz-trend-bar {
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column-reverse;
-  width: 12px;
-  height: 40px;
-  background: rgba(0,0,0,0.06);
-  border-radius: 4px;
+  border-radius: 3px 3px 0 0;
   overflow: hidden;
+  background: rgba(0,0,0,0.05);
 }
 .namaz-trend-seg { width: 100%; }
 .namaz-trend-seg--kaza { background: var(--namaz-kaza); }
 .namaz-trend-seg--ontime { background: var(--namaz-teal); }
-.namaz-trend-label { font-size: 9px; color: var(--namaz-muted); }
+.namaz-trend-footer { display: flex; justify-content: space-between; margin-top: 8px; font-size: 10px; color: var(--namaz-muted); }
 
-.namaz-breakdown-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.namaz-breakdown-row:last-child { margin-bottom: 0; }
-.namaz-breakdown-label { width: 56px; font-size: 12px; font-weight: 600; color: var(--namaz-teal-dark); }
-.namaz-breakdown-bar { flex: 1; height: 8px; background: rgba(0,0,0,0.06); border-radius: 4px; overflow: hidden; }
-.namaz-breakdown-fill { display: block; height: 100%; background: var(--namaz-teal); border-radius: 4px; }
-.namaz-breakdown-val { width: 36px; text-align: right; font-size: 11px; color: var(--namaz-muted); }
+.namaz-compare-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.namaz-compare-row:last-child { margin-bottom: 0; }
+.namaz-compare-label { width: 52px; font-size: 12px; color: var(--namaz-muted); font-weight: 600; }
+.namaz-compare-bar { flex: 1; height: 12px; background: rgba(0,0,0,0.06); border-radius: 999px; overflow: hidden; }
+.namaz-compare-fill { display: block; height: 100%; border-radius: 999px; }
+.namaz-compare-fill--current { background: linear-gradient(90deg, var(--namaz-gold), var(--namaz-gold-dark)); }
+.namaz-compare-fill--previous { background: rgba(0,0,0,0.25); }
+.namaz-compare-val { width: 34px; text-align: right; font-size: 12px; font-weight: 700; color: var(--namaz-teal-dark); }
 
-.namaz-reasons-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 6px 0;
-  border-bottom: 1px solid rgba(0,0,0,0.05);
-  font-size: 13px;
-  color: var(--namaz-teal-dark);
+.namaz-weekday-chart {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  align-items: end;
+  gap: 5px;
+  height: 72px;
 }
-.namaz-reasons-row:last-child { border-bottom: none; }
-.namaz-reasons-count { color: var(--namaz-muted); font-weight: 600; }
+.namaz-weekday-bar-wrap { height: 100%; display: flex; align-items: flex-end; }
+.namaz-weekday-bar {
+  width: 100%;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(180deg, var(--namaz-gold), var(--namaz-gold-dark));
+}
+.namaz-weekday-labels {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--namaz-muted);
+  text-align: center;
+}
 
-.namaz-insight-text { font-size: 13px; color: var(--namaz-teal-dark); line-height: 1.5; }
-.namaz-insight-text strong { color: var(--namaz-teal); }
+.namaz-reasons-block { display: flex; align-items: center; gap: 16px; }
+.namaz-reasons-donut { width: 64px; height: 64px; flex-shrink: 0; }
+.namaz-reasons-legend { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.namaz-reasons-legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--namaz-teal-dark); }
+.namaz-reasons-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Duas page (reuses the Namaz gold/cream palette) ──────── */
+.duas-screen {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: linear-gradient(160deg, var(--namaz-bg-from), var(--namaz-bg-to));
+  padding: 24px 20px 32px;
+}
+.duas-screen .material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  line-height: 1;
+  display: inline-block;
+  vertical-align: middle;
+}
+.duas-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.duas-back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: var(--namaz-card);
+  color: var(--namaz-gold-dark);
+  box-shadow: var(--shadow-soft);
+  flex-shrink: 0;
+}
+.duas-title { font-size: 22px; font-weight: 800; color: var(--namaz-teal-dark); }
+.duas-disclaimer {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--namaz-muted);
+  background: var(--namaz-card);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+}
+.duas-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--namaz-card);
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow-soft);
+}
+.duas-search .material-symbols-outlined { font-size: 18px; color: var(--namaz-muted); }
+.duas-search input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  color: var(--namaz-teal-dark);
+  outline: none;
+}
+.duas-categories { display: flex; flex-direction: column; gap: 12px; }
+.duas-category-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(255,255,255,0.65));
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 16px;
+  padding: 13px 16px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--namaz-teal-dark);
+  box-shadow: 0 8px 20px rgba(31,77,67,0.08), inset 0 1px 0 rgba(255,255,255,0.9);
+}
+.duas-category-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  color: var(--namaz-gold-dark);
+  background: linear-gradient(135deg, var(--namaz-gold-pastel), #fff);
+  flex-shrink: 0;
+}
+.duas-category-icon .material-symbols-outlined { font-size: 16px; }
+.duas-category-title { flex: 1; text-align: left; }
+.duas-category-chevron { color: var(--namaz-muted); transition: transform 0.2s; font-size: 20px; }
+.duas-category-chevron.open { transform: rotate(180deg); }
+.duas-list { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.duas-card {
+  position: relative;
+  background: var(--namaz-card);
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-soft);
+  border: 2px solid transparent;
+  transition: border-color 0.2s, background 0.2s;
+}
+.duas-card--playing {
+  border-color: var(--namaz-gold);
+  background: linear-gradient(135deg, var(--namaz-gold-pastel), var(--namaz-card));
+}
+.duas-audio-btn {
+  float: left;
+  display: flex;
+  background: none;
+  border: none;
+  color: var(--namaz-gold);
+  margin: 0 10px 6px 0;
+}
+.duas-audio-btn .material-symbols-outlined { font-size: 30px; }
+.duas-audio-btn:active { color: var(--namaz-gold-dark); }
+.duas-arabic {
+  direction: rtl;
+  text-align: right;
+  font-family: 'Noto Naskh Arabic', 'Traditional Arabic', 'Scheherazade New', serif;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 2.1;
+  color: var(--namaz-teal-dark);
+  margin-bottom: 8px;
+}
+.duas-ayah-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin: 0 6px;
+  border-radius: 50%;
+  border: 1.5px solid var(--namaz-gold);
+  background: var(--namaz-gold-pastel);
+  color: var(--namaz-gold-dark);
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  vertical-align: middle;
+  direction: ltr;
+}
+.duas-translit { font-size: 15px; font-style: italic; color: var(--namaz-gold-dark); margin-bottom: 6px; }
+.duas-translation { font-size: 15px; color: var(--namaz-teal-dark); line-height: 1.5; margin-bottom: 6px; }
+.duas-translation--hindi {
+  font-family: 'Noto Sans Devanagari', 'Nirmala UI', system-ui, sans-serif;
+  color: var(--namaz-teal-dark);
+  font-weight: 700;
+  font-style: italic;
+}
+.duas-source { font-size: 13px; color: var(--namaz-muted); font-weight: 600; }
+
+.duas-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+.duas-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: var(--namaz-card);
+  border: none;
+  border-radius: 14px;
+  padding: 10px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--namaz-muted);
+  box-shadow: var(--shadow-soft);
+}
+.duas-tab .material-symbols-outlined { font-size: 20px; }
+.duas-tab.active { background: linear-gradient(135deg, var(--namaz-gold), var(--namaz-gold-dark)); color: #fff; }
+
+.duas-script-toggle {
+  display: inline-flex;
+  gap: 4px;
+  background: var(--namaz-bg-from);
+  border-radius: 999px;
+  padding: 3px;
+  margin: 10px 0;
+}
+.duas-script-toggle button {
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--namaz-muted);
+}
+.duas-script-toggle button.active { background: var(--namaz-gold); color: #fff; }
+
+.duas-settings-hint { font-size: 13px; color: var(--namaz-muted); margin-bottom: 10px; }
+
+.duas-subheader-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--namaz-gold-dark);
+  padding: 0;
+  margin-bottom: 10px;
+}
+.duas-subheader-back .material-symbols-outlined { font-size: 16px; }
+.duas-subheader-title { font-size: 19px; font-weight: 800; color: var(--namaz-teal-dark); margin-bottom: 4px; }
+.duas-subheader-arabic { font-size: 17px; font-weight: 400; margin-left: 6px; }
+
+.duas-booklist { display: flex; flex-direction: column; gap: 8px; }
+.duas-book-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--namaz-card);
+  border: none;
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: var(--shadow-soft);
+  text-align: left;
+  color: var(--namaz-muted);
+}
+.duas-book-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--namaz-gold-pastel);
+  color: var(--namaz-gold-dark);
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.duas-book-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.duas-book-name { font-size: 15px; font-weight: 700; color: var(--namaz-teal-dark); }
+.duas-book-sub { font-size: 13px; color: var(--namaz-muted); }
+
+.duas-load-more {
+  width: 100%;
+  background: var(--namaz-gold-pastel);
+  border: none;
+  border-radius: 12px;
+  padding: 10px;
+  margin-top: 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--namaz-gold-dark);
+}
 
 /* ── Admin panel ────────────────────────────────── */
 .admin-panel {

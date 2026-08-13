@@ -51,9 +51,10 @@ function sunAngleTime(angle, lat, decl) {
   return darccos(clamp(term, -1, 1)) / 15
 }
 
-// Shafi Asr altitude angle (degrees above horizon).
-function asrAltitude(lat, decl) {
-  return darccot(1 + dtan(Math.abs(lat - decl)))
+// Asr altitude angle (degrees above horizon). shadowFactor is 1 for
+// Shafi/Maliki/Hanbali, 2 for Hanafi.
+function asrAltitude(lat, decl, shadowFactor = 1) {
+  return darccot(shadowFactor + dtan(Math.abs(lat - decl)))
 }
 
 function hourToDate(date, decimalHours) {
@@ -64,24 +65,68 @@ function hourToDate(date, decimalHours) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate() + dayOffset, hours, minutes)
 }
 
-export function getPrayerTimes(date, lat, lng, tzOffsetHours) {
+export function getPrayerTimes(date, lat, lng, tzOffsetHours, options = {}) {
+  const { fajrAngle = 18, ishaAngle = 17, ishaIntervalMinutes, asrShadowFactor = 1 } = options
   const jd = julianDate(date.getFullYear(), date.getMonth() + 1, date.getDate())
   const { declination: decl, equation: eqt } = sunPosition(jd)
 
   const dhuhrHour = 12 + tzOffsetHours - lng / 15 - eqt
-  const fajrT = sunAngleTime(18, lat, decl)
+  const fajrT = sunAngleTime(fajrAngle, lat, decl)
   const sunriseT = sunAngleTime(0.833, lat, decl)
-  const ishaT = sunAngleTime(17, lat, decl)
-  const asrT = sunAngleTime(-asrAltitude(lat, decl), lat, decl)
+  const asrT = sunAngleTime(-asrAltitude(lat, decl, asrShadowFactor), lat, decl)
+  const maghribHour = dhuhrHour + sunriseT
+
+  const ishaHour = ishaIntervalMinutes != null
+    ? maghribHour + ishaIntervalMinutes / 60
+    : dhuhrHour + sunAngleTime(ishaAngle, lat, decl)
 
   return {
     fajr: hourToDate(date, dhuhrHour - fajrT),
     sunrise: hourToDate(date, dhuhrHour - sunriseT),
     dhuhr: hourToDate(date, dhuhrHour),
     asr: hourToDate(date, dhuhrHour + asrT),
-    sunset: hourToDate(date, dhuhrHour + sunriseT),
-    maghrib: hourToDate(date, dhuhrHour + sunriseT),
-    isha: hourToDate(date, dhuhrHour + ishaT),
+    sunset: hourToDate(date, maghribHour),
+    maghrib: hourToDate(date, maghribHour),
+    isha: hourToDate(date, ishaHour),
+  }
+}
+
+export const CALC_METHODS = [
+  { key: 'mwl', label: 'Muslim World League', fajrAngle: 18, ishaAngle: 17 },
+  { key: 'isna', label: 'ISNA (North America)', fajrAngle: 15, ishaAngle: 15 },
+  { key: 'karachi', label: 'Univ. of Islamic Sciences, Karachi', fajrAngle: 18, ishaAngle: 18 },
+  { key: 'egypt', label: 'Egyptian General Authority', fajrAngle: 19.5, ishaAngle: 17.5 },
+  { key: 'makkah', label: 'Umm al-Qura, Makkah', fajrAngle: 18.5, ishaIntervalMinutes: 90 },
+]
+
+export const ASR_MADHABS = [
+  { key: 'shafi', label: 'Standard (Shafi, Maliki, Hanbali)', shadowFactor: 1 },
+  { key: 'hanafi', label: 'Hanafi', shadowFactor: 2 },
+]
+
+const KAABA_LAT = 21.4225
+const KAABA_LNG = 39.8262
+
+// Great-circle initial bearing (degrees from true North, 0-360) toward the Kaaba.
+export function getQiblaBearing(lat, lng) {
+  const toRad = (d) => (d * Math.PI) / 180
+  const phi1 = toRad(lat)
+  const phi2 = toRad(KAABA_LAT)
+  const dLambda = toRad(KAABA_LNG - lng)
+  const y = Math.sin(dLambda) * Math.cos(phi2)
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLambda)
+  return (darctan2(y, x) + 360) % 360
+}
+
+// Hijri (Islamic/Umm al-Qura) calendar date via the browser's built-in Intl
+// support — returns null if the runtime doesn't support the calendar extension.
+export function getHijriDate(date) {
+  try {
+    return new Intl.DateTimeFormat('en-u-ca-islamic-umalqura', {
+      day: 'numeric', month: 'long', year: 'numeric',
+    }).format(date)
+  } catch {
+    return null
   }
 }
 

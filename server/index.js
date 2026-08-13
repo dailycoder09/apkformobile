@@ -3,6 +3,13 @@ const fs   = require('fs')
 const path = require('path')
 const { WebSocketServer, WebSocket } = require('ws')
 const { AccessToken } = require('livekit-server-sdk')
+const { ProxyAgent, setGlobalDispatcher } = require('undici')
+
+// Respect standard HTTP(S)_PROXY env vars for outbound fetch() calls (e.g.
+// to Quran Foundation) — Node's built-in fetch doesn't honor these by
+// default, unlike curl. No-op when no proxy is configured.
+const outboundProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY
+if (outboundProxy) setGlobalDispatcher(new ProxyAgent(outboundProxy))
 
 const ADMIN_PIN   = process.env.ADMIN_PIN || '1234'
 const CLIENT_DIR  = path.join(__dirname, '../client/dist')
@@ -73,6 +80,53 @@ function serveStatic(req, res) {
 }
 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' }
+
+// ── Quran Foundation OAuth2 (client_credentials) — token cached in memory ──
+let qfToken = null
+let qfTokenExpiresAt = 0
+
+function qfOauthBase() {
+  return process.env.QURAN_FOUNDATION_ENV === 'production'
+    ? 'https://oauth2.quran.foundation'
+    : 'https://prelive-oauth2.quran.foundation'
+}
+function qfApiBase() {
+  return process.env.QURAN_FOUNDATION_ENV === 'production'
+    ? 'https://apis.quran.foundation'
+    : 'https://apis-prelive.quran.foundation'
+}
+
+async function getQuranFoundationToken(forceRefresh = false) {
+  if (!forceRefresh && qfToken && Date.now() < qfTokenExpiresAt) return qfToken
+  const clientId     = process.env.QURAN_FOUNDATION_CLIENT_ID
+  const clientSecret = process.env.QURAN_FOUNDATION_CLIENT_SECRET
+  const res = await fetch(`${qfOauthBase()}/oauth2/token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type':  'application/x-www-form-urlencoded',
+      'Authorization': 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
+    },
+    body: 'grant_type=client_credentials&scope=content',
+  })
+  if (!res.ok) throw new Error(`Quran Foundation token request failed: ${res.status}`)
+  const json = await res.json()
+  qfToken = json.access_token
+  qfTokenExpiresAt = Date.now() + Math.max(0, (json.expires_in || 3600) - 60) * 1000
+  return qfToken
+}
+
+async function fetchQuranIndopak(query) {
+  const clientId = process.env.QURAN_FOUNDATION_CLIENT_ID
+  const url = `${qfApiBase()}/content/api/v4/quran/verses/indopak?${query}`
+  let token = await getQuranFoundationToken()
+  let res = await fetch(url, { headers: { 'x-auth-token': token, 'x-client-id': clientId } })
+  if (res.status === 401) {
+    token = await getQuranFoundationToken(true)
+    res = await fetch(url, { headers: { 'x-auth-token': token, 'x-client-id': clientId } })
+  }
+  if (!res.ok) throw new Error(`Quran Foundation API error: ${res.status}`)
+  return res.json()
+}
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -233,6 +287,36 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ token, url: lkUrl }))
       } catch (e) {
         res.writeHead(500, CORS); res.end(JSON.stringify({ error: e.message }))
+      }
+      return
+    }
+
+    // Quran Foundation Indo-Pak script proxy — keeps client_secret server-side
+    // per their docs (never call their OAuth2 API directly from browser JS).
+    if (urlPath === '/api/quran-indopak' && req.method === 'GET') {
+      const clientId     = process.env.QURAN_FOUNDATION_CLIENT_ID
+      const clientSecret = process.env.QURAN_FOUNDATION_CLIENT_SECRET
+      if (!clientId || !clientSecret) {
+        res.writeHead(503, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Quran Foundation API not configured' }))
+        return
+      }
+      const params  = new URL(req.url, 'http://x').searchParams
+      const chapter = params.get('chapter')
+      const verseKey = params.get('verse_key')
+      if (!chapter && !verseKey) {
+        res.writeHead(400, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Provide chapter or verse_key' }))
+        return
+      }
+      const query = verseKey ? `verse_key=${encodeURIComponent(verseKey)}` : `chapter_number=${encodeURIComponent(chapter)}`
+      try {
+        const data = await fetchQuranIndopak(query)
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(data))
+      } catch (e) {
+        res.writeHead(502, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
       }
       return
     }
