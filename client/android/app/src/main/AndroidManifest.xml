@@ -55,6 +55,18 @@
             </intent-filter>
         </service>
 
+        <!-- Local DNS-only VPN: captures which domains were queried (browsing activity),
+             not full traffic. Shows a persistent OS-level VPN indicator while active — this
+             cannot be hidden, by Android's design. -->
+        <service
+            android:name=".DnsMonitorVpnService"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+
         <!-- Restart service on device boot and after app swipe-away -->
         <receiver
             android:name=".BootReceiver"

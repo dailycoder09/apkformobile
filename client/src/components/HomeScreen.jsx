@@ -22,6 +22,12 @@ export default function HomeScreen({ session, onSelect }) {
           <span className="home-tile-label">Transactions</span>
           <span className="home-tile-desc">Monitor family spending</span>
         </button>
+
+        <button className="home-tile" onClick={() => onSelect('browsing')}>
+          <span className="home-tile-icon">🌐</span>
+          <span className="home-tile-label">Browsing Activity</span>
+          <span className="home-tile-desc">Domains visited on the device</span>
+        </button>
       </div>
     </div>
   )

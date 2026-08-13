@@ -83,7 +83,9 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
             cd ~/chat-pwa
-            git pull origin main
+            git fetch origin ${{ github.ref_name }}
+            git checkout ${{ github.ref_name }} 2>/dev/null || git checkout -b ${{ github.ref_name }} origin/${{ github.ref_name }}
+            git reset --hard origin/${{ github.ref_name }}
             npm --prefix server install --production
             npm --prefix client install
             npm --prefix client run build

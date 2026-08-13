@@ -7,6 +7,7 @@ import UserPanel from './components/UserPanel'
 import HomeScreen from './components/HomeScreen'
 import Dashboard from './components/Dashboard'
 import AdminTransactionView from './components/AdminTransactionView'
+import AdminBrowsingView from './components/AdminBrowsingView'
 import TransactionPanel from './components/TransactionPanel'
 import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
@@ -382,6 +383,10 @@ export default function App() {
             session.role === 'admin'
               ? <AdminTransactionView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
               : <TransactionPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+          ) : module === 'browsing' ? (
+            session.role === 'admin'
+              ? <AdminBrowsingView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+              : null
           ) : module === 'namaz' ? (
             <NamazTracker />
           ) : module === 'workout' ? (

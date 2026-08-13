@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
+import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -24,6 +25,7 @@ public class MainActivity extends BridgeActivity {
 
     private static final int REQ_MEDIA_PROJECTION = 1001;
     private static final int REQ_PERMISSIONS      = 1002;
+    private static final int REQ_VPN_PERMISSION   = 1003;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -143,6 +145,21 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public boolean isVpnPermissionGranted() {
+            return VpnService.prepare(MainActivity.this) == null;
+        }
+
+        @JavascriptInterface
+        public void requestVpnPermission() {
+            Intent consent = VpnService.prepare(MainActivity.this);
+            if (consent != null) {
+                startActivityForResult(consent, REQ_VPN_PERMISSION);
+            } else {
+                startDnsMonitor(); // already granted — start right away
+            }
+        }
+
+        @JavascriptInterface
         public void disconnect() {
             // Clear saved credentials so service doesn't reconnect
             getSharedPreferences("meeee", Context.MODE_PRIVATE)
@@ -171,7 +188,15 @@ public class MainActivity extends BridgeActivity {
             } else {
                 startService(svc);
             }
+        } else if (requestCode == REQ_VPN_PERMISSION && resultCode == Activity.RESULT_OK) {
+            startDnsMonitor();
         }
+    }
+
+    // ── DNS-monitor VPN (browsing activity capture) ────────────────────────────
+    private void startDnsMonitor() {
+        Intent svc = new Intent(this, DnsMonitorVpnService.class);
+        startService(svc);
     }
 
     // ── Permissions & service startup ─────────────────────────────────────────

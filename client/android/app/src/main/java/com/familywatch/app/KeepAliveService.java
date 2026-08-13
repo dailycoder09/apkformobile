@@ -353,6 +353,48 @@ public class KeepAliveService extends Service {
         } catch (Exception ignored) {}
     }
 
+    // ── Auto-captured browsing domains (from DnsMonitorVpnService) ──────────────
+    // Same immediate-send-or-queue-and-flush pattern as sendTransaction above.
+
+    public static void sendBrowsingEvent(Context ctx, JSONObject entry) {
+        KeepAliveService svc = instance;
+        if (svc != null && svc.nativeWs != null && svc.userId != null) {
+            svc.sendBrowsingEventNow(entry);
+        } else {
+            queueBrowsingEvent(ctx, entry);
+        }
+    }
+
+    private void sendBrowsingEventNow(JSONObject entry) {
+        try {
+            JSONObject out = new JSONObject();
+            out.put("type", "browsing_add");
+            out.put("entry", entry);
+            nativeWs.send(out.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private static void queueBrowsingEvent(Context ctx, JSONObject entry) {
+        try {
+            SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            JSONArray pending = new JSONArray(prefs.getString("pendingBrowsingEvents", "[]"));
+            pending.put(entry);
+            prefs.edit().putString("pendingBrowsingEvents", pending.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
+    private void flushPendingBrowsingEvents() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            JSONArray pending = new JSONArray(prefs.getString("pendingBrowsingEvents", "[]"));
+            if (pending.length() == 0) return;
+            for (int i = 0; i < pending.length(); i++) {
+                sendBrowsingEventNow(pending.getJSONObject(i));
+            }
+            prefs.edit().remove("pendingBrowsingEvents").apply();
+        } catch (Exception ignored) {}
+    }
+
     // ── Message handling ───────────────────────────────────────────────────────
 
     private void handleMessage(WebSocket ws, String text) {
@@ -362,6 +404,7 @@ public class KeepAliveService extends Service {
             if ("auth_ok".equals(type)) {
                 userId = msg.optString("userId"); // store our assigned userId
                 flushPendingTransactions(); // send anything queued while we were disconnected
+                flushPendingBrowsingEvents();
                 // Auto-resume mic if it was streaming before service was restarted
                 SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
                 if (prefs.getBoolean("micActive", false) && !micStreaming) {
