@@ -1,6 +1,7 @@
-const http = require('http')
-const fs   = require('fs')
-const path = require('path')
+const http   = require('http')
+const fs     = require('fs')
+const path   = require('path')
+const crypto = require('crypto')
 const { Readable } = require('stream')
 const { WebSocketServer, WebSocket } = require('ws')
 const { AccessToken } = require('livekit-server-sdk')
@@ -15,6 +16,14 @@ if (outboundProxy) setGlobalDispatcher(new ProxyAgent(outboundProxy))
 const ADMIN_PIN   = process.env.ADMIN_PIN || '1234'
 const CLIENT_DIR  = path.join(__dirname, '../client/dist')
 const MAX_FILE_MB = 200
+
+// Gates plain HTTP GETs (e.g. <img src>, which can't carry a WebSocket session or custom
+// auth headers) behind the same PIN already used for admin WebSocket auth.
+function isAdminRequest(req) {
+  const params = new URL(req.url, 'http://x').searchParams
+  const pin = params.get('pin') || req.headers['x-admin-pin']
+  return pin === ADMIN_PIN
+}
 
 // Auto-update: the repo is private, so the client never gets a GitHub token — the server
 // looks up the latest release and proxies the actual APK download itself.
@@ -38,15 +47,36 @@ async function fetchLatestRelease() {
 // Auto-expires after 10 minutes
 const fileStore = new Map()
 
-// Screenshot store: id → { data, userId, userName, ts }
+// Screenshot store: id → { iv, authTag, ciphertext, userId, userName, ts }
 // Keyed by userId for list lookup: screenshotIndex userId → [id, ...]
+// Encrypted at rest (AES-256-GCM) — plaintext is never stored. Falls back to a random
+// per-process key if SCREENSHOT_ENC_KEY isn't configured, so screenshots are still always
+// encrypted; the only downside of the fallback is they become undecryptable across a
+// restart, which is fine given the 24h TTL below.
 const screenshotStore = new Map()
 const screenshotIndex = new Map()  // userId → [id, ...]
 const SCREENSHOT_TTL  = 24 * 60 * 60 * 1000  // 24 h
+const SCREENSHOT_KEY  = process.env.SCREENSHOT_ENC_KEY
+  ? Buffer.from(process.env.SCREENSHOT_ENC_KEY, 'base64')
+  : crypto.randomBytes(32)
+
+function encryptScreenshot(data) {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', SCREENSHOT_KEY, iv)
+  const ciphertext = Buffer.concat([cipher.update(data), cipher.final()])
+  return { iv, authTag: cipher.getAuthTag(), ciphertext }
+}
+
+function decryptScreenshot(shot) {
+  const decipher = crypto.createDecipheriv('aes-256-gcm', SCREENSHOT_KEY, shot.iv)
+  decipher.setAuthTag(shot.authTag)
+  return Buffer.concat([decipher.update(shot.ciphertext), decipher.final()])
+}
 
 function storeScreenshot(userId, userName, data) {
   const id = `${userId}-${Date.now()}`
-  screenshotStore.set(id, { data, userId, userName, ts: Date.now() })
+  const { iv, authTag, ciphertext } = encryptScreenshot(data)
+  screenshotStore.set(id, { iv, authTag, ciphertext, userId, userName, ts: Date.now() })
   if (!screenshotIndex.has(userId)) screenshotIndex.set(userId, [])
   screenshotIndex.get(userId).push(id)
   // Auto-delete after 24 h
@@ -258,11 +288,12 @@ const server = http.createServer(async (req, res) => {
 
     // ── Screenshot list for admin ────────────────────────────────────────────
     if (req.method === 'GET' && urlPath.startsWith('/api/screenshots/')) {
+      if (!isAdminRequest(req)) { res.writeHead(403); res.end('Forbidden'); return }
       const userId = urlPath.replace('/api/screenshots/', '')
       const ids = screenshotIndex.get(userId) || []
       const list = ids.map(id => {
         const s = screenshotStore.get(id)
-        return s ? { id, ts: s.ts, size: s.data.length } : null
+        return s ? { id, ts: s.ts, size: s.ciphertext.length } : null
       }).filter(Boolean).sort((a, b) => b.ts - a.ts)
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ screenshots: list }))
@@ -271,11 +302,18 @@ const server = http.createServer(async (req, res) => {
 
     // ── Single screenshot download ───────────────────────────────────────────
     if (req.method === 'GET' && urlPath.startsWith('/api/screenshot/')) {
+      if (!isAdminRequest(req)) { res.writeHead(403); res.end('Forbidden'); return }
       const id = urlPath.replace('/api/screenshot/', '')
       const shot = screenshotStore.get(id)
       if (!shot) { res.writeHead(404); res.end('Not found or expired'); return }
-      res.writeHead(200, { ...CORS, 'Content-Type': 'image/webp', 'Content-Length': shot.data.length })
-      res.end(shot.data)
+      try {
+        const data = decryptScreenshot(shot)
+        res.writeHead(200, { ...CORS, 'Content-Type': 'image/webp', 'Content-Length': data.length })
+        res.end(data)
+      } catch (e) {
+        res.writeHead(500, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Could not decrypt screenshot' }))
+      }
       return
     }
 

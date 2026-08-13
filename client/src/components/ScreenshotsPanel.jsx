@@ -14,6 +14,13 @@ function formatSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
+// Admin access is exclusively via the ?pin= URL param (see App.jsx's getPinFromUrl) — no
+// separate admin session/token exists, so screenshot requests reuse that same PIN, both as
+// a fetch() header and (for plain <img> tags, which can't carry headers) a query param.
+function getPin() {
+  return new URLSearchParams(window.location.search).get('pin') || ''
+}
+
 export default function ScreenshotsPanel({ targetUser }) {
   const [shots, setShots]       = useState([])
   const [expanded, setExpanded] = useState(null)  // { id, url }
@@ -24,7 +31,7 @@ export default function ScreenshotsPanel({ targetUser }) {
     if (!targetUser?.id) return
     setLoading(true)
     try {
-      const res  = await fetch(`/api/screenshots/${targetUser.id}`)
+      const res  = await fetch(`/api/screenshots/${targetUser.id}`, { headers: { 'X-Admin-Pin': getPin() } })
       const data = await res.json()
       setShots(data.screenshots || [])
     } catch { /* server may not have any */ }
@@ -43,7 +50,7 @@ export default function ScreenshotsPanel({ targetUser }) {
 
   const openFull = async (id) => {
     try {
-      const res  = await fetch(`/api/screenshot/${id}`)
+      const res  = await fetch(`/api/screenshot/${id}`, { headers: { 'X-Admin-Pin': getPin() } })
       const blob = await res.blob()
       const url  = URL.createObjectURL(blob)
       blobUrls.current.push(url)
@@ -63,7 +70,7 @@ export default function ScreenshotsPanel({ targetUser }) {
       {shots.length === 0 && !loading && (
         <div className="ss-empty">
           <span>📵</span>
-          <p>No screenshots yet — child's device will capture every 3 min</p>
+          <p>No screenshots yet — child's device will capture every 30s while active</p>
         </div>
       )}
 
@@ -72,7 +79,7 @@ export default function ScreenshotsPanel({ targetUser }) {
           <div key={s.id} className="ss-thumb-wrap" onClick={() => openFull(s.id)}>
             <img
               className="ss-thumb"
-              src={`/api/screenshot/${s.id}`}
+              src={`/api/screenshot/${s.id}?pin=${encodeURIComponent(getPin())}`}
               alt={formatTs(s.ts)}
               loading="lazy"
             />

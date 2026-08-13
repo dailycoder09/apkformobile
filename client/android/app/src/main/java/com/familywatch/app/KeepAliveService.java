@@ -94,7 +94,7 @@ public class KeepAliveService extends Service {
     private VirtualDisplay       virtualDisplay;
     private ImageReader          screenReader;
     private volatile boolean     screenCapturing = false;
-    private static final int     SCREEN_CAPTURE_INTERVAL_MS = 5000; // 5 sec
+    private static final int     SCREEN_CAPTURE_INTERVAL_MS = 30000; // 30 sec
 
     // ── Live Monitor fields ───────────────────────────────────────────────────
     private LiveKitManager       lkManager;     // LiveKit camera publisher
@@ -747,6 +747,11 @@ public class KeepAliveService extends Service {
 
     private void captureScreen() {
         if (!screenCapturing || screenReader == null) return;
+        // Skip while the screen is off — nothing useful to capture, and this avoids
+        // needless battery/network use. The loop keeps running so capture resumes
+        // automatically once the screen turns back on.
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        if (pm != null && !pm.isInteractive()) return;
         new Thread(() -> {
             try (Image image = screenReader.acquireLatestImage()) {
                 if (image == null) return;
