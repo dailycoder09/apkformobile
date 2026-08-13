@@ -8,6 +8,7 @@ import HomeScreen from './components/HomeScreen'
 import Dashboard from './components/Dashboard'
 import AdminTransactionView from './components/AdminTransactionView'
 import AdminBrowsingView from './components/AdminBrowsingView'
+import AdminCallLogView from './components/AdminCallLogView'
 import TransactionPanel from './components/TransactionPanel'
 import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
@@ -386,6 +387,10 @@ export default function App() {
           ) : module === 'browsing' ? (
             session.role === 'admin'
               ? <AdminBrowsingView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+              : null
+          ) : module === 'calllog' ? (
+            session.role === 'admin'
+              ? <AdminCallLogView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
               : null
           ) : module === 'namaz' ? (
             <NamazTracker />

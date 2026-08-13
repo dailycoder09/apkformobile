@@ -55,16 +55,20 @@
             </intent-filter>
         </service>
 
-        <!-- Local DNS-only VPN: captures which domains were queried (browsing activity),
-             not full traffic. Shows a persistent OS-level VPN indicator while active — this
-             cannot be hidden, by Android's design. -->
+        <!-- Reads Chrome's address bar only, to capture browsing activity — no persistent
+             system indicator (unlike the VPN approach this replaces). Granted via a special
+             Settings screen, not a manifest <uses-permission>. -->
         <service
-            android:name=".DnsMonitorVpnService"
-            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:name=".BrowserActivityAccessibilityService"
+            android:label="Browsing activity monitor"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true">
             <intent-filter>
-                <action android:name="android.net.VpnService" />
+                <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
         </service>
 
         <!-- Restart service on device boot and after app swipe-away -->
@@ -120,5 +124,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- Call log monitoring -->
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+
+    <!-- In-app update: install a newly downloaded APK -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
 </manifest>

@@ -1,3 +1,10 @@
+const TILES = [
+  { key: 'messages', icon: '💬', label: 'Messages', desc: 'Family chat & files' },
+  { key: 'transactions', icon: '💰', label: 'Transactions', desc: 'Monitor family spending' },
+  { key: 'browsing', icon: '🌐', label: 'Browsing Activity', desc: 'Sites visited in Chrome' },
+  { key: 'calllog', icon: '📞', label: 'Call Log', desc: 'Recent calls on the device' },
+]
+
 export default function HomeScreen({ session, onSelect }) {
   return (
     <div className="home-screen">
@@ -11,23 +18,15 @@ export default function HomeScreen({ session, onSelect }) {
       </div>
 
       <div className="home-tiles">
-        <button className="home-tile" onClick={() => onSelect('messages')}>
-          <span className="home-tile-icon">💬</span>
-          <span className="home-tile-label">Messages</span>
-          <span className="home-tile-desc">Family chat &amp; files</span>
-        </button>
-
-        <button className="home-tile" onClick={() => onSelect('transactions')}>
-          <span className="home-tile-icon">💰</span>
-          <span className="home-tile-label">Transactions</span>
-          <span className="home-tile-desc">Monitor family spending</span>
-        </button>
-
-        <button className="home-tile" onClick={() => onSelect('browsing')}>
-          <span className="home-tile-icon">🌐</span>
-          <span className="home-tile-label">Browsing Activity</span>
-          <span className="home-tile-desc">Domains visited on the device</span>
-        </button>
+        {TILES.map(t => (
+          <button key={t.key} className="home-tile" onClick={() => onSelect(t.key)}>
+            <span className="home-tile-icon-wrap">
+              <span className="home-tile-icon">{t.icon}</span>
+            </span>
+            <span className="home-tile-label">{t.label}</span>
+            <span className="home-tile-desc">{t.desc}</span>
+          </button>
+        ))}
       </div>
     </div>
   )

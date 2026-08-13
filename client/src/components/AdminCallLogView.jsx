@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 
 const PAGE_SIZE = 15
 
@@ -8,6 +8,14 @@ const PERIODS = [
   { key: 'month', label: 'This month', days: 30 },
   { key: 'all', label: 'All time', days: null },
 ]
+
+const TYPE_META = {
+  incoming: { icon: 'call_received', color: '#16a34a', label: 'Incoming' },
+  outgoing: { icon: 'call_made', color: 'var(--browse-indigo)', label: 'Outgoing' },
+  missed: { icon: 'call_missed', color: '#e0345c', label: 'Missed' },
+  rejected: { icon: 'phone_disabled', color: '#e0345c', label: 'Rejected' },
+  other: { icon: 'phone', color: 'var(--browse-muted)', label: 'Other' },
+}
 
 function periodStart(period) {
   const opt = PERIODS.find(o => o.key === period)
@@ -19,6 +27,13 @@ function periodStart(period) {
 
 function formatTime(ms) {
   return new Date(ms).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return ''
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}:${String(s).padStart(2, '0')}`
 }
 
 function formatDateLabel(ms) {
@@ -34,14 +49,14 @@ function formatDateLabel(ms) {
 function groupByDate(entries) {
   const groups = {}
   entries.forEach(e => {
-    const label = formatDateLabel(e.timestamp)
+    const label = formatDateLabel(e.date)
     if (!groups[label]) groups[label] = []
     groups[label].push(e)
   })
   return Object.entries(groups)
 }
 
-export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, onHome }) {
+export default function AdminCallLogView({ initialUsers, sendMsg, addListener, onHome }) {
   const [users, setUsers] = useState(initialUsers || [])
   const [entriesByUser, setEntriesByUser] = useState({})
   const [activeUser, setActiveUser] = useState('all')
@@ -49,15 +64,15 @@ export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, 
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   useEffect(() => {
-    users.forEach(u => sendMsg({ type: 'browsing_get', userId: u.id }))
+    users.forEach(u => sendMsg({ type: 'call_log_get', userId: u.id }))
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     return addListener((msg) => {
-      if (msg.type === 'browsing_list') {
+      if (msg.type === 'call_log_list') {
         setEntriesByUser(prev => ({ ...prev, [msg.userId]: msg.entries || [] }))
       }
-      if (msg.type === 'browsing_new') {
+      if (msg.type === 'call_log_new') {
         const e = msg.entry
         setEntriesByUser(prev => {
           const existing = prev[e.userId] || []
@@ -67,7 +82,7 @@ export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, 
       }
       if (msg.type === 'user_joined') {
         setUsers(prev => prev.find(u => u.id === msg.user.id) ? prev : [...prev, msg.user])
-        sendMsg({ type: 'browsing_get', userId: msg.user.id })
+        sendMsg({ type: 'call_log_get', userId: msg.user.id })
       }
       if (msg.type === 'user_left') {
         setUsers(prev => prev.filter(u => u.id !== msg.userId))
@@ -79,25 +94,18 @@ export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, 
 
   const start = periodStart(period)
   const allEntries = Object.values(entriesByUser).flat()
-    .filter(e => e.timestamp >= start)
-    .sort((a, b) => b.timestamp - a.timestamp)
+    .filter(e => e.date >= start)
+    .sort((a, b) => b.date - a.date)
 
   const displayed = activeUser === 'all'
     ? allEntries
-    : (entriesByUser[activeUser] || []).filter(e => e.timestamp >= start).sort((a, b) => b.timestamp - a.timestamp)
+    : (entriesByUser[activeUser] || []).filter(e => e.date >= start).sort((a, b) => b.date - a.date)
 
   const visibleEntries = displayed.slice(0, visibleCount)
   const groups = groupByDate(visibleEntries)
 
-  const topDomains = useMemo(() => {
-    const counts = {}
-    displayed.forEach(e => { counts[e.domain] = (counts[e.domain] || 0) + 1 })
-    return Object.entries(counts)
-      .map(([domain, count]) => ({ domain, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 8)
-  }, [displayed])
-  const topMax = Math.max(1, ...topDomains.map(d => d.count))
+  const missedCount = displayed.filter(e => e.type === 'missed').length
+  const totalDuration = displayed.reduce((s, e) => s + (e.duration || 0), 0)
 
   return (
     <div className="browse-screen">
@@ -105,16 +113,10 @@ export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, 
         <button className="browse-home-btn" onClick={onHome} aria-label="Home">
           <span className="material-symbols-outlined">arrow_back</span>
         </button>
-        <span className="browse-title">Browsing Activity</span>
+        <span className="browse-title">Call Log</span>
       </div>
 
       <div className="browse-body">
-        <p className="browse-notice">
-          Shows sites visited in Chrome on the child's device (other browsers aren't supported
-          yet). Enable via Settings → Accessibility on the device. Usually shows the domain;
-          full page addresses appear only when the address bar is actively tapped.
-        </p>
-
         <div className="browse-user-tabs">
           <button className={`browse-user-tab${activeUser === 'all' ? ' active' : ''}`}
             onClick={() => setActiveUser('all')}>All</button>
@@ -136,59 +138,49 @@ export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, 
 
         <div className="browse-summary">
           <div className="browse-summary-item">
-            <span className="browse-summary-label">Domains visited</span>
+            <span className="browse-summary-label">Total calls</span>
             <span className="browse-summary-val">{displayed.length}</span>
           </div>
           <div className="browse-summary-divider" />
           <div className="browse-summary-item">
-            <span className="browse-summary-label">Unique sites</span>
-            <span className="browse-summary-val">{new Set(displayed.map(e => e.domain)).size}</span>
+            <span className="browse-summary-label">Missed</span>
+            <span className="browse-summary-val">{missedCount}</span>
           </div>
-        </div>
-
-        <div className="browse-top-card">
-          <div className="browse-top-title">Most visited</div>
-          {topDomains.length === 0 ? (
-            <p className="browse-empty-sub">Nothing in this period.</p>
-          ) : topDomains.map(d => (
-            <div key={d.domain} className="txn-breakdown-row">
-              <span className="txn-breakdown-label">{d.domain}</span>
-              <div className="txn-breakdown-bar">
-                <span className="txn-breakdown-fill" style={{
-                  width: `${(d.count / topMax) * 100}%`,
-                  background: 'linear-gradient(90deg, var(--browse-indigo), var(--browse-indigo-dark))',
-                }} />
-              </div>
-              <span className="txn-breakdown-val">{d.count}</span>
-            </div>
-          ))}
+          <div className="browse-summary-divider" />
+          <div className="browse-summary-item">
+            <span className="browse-summary-label">Talk time</span>
+            <span className="browse-summary-val">{formatDuration(totalDuration)}</span>
+          </div>
         </div>
 
         <div className="browse-list-card">
           {displayed.length === 0 && (
             <div className="browse-empty">
-              <span className="material-symbols-outlined browse-empty-icon">travel_explore</span>
-              <p>No browsing activity for this period</p>
-              <p className="browse-empty-sub">Domains will appear here once monitoring is enabled on the child's device</p>
+              <span className="material-symbols-outlined browse-empty-icon">call</span>
+              <p>No calls for this period</p>
+              <p className="browse-empty-sub">Calls will appear here once monitoring is enabled on the child's device</p>
             </div>
           )}
           {groups.map(([dateLabel, items]) => (
             <div key={dateLabel} className="browse-group">
               <div className="browse-group-header">{dateLabel}</div>
-              {items.map(e => (
-                <div key={e.id} className="browse-row">
-                  <div className="browse-row-icon">
-                    <span className="material-symbols-outlined">language</span>
+              {items.map(e => {
+                const meta = TYPE_META[e.type] || TYPE_META.other
+                return (
+                  <div key={e.id} className="browse-row">
+                    <div className="browse-row-icon" style={{ background: `${meta.color}22` }}>
+                      <span className="material-symbols-outlined" style={{ color: meta.color }}>{meta.icon}</span>
+                    </div>
+                    <div className="browse-row-info">
+                      <span className="browse-domain">{e.name || e.number || 'Unknown'}</span>
+                      <span className="browse-row-meta">
+                        {activeUser === 'all' && <span className="browse-user-tag">{e.userName}</span>}
+                        <span className="browse-time">{meta.label}{e.duration ? ` · ${formatDuration(e.duration)}` : ''} · {formatTime(e.date)}</span>
+                      </span>
+                    </div>
                   </div>
-                  <div className="browse-row-info">
-                    <span className="browse-domain">{e.domain}</span>
-                    <span className="browse-row-meta">
-                      {activeUser === 'all' && <span className="browse-user-tag">{e.userName}</span>}
-                      <span className="browse-time">{formatTime(e.timestamp)}</span>
-                    </span>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           ))}
           {displayed.length > visibleCount && (

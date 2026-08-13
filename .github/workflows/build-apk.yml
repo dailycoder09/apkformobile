@@ -28,9 +28,15 @@ jobs:
           cache: 'npm'
           cache-dependency-path: client/package-lock.json
 
-      - name: Get app version
+      - name: Set app version
         id: version
-        run: echo "version=$(node -p "require('./client/package.json').version")" >> $GITHUB_OUTPUT
+        # Bumps client/package.json's version so __APP_VERSION__ (baked into the JS bundle
+        # at build time) actually changes release to release — otherwise the in-app update
+        # check would always compare a version against itself and never detect an update.
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          node -e "const fs=require('fs');const p=require('./client/package.json');p.version='$VERSION';fs.writeFileSync('./client/package.json', JSON.stringify(p, null, 2)+'\n')"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install server dependencies
         run: npm --prefix server install --production
@@ -47,11 +53,21 @@ jobs:
       - name: Make Gradle executable
         run: chmod +x client/android/gradlew
 
-      - name: Build debug APK
-        run: cd client/android && ./gradlew assembleDebug --no-daemon
+      - name: Decode signing keystore
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > client/android/app/familywatch-release.keystore
+
+      - name: Build release APK
+        run: |
+          cd client/android && ./gradlew assembleRelease --no-daemon \
+            -PRELEASE_STORE_FILE=familywatch-release.keystore \
+            -PRELEASE_STORE_PASSWORD="${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+            -PRELEASE_KEY_ALIAS="${{ secrets.ANDROID_KEY_ALIAS }}" \
+            -PRELEASE_KEY_PASSWORD="${{ secrets.ANDROID_KEY_PASSWORD }}" \
+            -PappVersionCode=${{ github.run_number }} \
+            -PappVersionName=${{ steps.version.outputs.version }}
 
       - name: Rename APK
-        run: mv client/android/app/build/outputs/apk/debug/app-debug.apk meeee.apk
+        run: mv client/android/app/build/outputs/apk/release/app-release.apk meeee.apk
 
       - name: Delete old release if exists
         run: |
@@ -63,7 +79,9 @@ jobs:
         run: |
           gh release create latest-build meeee.apk \
             --title "meeee v${{ steps.version.outputs.version }}" \
-            --notes "Version ${{ steps.version.outputs.version }} — latest build" \
+            --notes "Version ${{ steps.version.outputs.version }} — latest build
+          versionCode: ${{ github.run_number }}
+          versionName: ${{ steps.version.outputs.version }}" \
             --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
