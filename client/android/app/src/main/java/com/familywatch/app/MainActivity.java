@@ -132,6 +132,17 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public boolean isNotificationAccessEnabled() {
+            String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
+            return flat != null && flat.contains(getPackageName());
+        }
+
+        @JavascriptInterface
+        public void openNotificationAccessSettings() {
+            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+        }
+
+        @JavascriptInterface
         public void disconnect() {
             // Clear saved credentials so service doesn't reconnect
             getSharedPreferences("meeee", Context.MODE_PRIVATE)

@@ -480,19 +480,46 @@ wss.on('connection', (ws) => {
 
       // ── User messages ───────────────────────────────
       if (meta.role === 'user') {
-        // Transaction added by user (manual or SMS-parsed) — store + broadcast to admins
+        // Transaction added by user (manual or auto-captured) — store + broadcast to admins.
+        // Native background connections (KeepAliveService) authenticate under their own
+        // throwaway userId; attribute their transactions to the real (primary) session instead.
         if (msg.type === 'transaction_add') {
-          const txn = { ...msg.transaction, userId: meta.userId, userName: meta.name }
-          if (!transactions.has(meta.userId)) transactions.set(meta.userId, [])
-          transactions.get(meta.userId).unshift(txn)
-          broadcastToAdmins({ type: 'transaction_new', transaction: txn, fromUserId: meta.userId, fromUserName: meta.name })
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const txn = { ...msg.transaction, userId: uid, userName: meta.name }
+          if (!transactions.has(uid)) transactions.set(uid, [])
+          transactions.get(uid).unshift(txn)
+          broadcastToAdmins({ type: 'transaction_new', transaction: txn, fromUserId: uid, fromUserName: meta.name })
+          return
+        }
+
+        // Transaction edited by its owner — only the owner may edit their own entries
+        if (msg.type === 'transaction_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const list = transactions.get(uid) || []
+          const idx = list.findIndex((t) => t.id === msg.transaction?.id)
+          if (idx === -1) return
+          const txn = { ...list[idx], ...msg.transaction, userId: uid, userName: meta.name }
+          list[idx] = txn
+          broadcastToAdmins({ type: 'transaction_updated', transaction: txn, fromUserId: uid })
+          return
+        }
+
+        // Transaction deleted by its owner
+        if (msg.type === 'transaction_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const list = transactions.get(uid) || []
+          const idx = list.findIndex((t) => t.id === msg.id)
+          if (idx === -1) return
+          list.splice(idx, 1)
+          broadcastToAdmins({ type: 'transaction_deleted', id: msg.id, fromUserId: uid })
           return
         }
 
         // Self-fetch — user requesting their own transaction history
         if (msg.type === 'transactions_get') {
-          const list = transactions.get(meta.userId) || []
-          send(ws, { type: 'transactions_list', userId: meta.userId, transactions: list })
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const list = transactions.get(uid) || []
+          send(ws, { type: 'transactions_list', userId: uid, transactions: list })
           return
         }
 

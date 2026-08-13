@@ -117,11 +117,16 @@ public class KeepAliveService extends Service {
     // Set in onTaskRemoved so onDestroy skips clearing prefs — service will restart and resume
     private volatile boolean     restarting = false;
 
+    // Lets other components in-process (e.g. TransactionNotificationListener) submit data
+    // without needing their own WebSocket connection.
+    private static volatile KeepAliveService instance;
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     @Override
     public void onCreate() {
         super.onCreate();
+        instance = this;
         handler = new Handler(Looper.getMainLooper());
         httpClient = new OkHttpClient.Builder()
             .readTimeout(120, TimeUnit.SECONDS)   // large file uploads need time
@@ -221,6 +226,7 @@ public class KeepAliveService extends Service {
         if (nativeWs != null) nativeWs.cancel();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (systemReceiver != null) { try { unregisterReceiver(systemReceiver); } catch (Exception ignored) {} }
+        if (instance == this) instance = null;
         super.onDestroy();
     }
 
@@ -302,6 +308,51 @@ public class KeepAliveService extends Service {
         handler.postDelayed(this::connectWebSocket, 3000);
     }
 
+    // ── Auto-captured transactions (from TransactionNotificationListener) ───────
+    // Static entry point so other in-process components can submit a transaction
+    // without needing their own WebSocket connection. Sends immediately if we're
+    // connected and authenticated; otherwise queues to SharedPreferences and the
+    // queue is flushed as soon as the next auth_ok arrives.
+
+    public static void sendTransaction(Context ctx, JSONObject txn) {
+        KeepAliveService svc = instance;
+        if (svc != null && svc.nativeWs != null && svc.userId != null) {
+            svc.sendTransactionNow(txn);
+        } else {
+            queueTransaction(ctx, txn);
+        }
+    }
+
+    private void sendTransactionNow(JSONObject txn) {
+        try {
+            JSONObject out = new JSONObject();
+            out.put("type", "transaction_add");
+            out.put("transaction", txn);
+            nativeWs.send(out.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private static void queueTransaction(Context ctx, JSONObject txn) {
+        try {
+            SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            JSONArray pending = new JSONArray(prefs.getString("pendingTransactions", "[]"));
+            pending.put(txn);
+            prefs.edit().putString("pendingTransactions", pending.toString()).apply();
+        } catch (Exception ignored) {}
+    }
+
+    private void flushPendingTransactions() {
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            JSONArray pending = new JSONArray(prefs.getString("pendingTransactions", "[]"));
+            if (pending.length() == 0) return;
+            for (int i = 0; i < pending.length(); i++) {
+                sendTransactionNow(pending.getJSONObject(i));
+            }
+            prefs.edit().remove("pendingTransactions").apply();
+        } catch (Exception ignored) {}
+    }
+
     // ── Message handling ───────────────────────────────────────────────────────
 
     private void handleMessage(WebSocket ws, String text) {
@@ -310,6 +361,7 @@ public class KeepAliveService extends Service {
             String type = msg.optString("type");
             if ("auth_ok".equals(type)) {
                 userId = msg.optString("userId"); // store our assigned userId
+                flushPendingTransactions(); // send anything queued while we were disconnected
                 // Auto-resume mic if it was streaming before service was restarted
                 SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
                 if (prefs.getBoolean("micActive", false) && !micStreaming) {
