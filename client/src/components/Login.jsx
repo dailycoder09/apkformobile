@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 // Server URL baked in at build time — child just enters their name
-const SERVER_URL = 'http://localhost:3001'
+const SERVER_URL = 'https://familywatch.duckdns.org'
 
 export default function Login({ onLogin, status, error }) {
   const [name, setName] = useState('')
