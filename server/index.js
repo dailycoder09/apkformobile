@@ -655,14 +655,6 @@ wss.on('connection', (ws) => {
           return
         }
 
-        // Temporary diagnostic trail from native capture services — console only, not
-        // stored or shown in any UI. Remove once the pipelines being debugged are confirmed
-        // working reliably.
-        if (msg.type === 'debug_log') {
-          console.log(`[debug ${meta.name}] ${msg.message}`)
-          return
-        }
-
         // Call log entry captured by the native ContentObserver — store + broadcast to admins.
         if (msg.type === 'call_log_add') {
           const uid = meta.isBg ? meta.primaryId : meta.userId

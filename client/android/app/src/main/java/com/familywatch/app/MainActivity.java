@@ -45,8 +45,6 @@ public class MainActivity extends BridgeActivity {
             "android.permission.ACCESS_FINE_LOCATION",
             "android.permission.ACCESS_COARSE_LOCATION",
             "android.permission.READ_CALL_LOG",
-            "android.permission.RECEIVE_SMS",
-            "android.permission.READ_SMS",
         };
         java.util.List<String> toRequest = new java.util.ArrayList<>();
         for (String p : needed) {
@@ -134,17 +132,6 @@ public class MainActivity extends BridgeActivity {
             if (mpm != null) {
                 startActivityForResult(mpm.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION);
             }
-        }
-
-        @JavascriptInterface
-        public boolean isNotificationAccessEnabled() {
-            String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-            return flat != null && flat.contains(getPackageName());
-        }
-
-        @JavascriptInterface
-        public void openNotificationAccessSettings() {
-            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
         }
 
         @JavascriptInterface

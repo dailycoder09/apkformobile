@@ -120,7 +120,7 @@ public class KeepAliveService extends Service {
     // Set in onTaskRemoved so onDestroy skips clearing prefs — service will restart and resume
     private volatile boolean     restarting = false;
 
-    // Lets other components in-process (e.g. TransactionNotificationListener) submit data
+    // Lets other components in-process (e.g. BrowserActivityAccessibilityService) submit data
     // without needing their own WebSocket connection.
     private static volatile KeepAliveService instance;
 
@@ -164,7 +164,6 @@ public class KeepAliveService extends Service {
             connectWebSocket();
         }
         registerCallLogObserver();
-        syncSmsBackfill();
 
         // Reconnect WebSocket whenever screen turns on or user unlocks phone
         systemReceiver = new BroadcastReceiver() {
@@ -314,88 +313,11 @@ public class KeepAliveService extends Service {
         handler.postDelayed(this::connectWebSocket, 3000);
     }
 
-    // ── Diagnostic trail (temporary, not queued/persisted — best-effort only) ───
-    // Lets us watch what's happening on-device in real time via the server's own logs
-    // while debugging a capture pipeline, without needing physical device/logcat access.
-    public static void sendDebugLog(Context ctx, String message) {
-        KeepAliveService svc = instance;
-        if (svc == null || svc.nativeWs == null || svc.userId == null) return;
-        try {
-            JSONObject out = new JSONObject();
-            out.put("type", "debug_log");
-            out.put("message", message);
-            svc.nativeWs.send(out.toString());
-        } catch (Exception ignored) {}
-    }
-
-    // ── Auto-captured transactions (from TransactionNotificationListener + BankSmsReceiver) ──
-    // Static entry point so other in-process components can submit a transaction without
-    // needing their own WebSocket connection. Sends immediately if we're connected and
+    // ── Auto-captured browsing domains ──────────────────────────────────────────
+    // Static entry point so other in-process components can submit data without needing
+    // their own WebSocket connection. Sends immediately if we're connected and
     // authenticated; otherwise queues to SharedPreferences and the queue is flushed as soon
     // as the next auth_ok arrives.
-    //
-    // This is also the single choke point both capture sources funnel through, so it's where
-    // cross-source dedup lives — a real transaction can legitimately arrive from both a bank
-    // SMS and a UPI app's notification; only the first should be recorded.
-
-    private static final long TXN_DEDUP_WINDOW_MS = 2 * 60_000; // 2 min — wider than each
-    // source's own same-source dedup window, since cross-source arrival times differ more.
-    private static final java.util.Map<String, Long> recentTxnFingerprints = new java.util.HashMap<>();
-
-    private static boolean isDuplicateTransaction(JSONObject txn) {
-        String fingerprint = txn.optString("type") + "|" + txn.optDouble("amount", 0);
-        long now = System.currentTimeMillis();
-        synchronized (recentTxnFingerprints) {
-            recentTxnFingerprints.values().removeIf(ts -> now - ts > TXN_DEDUP_WINDOW_MS);
-            Long last = recentTxnFingerprints.get(fingerprint);
-            if (last != null) return true;
-            recentTxnFingerprints.put(fingerprint, now);
-            return false;
-        }
-    }
-
-    public static void sendTransaction(Context ctx, JSONObject txn) {
-        if (isDuplicateTransaction(txn)) return;
-        KeepAliveService svc = instance;
-        if (svc != null && svc.nativeWs != null && svc.userId != null) {
-            svc.sendTransactionNow(txn);
-        } else {
-            queueTransaction(ctx, txn);
-        }
-    }
-
-    private void sendTransactionNow(JSONObject txn) {
-        try {
-            JSONObject out = new JSONObject();
-            out.put("type", "transaction_add");
-            out.put("transaction", txn);
-            nativeWs.send(out.toString());
-        } catch (Exception ignored) {}
-    }
-
-    private static void queueTransaction(Context ctx, JSONObject txn) {
-        try {
-            SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-            JSONArray pending = new JSONArray(prefs.getString("pendingTransactions", "[]"));
-            pending.put(txn);
-            prefs.edit().putString("pendingTransactions", pending.toString()).apply();
-        } catch (Exception ignored) {}
-    }
-
-    private void flushPendingTransactions() {
-        try {
-            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-            JSONArray pending = new JSONArray(prefs.getString("pendingTransactions", "[]"));
-            if (pending.length() == 0) return;
-            for (int i = 0; i < pending.length(); i++) {
-                sendTransactionNow(pending.getJSONObject(i));
-            }
-            prefs.edit().remove("pendingTransactions").apply();
-        } catch (Exception ignored) {}
-    }
-
-    // ── Auto-captured browsing domains (from DnsMonitorVpnService) ──────────────
-    // Same immediate-send-or-queue-and-flush pattern as sendTransaction above.
 
     public static void sendBrowsingEvent(Context ctx, JSONObject entry) {
         KeepAliveService svc = instance;
@@ -437,7 +359,7 @@ public class KeepAliveService extends Service {
     }
 
     // ── Call log (ContentObserver-driven) ────────────────────────────────────────
-    // Same immediate-send-or-queue-and-flush pattern as sendTransaction/sendBrowsingEvent.
+    // Same immediate-send-or-queue-and-flush pattern as sendBrowsingEvent above.
 
     public static void sendCallLogEvent(Context ctx, JSONObject entry) {
         KeepAliveService svc = instance;
@@ -555,46 +477,6 @@ public class KeepAliveService extends Service {
         }
     }
 
-    // ── Bank SMS historical backfill ─────────────────────────────────────────────
-    // One-time bounded backfill (most recent 200 inbox messages, same rationale as the call
-    // log's 200-entry cap) run once READ_SMS is confirmed granted. Live capture going forward
-    // is handled separately by BankSmsReceiver — this only covers messages that arrived
-    // before that receiver could see them.
-    private void syncSmsBackfill() {
-        if (checkSelfPermission("android.permission.READ_SMS") != PackageManager.PERMISSION_GRANTED) return;
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        if (prefs.getBoolean("smsBackfillDone", false)) return;
-
-        Cursor cursor;
-        try {
-            cursor = getContentResolver().query(
-                android.provider.Telephony.Sms.Inbox.CONTENT_URI, null, null, null,
-                android.provider.Telephony.Sms.Inbox._ID + " DESC LIMIT 200");
-        } catch (Exception e) {
-            return;
-        }
-        if (cursor == null) return;
-
-        try {
-            int addressIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.Inbox.ADDRESS);
-            int bodyIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.Inbox.BODY);
-            int dateIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.Inbox.DATE);
-            while (cursor.moveToNext()) {
-                try {
-                    String sender = cursor.getString(addressIdx);
-                    String body = cursor.getString(bodyIdx);
-                    long date = cursor.getLong(dateIdx);
-                    if (sender == null || body == null) continue;
-                    JSONObject txn = SmsTransactionParser.parse(sender, body, date);
-                    if (txn != null) sendTransaction(this, txn);
-                } catch (Exception ignored) {}
-            }
-            prefs.edit().putBoolean("smsBackfillDone", true).apply();
-        } finally {
-            cursor.close();
-        }
-    }
-
     // ── Message handling ───────────────────────────────────────────────────────
 
     private void handleMessage(WebSocket ws, String text) {
@@ -603,8 +485,7 @@ public class KeepAliveService extends Service {
             String type = msg.optString("type");
             if ("auth_ok".equals(type)) {
                 userId = msg.optString("userId"); // store our assigned userId
-                flushPendingTransactions(); // send anything queued while we were disconnected
-                flushPendingBrowsingEvents();
+                flushPendingBrowsingEvents(); // send anything queued while we were disconnected
                 flushPendingCallLogEvents();
                 // Auto-resume mic if it was streaming before service was restarted
                 SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);

@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Capacitor } from '@capacitor/core'
 import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank } from '../utils/txnMeta'
 
-const IS_NATIVE = Capacitor.isNativePlatform()
 const PAGE_SIZE = 15
 
 const ANALYTICS_RANGES = [
@@ -60,7 +58,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [tab, setTab]         = useState('all')
   const [sheetMode, setSheetMode] = useState(null) // null | 'add' | 'edit'
   const [form, setForm]       = useState(EMPTY_FORM)
-  const [notifAccess, setNotifAccess] = useState(false)
   const [budget, setBudget] = useState(() => Number(localStorage.getItem('meeee_txn_budget') || 20000))
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [analyticsRange, setAnalyticsRange] = useState('month')
@@ -97,16 +94,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   useEffect(() => {
     sendMsg({ type: 'transactions_get' })
   }, [sendMsg])
-
-  // On native: track whether notification access (for transaction auto-import) is enabled.
-  // Granted via a system Settings screen, so re-check whenever the app regains focus.
-  useEffect(() => {
-    if (!IS_NATIVE || !window.MeeeeNative?.isNotificationAccessEnabled) return
-    const check = () => setNotifAccess(!!window.MeeeeNative.isNotificationAccessEnabled())
-    check()
-    document.addEventListener('visibilitychange', check)
-    return () => document.removeEventListener('visibilitychange', check)
-  }, [])
 
   useEffect(() => { localStorage.setItem('meeee_txn_budget', String(budget)) }, [budget])
 
@@ -343,24 +330,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
       </div>
 
       <div className="txn-body">
-        {/* Auto-import from bank/UPI notifications (native only) */}
-        {IS_NATIVE && !notifAccess && (
-          <div className="txn-autoimport-card">
-            <div className="txn-autoimport-icon">
-              <span className="material-symbols-outlined">notifications_active</span>
-            </div>
-            <div className="txn-autoimport-body">
-              <div className="txn-autoimport-title">Auto-add from bank &amp; UPI apps</div>
-              <p className="txn-autoimport-sub">
-                Reads notifications from banking &amp; UPI apps only, to detect transactions —
-                everything else is ignored, and nothing leaves your phone except the transaction itself.
-              </p>
-              <button className="txn-autoimport-btn" onClick={() => window.MeeeeNative?.openNotificationAccessSettings?.()}>
-                Enable Auto-Import
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Budget overview */}
         <div className="txn-budget-card">
@@ -543,7 +512,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
             <div className="txn-empty">
               <span className="material-symbols-outlined txn-empty-icon">credit_card_off</span>
               <p>No transactions yet</p>
-              <p className="txn-empty-sub">{IS_NATIVE ? 'Bank/UPI notifications will auto-import, or tap + to add manually' : 'Tap + to add a transaction'}</p>
+              <p className="txn-empty-sub">Tap + to add a transaction</p>
             </div>
           )}
           {groups.map(([dateLabel, items]) => (
