@@ -597,8 +597,18 @@ wss.on('connection', (ws) => {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const txn = { ...msg.transaction, userId: uid, userName: meta.name }
           if (!transactions.has(uid)) transactions.set(uid, [])
-          transactions.get(uid).unshift(txn)
-          broadcastToAdmins({ type: 'transaction_new', transaction: txn, fromUserId: uid, fromUserName: meta.name })
+          const list = transactions.get(uid)
+          // Safety-net dedup: a real transaction can legitimately arrive from both a bank SMS
+          // and a UPI app's notification (the client-side dedup in KeepAliveService is
+          // memory-only and resets on process restart) — skip an obvious duplicate rather
+          // than double-counting spending.
+          const isDuplicate = list.some(t =>
+            t.type === txn.type && t.amount === txn.amount && Math.abs((t.date || 0) - (txn.date || 0)) <= 2 * 60 * 1000
+          )
+          if (!isDuplicate) {
+            list.unshift(txn)
+            broadcastToAdmins({ type: 'transaction_new', transaction: txn, fromUserId: uid, fromUserName: meta.name })
+          }
           return
         }
 

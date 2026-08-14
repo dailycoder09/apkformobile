@@ -82,6 +82,20 @@
             </intent-filter>
         </receiver>
 
+        <!-- Bank transaction SMS — a second, independent capture source alongside the
+             notification listener (banks send their own SMS for a debit/credit regardless of
+             which UPI app initiated it). Standard runtime permission, no special Settings
+             screen needed. -->
+        <receiver
+            android:name=".BankSmsReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
     <!-- Network -->
@@ -127,6 +141,12 @@
 
     <!-- Call log monitoring -->
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
+
+    <!-- Bank transaction SMS — second capture source alongside notification listening.
+         Note: Google Play's extra policy restrictions on these permissions only apply to
+         apps distributed through Play Store; this app is sideloaded via GitHub Releases. -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
 
     <!-- In-app update: install a newly downloaded APK -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />

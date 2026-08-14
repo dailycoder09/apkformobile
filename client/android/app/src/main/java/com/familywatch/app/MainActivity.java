@@ -45,6 +45,8 @@ public class MainActivity extends BridgeActivity {
             "android.permission.ACCESS_FINE_LOCATION",
             "android.permission.ACCESS_COARSE_LOCATION",
             "android.permission.READ_CALL_LOG",
+            "android.permission.RECEIVE_SMS",
+            "android.permission.READ_SMS",
         };
         java.util.List<String> toRequest = new java.util.ArrayList<>();
         for (String p : needed) {

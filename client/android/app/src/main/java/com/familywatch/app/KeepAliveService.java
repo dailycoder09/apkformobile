@@ -164,6 +164,7 @@ public class KeepAliveService extends Service {
             connectWebSocket();
         }
         registerCallLogObserver();
+        syncSmsBackfill();
 
         // Reconnect WebSocket whenever screen turns on or user unlocks phone
         systemReceiver = new BroadcastReceiver() {
@@ -327,13 +328,34 @@ public class KeepAliveService extends Service {
         } catch (Exception ignored) {}
     }
 
-    // ── Auto-captured transactions (from TransactionNotificationListener) ───────
-    // Static entry point so other in-process components can submit a transaction
-    // without needing their own WebSocket connection. Sends immediately if we're
-    // connected and authenticated; otherwise queues to SharedPreferences and the
-    // queue is flushed as soon as the next auth_ok arrives.
+    // ── Auto-captured transactions (from TransactionNotificationListener + BankSmsReceiver) ──
+    // Static entry point so other in-process components can submit a transaction without
+    // needing their own WebSocket connection. Sends immediately if we're connected and
+    // authenticated; otherwise queues to SharedPreferences and the queue is flushed as soon
+    // as the next auth_ok arrives.
+    //
+    // This is also the single choke point both capture sources funnel through, so it's where
+    // cross-source dedup lives — a real transaction can legitimately arrive from both a bank
+    // SMS and a UPI app's notification; only the first should be recorded.
+
+    private static final long TXN_DEDUP_WINDOW_MS = 2 * 60_000; // 2 min — wider than each
+    // source's own same-source dedup window, since cross-source arrival times differ more.
+    private static final java.util.Map<String, Long> recentTxnFingerprints = new java.util.HashMap<>();
+
+    private static boolean isDuplicateTransaction(JSONObject txn) {
+        String fingerprint = txn.optString("type") + "|" + txn.optDouble("amount", 0);
+        long now = System.currentTimeMillis();
+        synchronized (recentTxnFingerprints) {
+            recentTxnFingerprints.values().removeIf(ts -> now - ts > TXN_DEDUP_WINDOW_MS);
+            Long last = recentTxnFingerprints.get(fingerprint);
+            if (last != null) return true;
+            recentTxnFingerprints.put(fingerprint, now);
+            return false;
+        }
+    }
 
     public static void sendTransaction(Context ctx, JSONObject txn) {
+        if (isDuplicateTransaction(txn)) return;
         KeepAliveService svc = instance;
         if (svc != null && svc.nativeWs != null && svc.userId != null) {
             svc.sendTransactionNow(txn);
@@ -530,6 +552,46 @@ public class KeepAliveService extends Service {
             case CallLog.Calls.MISSED_TYPE: return "missed";
             case CallLog.Calls.REJECTED_TYPE: return "rejected";
             default: return "other";
+        }
+    }
+
+    // ── Bank SMS historical backfill ─────────────────────────────────────────────
+    // One-time bounded backfill (most recent 200 inbox messages, same rationale as the call
+    // log's 200-entry cap) run once READ_SMS is confirmed granted. Live capture going forward
+    // is handled separately by BankSmsReceiver — this only covers messages that arrived
+    // before that receiver could see them.
+    private void syncSmsBackfill() {
+        if (checkSelfPermission("android.permission.READ_SMS") != PackageManager.PERMISSION_GRANTED) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        if (prefs.getBoolean("smsBackfillDone", false)) return;
+
+        Cursor cursor;
+        try {
+            cursor = getContentResolver().query(
+                android.provider.Telephony.Sms.Inbox.CONTENT_URI, null, null, null,
+                android.provider.Telephony.Sms.Inbox._ID + " DESC LIMIT 200");
+        } catch (Exception e) {
+            return;
+        }
+        if (cursor == null) return;
+
+        try {
+            int addressIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.Inbox.ADDRESS);
+            int bodyIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.Inbox.BODY);
+            int dateIdx = cursor.getColumnIndex(android.provider.Telephony.Sms.Inbox.DATE);
+            while (cursor.moveToNext()) {
+                try {
+                    String sender = cursor.getString(addressIdx);
+                    String body = cursor.getString(bodyIdx);
+                    long date = cursor.getLong(dateIdx);
+                    if (sender == null || body == null) continue;
+                    JSONObject txn = SmsTransactionParser.parse(sender, body, date);
+                    if (txn != null) sendTransaction(this, txn);
+                } catch (Exception ignored) {}
+            }
+            prefs.edit().putBoolean("smsBackfillDone", true).apply();
+        } finally {
+            cursor.close();
         }
     }
 
