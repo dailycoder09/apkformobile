@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FamilyWatch Blueprint</title>
+<style>
+  :root{
+    --bg:#EEF2F7;
+    --surface:#FFFFFF;
+    --surface-2:#E3E9F1;
+    --text:#16233A;
+    --text-muted:#51617A;
+    --border:#C9D6E4;
+    --accent:#1B4B8F;
+    --accent-2:#B5701A;
+    --diagram-bg:#163A64;
+    --diagram-ink:#EAF2FB;
+    --diagram-accent:#F2A93C;
+    --sans: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0A1420;
+      --surface:#101E30;
+      --surface-2:#16253A;
+      --text:#E7EEF7;
+      --text-muted:#93A4BE;
+      --border:#223550;
+      --accent:#6BA6F5;
+      --accent-2:#E2A354;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0A1420;
+    --surface:#101E30;
+    --surface-2:#16253A;
+    --text:#E7EEF7;
+    --text-muted:#93A4BE;
+    --border:#223550;
+    --accent:#6BA6F5;
+    --accent-2:#E2A354;
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:
+      repeating-linear-gradient(0deg, color-mix(in srgb, var(--border) 35%, transparent) 0 1px, transparent 1px 96px),
+      repeating-linear-gradient(90deg, color-mix(in srgb, var(--border) 35%, transparent) 0 1px, transparent 1px 96px),
+      var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{ text-wrap:balance; font-family:var(--sans); margin:0; }
+  p{ margin:0; }
+  a{ color:var(--accent); }
+  a:focus-visible, button:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+  .page{
+    max-width:1180px;
+    margin:0 auto;
+    padding:56px 28px 96px;
+    display:flex;
+    flex-direction:column;
+    gap:52px;
+  }
+
+  /* ---- Header ---- */
+  .hero{
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+    padding-bottom:28px;
+    border-bottom:1px solid var(--border);
+  }
+  .eyebrow{
+    font-family:var(--mono);
+    font-size:12px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--accent);
+    font-weight:600;
+  }
+  .hero h1{
+    font-size:clamp(32px, 5vw, 48px);
+    font-weight:700;
+    letter-spacing:-0.01em;
+  }
+  .hero .lede{
+    max-width:62ch;
+    font-size:17px;
+    color:var(--text-muted);
+  }
+  .meta-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px 22px;
+    margin-top:6px;
+    font-family:var(--mono);
+    font-size:12.5px;
+    color:var(--text-muted);
+  }
+  .meta-row span b{
+    color:var(--text);
+    font-weight:600;
+  }
+
+  /* ---- Sheet (diagram card, drafting title-block styling) ---- */
+  .sheet{
+    display:flex;
+    flex-direction:column;
+    border:1px solid var(--border);
+    border-radius:10px;
+    overflow:hidden;
+    background:var(--surface);
+    box-shadow:0 1px 2px color-mix(in srgb, var(--text) 6%, transparent);
+  }
+  .sheet-head{
+    display:flex;
+    justify-content:space-between;
+    align-items:baseline;
+    gap:16px;
+    flex-wrap:wrap;
+    padding:14px 20px;
+    background:var(--surface-2);
+    border-bottom:1px solid var(--border);
+  }
+  .sheet-head .dwg{
+    font-family:var(--mono);
+    font-size:12.5px;
+    letter-spacing:0.06em;
+    color:var(--accent);
+    font-weight:700;
+  }
+  .sheet-head .title{
+    font-size:15px;
+    font-weight:600;
+  }
+  .sheet-body{
+    background:var(--diagram-bg);
+    padding:28px 20px;
+    overflow-x:auto;
+  }
+  .sheet-body .mermaid{
+    display:flex;
+    justify-content:center;
+    min-width:720px;
+  }
+  .sheet-foot{
+    padding:14px 20px 18px;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+    border-top:1px solid var(--border);
+  }
+  .legend{
+    display:flex;
+    flex-wrap:wrap;
+    gap:16px;
+    font-family:var(--mono);
+    font-size:12px;
+    color:var(--text-muted);
+  }
+  .legend .item{ display:flex; align-items:center; gap:8px; }
+  .legend .swatch{ width:22px; height:0; border-top:2px solid var(--text-muted); }
+  .legend .swatch.dashed{ border-top-style:dashed; }
+  .sheet-foot .caption{
+    font-size:14.5px;
+    color:var(--text-muted);
+    max-width:78ch;
+  }
+  .sheet-foot .caption b{ color:var(--text); font-weight:600; }
+
+  /* ---- Redlines / field notes ---- */
+  .section-head{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    margin-bottom:20px;
+  }
+  .section-head h2{
+    font-size:22px;
+    font-weight:700;
+  }
+  .section-head .sub{
+    color:var(--text-muted);
+    font-size:14.5px;
+  }
+
+  .redlines{
+    display:flex;
+    flex-direction:column;
+    gap:0;
+    border:1px solid var(--border);
+    border-radius:10px;
+    background:var(--surface);
+    overflow:hidden;
+  }
+  .redline{
+    display:grid;
+    grid-template-columns:44px 1fr;
+    gap:16px;
+    padding:18px 20px;
+  }
+  .redline + .redline{ border-top:1px solid var(--border); }
+  .redline .mark{
+    font-family:var(--mono);
+    font-weight:700;
+    color:var(--accent-2);
+    font-size:13px;
+  }
+  .redline .body p{ font-size:14.5px; }
+  .redline .body code{
+    font-family:var(--mono);
+    font-size:0.92em;
+    background:var(--surface-2);
+    padding:1.5px 5px;
+    border-radius:4px;
+    color:var(--text);
+  }
+  .redline .body .tag{
+    display:inline-block;
+    font-family:var(--mono);
+    font-size:11px;
+    letter-spacing:0.05em;
+    text-transform:uppercase;
+    color:var(--accent-2);
+    border:1px solid color-mix(in srgb, var(--accent-2) 45%, transparent);
+    border-radius:999px;
+    padding:2px 8px;
+    margin-bottom:8px;
+  }
+
+  footer.page-foot{
+    font-family:var(--mono);
+    font-size:12px;
+    color:var(--text-muted);
+    border-top:1px solid var(--border);
+    padding-top:20px;
+  }
+  footer.page-foot a{ color:var(--text-muted); text-decoration-color:var(--border); }
+
+  @media (max-width:640px){
+    .page{ padding:36px 16px 72px; gap:40px; }
+    .redline{ grid-template-columns:1fr; }
+    .redline .mark{ font-size:12px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <header class="hero">
+    <span class="eyebrow">System architecture — as built</span>
+    <h1>FamilyWatch Blueprint</h1>
+    <p class="lede">How a child's phone, the parent's app, and one small VM stay in sync — traced end to end, wire by wire, straight from the running code.</p>
+    <div class="meta-row">
+      <span><b>2</b> sheets</span>
+      <span>Generated <b>Aug 14, 2026</b></span>
+      <span>Branch <b>feature/admin-home-calllog-browsing-v2</b></span>
+      <span>Verified against <b>server/index.js, store.js, backup.js</b></span>
+    </div>
+  </header>
+
+  <section class="sheet">
+    <div class="sheet-head">
+      <span class="dwg">DWG-01</span>
+      <span class="title">End-to-end system map</span>
+    </div>
+    <div class="sheet-body">
+      <pre class="mermaid">
+%%{init: {'theme':'base', 'themeVariables': { 'background':'#163A64', 'primaryColor':'#1B4B8F', 'primaryTextColor':'#EAF2FB', 'primaryBorderColor':'#EAF2FB', 'lineColor':'#EAF2FB', 'secondaryColor':'#2A5A9E', 'secondaryTextColor':'#EAF2FB', 'tertiaryColor':'#0F2D50', 'tertiaryTextColor':'#EAF2FB', 'fontFamily':'IBM Plex Mono, monospace', 'fontSize':'13px' }}}%%
+flowchart TD
+    subgraph ChildDevice["Family Member's Phone (Native Android App)"]
+        direction TB
+        WebView["MainActivity\n(WebView host + MeeeeNative JS bridge)"]
+        BundledUI["Bundled React UI\n(client/dist, loaded from local assets)"]
+        KAS["KeepAliveService\n(foreground service)"]
+        AccessSvc["BrowserActivityAccessibilityService\n(Chrome address-bar reader)"]
+        Boot["BootReceiver / ServiceRestartWorker"]
+        LKMgr["LiveKitManager\n(camera publish)"]
+
+        WebView --> BundledUI
+        Boot -->|starts on boot / restarts if killed| KAS
+        AccessSvc -->|"in-process call: sendBrowsingEvent()"| KAS
+        KAS --> LKMgr
+    end
+
+    subgraph AdminDevice["Admin/Parent Device (same app, admin role)"]
+        AdminUI["Bundled React UI (admin role)\nHomeScreen, AdminPanel, AdminTransactionView,\nAdminBrowsingView, AdminCallLogView,\nLiveMonitorPanel, ScreenshotsPanel"]
+    end
+
+    subgraph ClientFeatures["client/src/ feature areas (both devices)"]
+        Chat["Chat / DM\n(ChatWindow, MessageList, AdminPanel/UserPanel)"]
+        Finance["Transactions\n(TransactionPanel: manual entry +\nPhonePe CSV statement upload)"]
+        Islamic["Namaz / Quran / Duas / Hadees\n(NamazTracker, DuasPage)"]
+        Monitoring["Admin monitoring\n(call log, browsing, screenshots,\nlive camera/mic/location, file browser)"]
+    end
+
+    BundledUI -.-> ClientFeatures
+    AdminUI -.-> ClientFeatures
+
+    subgraph ExternalAPIs["External content APIs (called directly from client)"]
+        AlQuran["Al Quran Cloud API\n(api.alquran.cloud)\nsurah list, ayahs, translations, search"]
+        HadithCDN["Hadith CDN\n(jsdelivr, fawazahmed0/hadith-api)"]
+    end
+
+    Islamic -->|"fetch: surah/ayah/translation/search JSON"| AlQuran
+    Islamic -->|"fetch: hadith editions JSON"| HadithCDN
+
+    subgraph VM["GCE e2-micro VM — familywatch-server-2 (us-west1-b)"]
+        direction TB
+        Nginx["nginx\n(TLS via Certbot/Let's Encrypt,\npath-based routing)"]
+
+        subgraph NodeApp["Node process — server/index.js (:8080, systemd)"]
+            direction TB
+            WSHub["WebSocket hub (/ws)\nauth, routing, dedup"]
+            HTTPEp["HTTP endpoints:\nstatic client/dist, /api/version,\n/api/app-download, /api/screenshot(s)/:id,\n/api/file/:id, /api/lk-token,\n/api/quran-indopak (proxy)"]
+            Store["server/store.js\n(better-sqlite3, data.sqlite)\ntransactions, browsing_history,\ncall_logs, known_users"]
+            InMemMaps["In-memory only (no DB):\nscreenshots (24h TTL, AES-256-GCM),\nfile transfers (10min TTL)"]
+        end
+
+        LiveKit["LiveKit SFU\n(Docker container, :7880)\ncamera/mic AV signaling+media"]
+        Backup["server/backup.js\n(systemd timer, nightly ~02:37)"]
+
+        Nginx -->|"/ -> :8080"| NodeApp
+        Nginx -->|"/livekit/ -> :7880"| LiveKit
+        WSHub --> Store
+        WSHub --> InMemMaps
+        Backup -->|"reads snapshot via\nbetter-sqlite3 backup API"| Store
+    end
+
+    KAS <-->|"WSS wss://familywatch.duckdns.org/ws\nauth (name+__bg__), transaction_add,\nbrowsing_add, call_log_add,\nscreenshot POST, camera_frame,\naudio_chunk, location_update"| Nginx
+    WebView <-.->|"WSS /ws\nauth (name), transaction_add,\ntext/dm chat"| Nginx
+    AdminUI <-->|"WSS /ws\nauth (PIN), transactions_get,\nbrowsing_get, call_log_get,\nstart_camera/mic/location, ls/read_file"| Nginx
+
+    LKMgr -.->|"camera publish\n(WebRTC via LiveKit token)"| LiveKit
+    AdminUI -.->|"camera subscribe\n(WebRTC via LiveKit token)"| LiveKit
+
+    subgraph DNSInfra["Dynamic DNS"]
+        DuckDNS["DuckDNS\nfamilywatch.duckdns.org -> VM ephemeral external IP"]
+    end
+    DuckDNS -.->|"resolves hostname\n(updated on IP change)"| VM
+
+    subgraph ExtServices["External Services"]
+        GitHub["GitHub\n(source, Releases, Actions CI/CD)"]
+        GCS["Google Cloud Storage\nbucket familywatch-backups-7f266f68"]
+        Metadata["GCE metadata server\n(service-account token for VM)"]
+    end
+
+    HTTPEp -->|"GET latest release + APK asset\n(GITHUB_TOKEN, private repo)"| GitHub
+    Backup -->|"HTTPS upload\n(bearer token)"| GCS
+    Backup -->|"fetch access token"| Metadata
+
+    subgraph CICD["CI/CD Pipeline (GitHub Actions)"]
+        direction LR
+        Trigger["push to main /\nworkflow_dispatch"]
+        BuildAPK["Build + sign release APK\n(Gradle, release keystore secrets)"]
+        Release["Publish GitHub Release\n(tag latest-build)"]
+        DeploySSH["SSH deploy step\n(appleboy/ssh-action, DEPLOY_SSH_KEY)\ngit reset --hard, npm install,\nclient build, systemctl restart"]
+        BackupTimer["Install/enable nightly\nbackup systemd timer\n(continue-on-error)"]
+
+        Trigger --> BuildAPK --> Release --> DeploySSH --> BackupTimer
+    end
+
+    CICD -->|"git push triggers"| GitHub
+    DeploySSH -->|"ssh fatemasayed760@familywatch.duckdns.org"| VM
+    Release -->|"GET /api/app-download proxies\nAPK bytes to in-app updater"| HTTPEp
+      </pre>
+    </div>
+    <div class="sheet-foot">
+      <div class="legend">
+        <span class="item"><span class="swatch"></span> persistent connection / request&nbsp;&#8594;&nbsp;response</span>
+        <span class="item"><span class="swatch dashed"></span> async media, in-process call, or DNS resolution</span>
+      </div>
+      <p class="caption">Every device — child or parent — speaks the same WebSocket protocol to <b>one Node process on one VM</b>. The only two things that leave that VM on their own schedule are the nightly SQLite backup and the CI/CD pipeline that redeploys it.</p>
+    </div>
+  </section>
+
+  <section class="sheet">
+    <div class="sheet-head">
+      <span class="dwg">DWG-02</span>
+      <span class="title">Statement upload survives a restart</span>
+    </div>
+    <div class="sheet-body">
+      <pre class="mermaid">
+%%{init: {'theme':'base', 'themeVariables': { 'background':'#163A64', 'primaryColor':'#1B4B8F', 'primaryTextColor':'#EAF2FB', 'primaryBorderColor':'#EAF2FB', 'lineColor':'#EAF2FB', 'secondaryColor':'#2A5A9E', 'secondaryTextColor':'#EAF2FB', 'tertiaryColor':'#0F2D50', 'tertiaryTextColor':'#EAF2FB', 'actorBkg':'#1B4B8F', 'actorTextColor':'#EAF2FB', 'actorBorder':'#EAF2FB', 'signalColor':'#EAF2FB', 'signalTextColor':'#EAF2FB', 'noteBkgColor':'#0F2D50', 'noteTextColor':'#EAF2FB', 'noteBorderColor':'#EAF2FB', 'loopTextColor':'#EAF2FB', 'labelBoxBkgColor':'#0F2D50', 'labelBoxBorderColor':'#EAF2FB', 'labelTextColor':'#EAF2FB', 'activationBorderColor':'#EAF2FB', 'activationBkgColor':'#2A5A9E', 'fontFamily':'IBM Plex Mono, monospace', 'fontSize':'13px' }}}%%
+sequenceDiagram
+    participant Child as Child Device
+    participant WS as Server (WS handler, index.js)
+    participant Store as store.js (SQLite)
+    participant Admin as Admin Device
+
+    Note over Child,Admin: Phase 1 — auth (stable userId)
+    Child->>WS: auth { role: 'user', name: 'Zara' }
+    WS->>Store: getOrAssignUserId('Zara')
+    Store-->>WS: userId (new or existing row in known_users)
+    WS-->>Child: auth_ok { role: 'user', userId, users }
+    WS-->>Admin: user_joined { id: userId, name: 'Zara' } (broadcastToAdmins)
+
+    Note over Child,Admin: Phase 2 — statement upload, live to admin
+    Child->>Child: parsePhonePeStatementCsv(file)\n(client/src/utils/phonePeStatement.js)
+    loop for each parsed row
+        Child->>WS: transaction_add { transaction: txn }
+        WS->>Store: getList(TRANSACTIONS, 'Zara').some(t => t.id === txn.id)
+        alt not a duplicate (dedup by exact transaction id)
+            WS->>Store: appendItem(TRANSACTIONS, 'Zara', txn)\n(INSERT OR IGNORE)
+            Store-->>WS: inserted = true
+            WS-->>Admin: transaction_new { transaction: txn, fromUserId, fromUserName }
+            Admin->>Admin: AdminTransactionView updates live
+        else duplicate id (re-upload / overlapping statement range)
+            WS-->>WS: skip — no insert, no broadcast
+        end
+    end
+
+    Note over WS,Store: Phase 3 — server restart
+    WS->>WS: process restarts (systemd / redeploy)\nin-memory admins/users Maps wiped
+    Note over Store: data.sqlite on disk is untouched — WAL-mode SQLite file survives restart
+
+    Note over Child,Admin: Phase 4 — reconnect, data still present
+    Child->>WS: auth { role: 'user', name: 'Zara' } (reconnect)
+    WS->>Store: getOrAssignUserId('Zara')
+    Store-->>WS: same userId as before (row already existed)
+    WS-->>Child: auth_ok { role: 'user', userId (same), users }
+
+    Admin->>WS: transactions_get { userId }
+    WS->>WS: resolveOwnerName(userId)\n(live session name, or store.getNameForUserId fallback)
+    WS->>Store: getList(TRANSACTIONS, 'Zara')
+    Store-->>WS: full transaction list (all rows survived)
+    WS-->>Admin: transactions_list { userId, transactions }
+    Admin->>Admin: full history still visible — nothing lost
+      </pre>
+    </div>
+    <div class="sheet-foot">
+      <p class="caption">The trace that mattered most this cycle: a transaction persists, the server dies mid-session, and <b>the same child reconnects to find nothing missing</b> — because identity (<code>userId</code>) and storage are no longer tied to a connection that can vanish.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Redlines</h2>
+      <p class="sub">Field notes from checking this sheet against the code actually running today — not the design docs.</p>
+    </div>
+    <div class="redlines">
+      <div class="redline">
+        <span class="mark">01</span>
+        <div class="body">
+          <span class="tag">correction</span>
+          <p>Quran reading isn't purely client-to-API. The <b>Indo-Pak script toggle</b> in <code>DuasPage.jsx</code> calls a server proxy, <code>GET /api/quran-indopak</code>, which talks to a second, OAuth2-gated provider (the Quran Foundation API) — a real hop earlier docs didn't show.</p>
+        </div>
+      </div>
+      <div class="redline">
+        <span class="mark">02</span>
+        <div class="body">
+          <span class="tag">stale reference</span>
+          <p>A comment in <code>server/index.js</code> still credits browsing capture to <code>DnsMonitorVpnService</code> — that file was removed earlier in the project. The real path is <code>BrowserActivityAccessibilityService</code> reading Chrome's address bar and calling <code>KeepAliveService.sendBrowsingEvent()</code> directly, in-process.</p>
+        </div>
+      </div>
+      <div class="redline">
+        <span class="mark">03</span>
+        <div class="body">
+          <span class="tag">by design</span>
+          <p>Screenshots and file transfers are deliberately never written to SQLite — short-TTL, in-memory only (24h and 10min respectively). They were out of scope for the durability work on purpose, not an oversight.</p>
+        </div>
+      </div>
+      <div class="redline">
+        <span class="mark">04</span>
+        <div class="body">
+          <span class="tag">removed path</span>
+          <p>The notification-listener and bank-SMS transaction-capture services referenced in earlier design discussions no longer exist in this tree. Statement upload is the only transaction-capture path today.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="page-foot">
+    Traced against <code style="font-family:inherit">server/index.js</code>, <code style="font-family:inherit">server/store.js</code>, <code style="font-family:inherit">server/backup.js</code>, <code style="font-family:inherit">client/capacitor.config.json</code>, and the native Android sources · full source in <code style="font-family:inherit">docs/architecture-diagram.md</code> and <code style="font-family:inherit">docs/project-overview.md</code>
+  </footer>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: true, securityLevel: "loose" });
+</script>
+</body>
+</html>
