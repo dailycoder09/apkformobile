@@ -1,0 +1,14 @@
+[Unit]
+Description=Run FamilyWatch nightly SQLite backup at 02:37
+
+[Timer]
+OnCalendar=*-*-* 02:37:00
+# If the VM was off/rebooting at 02:37, run the missed backup as soon as
+# the timer is next active (e.g. right after boot) instead of skipping it.
+Persistent=true
+# Spread load/avoid perfect-alignment thundering herd if this unit file is
+# ever reused across multiple VMs.
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

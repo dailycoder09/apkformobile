@@ -109,3 +109,23 @@ jobs:
             npm --prefix client run build
             sudo systemctl restart familywatch
             echo "✓ Server deployed"
+
+      - name: Install nightly backup timer on GCP VM
+        # Sets up the systemd oneshot service + timer that runs
+        # server/backup.js nightly to back up the SQLite DB to GCS. Safe to
+        # re-run every deploy (copy + daemon-reload + enable --now are all
+        # idempotent). continue-on-error so a hiccup here never blocks or
+        # fails the core app deploy above, which is the critical path.
+        uses: appleboy/ssh-action@v1
+        continue-on-error: true
+        with:
+          host: familywatch.duckdns.org
+          username: fatemasayed760
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd ~/chat-pwa
+            sudo cp deploy/familywatch-backup.service /etc/systemd/system/familywatch-backup.service
+            sudo cp deploy/familywatch-backup.timer /etc/systemd/system/familywatch-backup.timer
+            sudo systemctl daemon-reload
+            sudo systemctl enable --now familywatch-backup.timer
+            echo "✓ Backup timer installed"

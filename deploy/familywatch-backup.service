@@ -1,0 +1,18 @@
+[Unit]
+Description=FamilyWatch nightly SQLite backup to Google Cloud Storage
+# Don't bother trying if the app itself isn't up; not a hard dependency
+# though, since the DB file just needs to exist on disk.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fatemasayed760
+WorkingDirectory=/home/fatemasayed760/chat-pwa
+ExecStart=/usr/bin/node /home/fatemasayed760/chat-pwa/server/backup.js
+# BACKUP_BUCKET defaults inside backup.js if unset; override here if the
+# bucket is ever renamed.
+# Environment=BACKUP_BUCKET=familywatch-backups-7f266f68
+
+[Install]
+WantedBy=multi-user.target

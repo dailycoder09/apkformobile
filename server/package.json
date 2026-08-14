@@ -6,6 +6,7 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "livekit-server-sdk": "^2.13.0",
     "undici": "^7.29.0",
     "ws": "^8.18.0"

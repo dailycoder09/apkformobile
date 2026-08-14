@@ -359,8 +359,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
                         {t.type === 'transfer'
                           ? <span className="txn-bank-tag">Self Transfer</span>
                           : <span className="txn-bank-tag">{t.bank}</span>}
-                        {t.source === 'sms' && <span className="txn-sms-tag">SMS</span>}
-                        {t.source === 'notification' && <span className="txn-sms-tag">Auto</span>}
+                        {t.source === 'statement' && <span className="txn-sms-tag">Statement</span>}
                         <span className="txn-time">{formatTime(t.date)}</span>
                       </span>
                     </div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 
 const QURAN_API = 'https://api.alquran.cloud/v1'
 
@@ -313,6 +313,11 @@ function QuranTab() {
   const { playingKey, toggleAudio } = useAyahAudioPlayer()
   const ayahCardRefs = useRef({})
   const searchCardRefs = useRef({})
+  const scrollTimerRef = useRef(null)
+  const resumeTargetRef = useRef(null)
+  const [lastRead, setLastRead] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('quran-last-read')) } catch { return null }
+  })
 
   useEffect(() => {
     fetch(`${QURAN_API}/surah`).then((r) => r.json()).then((json) => {
@@ -332,6 +337,44 @@ function QuranTab() {
       searchCardRefs.current[playingKey]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
   }, [playingKey, visibleCount])
+
+  // Bookmark the ayah nearest the top of the viewport as "last read", debounced
+  // so it doesn't write on every scroll frame. Listens on the capture phase so
+  // it still fires if a nested scrollable div — not window — does the scrolling.
+  useEffect(() => {
+    if (!selectedSurah || !surahAyahs) return
+    function handleScroll() {
+      clearTimeout(scrollTimerRef.current)
+      scrollTimerRef.current = setTimeout(() => {
+        let closestNum = null
+        let closestDist = Infinity
+        Object.entries(ayahCardRefs.current).forEach(([num, el]) => {
+          if (!el) return
+          const dist = Math.abs(el.getBoundingClientRect().top - 120)
+          if (dist < closestDist) { closestDist = dist; closestNum = Number(num) }
+        })
+        if (closestNum == null) return
+        const meta = surahList.find((s) => s.number === selectedSurah)
+        const entry = { surah: selectedSurah, ayah: closestNum, surahName: meta?.englishName, timestamp: Date.now() }
+        localStorage.setItem('quran-last-read', JSON.stringify(entry))
+        setLastRead(entry)
+      }, 800)
+    }
+    window.addEventListener('scroll', handleScroll, true)
+    handleScroll()
+    return () => { window.removeEventListener('scroll', handleScroll, true); clearTimeout(scrollTimerRef.current) }
+  }, [selectedSurah, surahAyahs, surahList])
+
+  useEffect(() => {
+    if (!surahAyahs || resumeTargetRef.current == null) return
+    const target = resumeTargetRef.current
+    if (target > visibleCount) { setVisibleCount(target); return }
+    const t = setTimeout(() => {
+      ayahCardRefs.current[target]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      resumeTargetRef.current = null
+    }, 50)
+    return () => clearTimeout(t)
+  }, [surahAyahs, visibleCount])
 
   useEffect(() => {
     const query = searchQuery.trim()
@@ -377,19 +420,31 @@ function QuranTab() {
           })
       : fetch(`${QURAN_API}/surah/${num}/quran-uthmani`).then((r) => r.json()).then((j) => j?.data?.ayahs || [])
 
+    // Ruku numbers only live on the Uthmani ayah objects, so when the Indo-Pak
+    // script is active (and its own ayahs lack `ruku`), fetch Uthmani again
+    // purely to source ruku boundaries.
+    const rukuPromise = script === 'indopak'
+      ? fetch(`${QURAN_API}/surah/${num}/quran-uthmani`).then((r) => r.json()).then((j) => j?.data?.ayahs || []).catch(() => [])
+      : Promise.resolve(null)
+
     Promise.all([
       arabicPromise,
+      rukuPromise,
       fetch(`${QURAN_API}/surah/${num}/en.sahih`).then((r) => r.json()),
       fetch(`${QURAN_API}/surah/${num}/hi.hindi`).then((r) => r.json()).catch(() => null),
       fetch(`${QURAN_API}/surah/${num}/en.transliteration`).then((r) => r.json()).catch(() => null),
       fetch(`${QURAN_API}/surah/${num}/ar.alafasy`).then((r) => r.json()).catch(() => null),
-    ]).then(([arAyahs, enJson, hiJson, trJson, auJson]) => {
+    ]).then(([arAyahs, rukuAyahs, enJson, hiJson, trJson, auJson]) => {
       const enAyahs = enJson?.data?.ayahs || []
       const hiAyahs = hiJson?.data?.ayahs || []
       const trAyahs = trJson?.data?.ayahs || []
       const auAyahs = auJson?.data?.ayahs || []
+      const rukuSource = rukuAyahs && rukuAyahs.length ? rukuAyahs : arAyahs
+      const rukuByNumber = {}
+      rukuSource.forEach((a) => { if (a.ruku != null) rukuByNumber[a.numberInSurah] = a.ruku })
       const combined = arAyahs.map((a, i) => ({
         number: a.numberInSurah,
+        ruku: rukuByNumber[a.numberInSurah],
         arabic: cleanArabicText(a.text),
         translation: enAyahs[i]?.text,
         hindi: hiAyahs[i]?.text,
@@ -409,6 +464,12 @@ function QuranTab() {
   function changeScript(mode) {
     setScriptMode(mode)
     if (selectedSurah) loadSurah(selectedSurah, mode)
+  }
+
+  function resumeLastRead() {
+    if (!lastRead) return
+    resumeTargetRef.current = lastRead.ayah
+    openSurah(lastRead.surah)
   }
 
   if (selectedSurah) {
@@ -432,31 +493,36 @@ function QuranTab() {
         {surahStatus === 'loading' && <p className="duas-disclaimer">Loading…</p>}
         {surahStatus === 'error' && <p className="duas-disclaimer">Couldn't load this surah — check your connection.</p>}
         <div className="duas-list">
-          {(surahAyahs || []).slice(0, visibleCount).map((a) => (
-            <div
-              key={a.number}
-              ref={(el) => { ayahCardRefs.current[a.number] = el }}
-              className={`duas-card${playingKey === `surah-${a.number}` ? ' duas-card--playing' : ''}`}
-            >
-              {a.audio && (
-                <AudioButton
-                  playing={playingKey === `surah-${a.number}`}
-                  onClick={() => toggleAudio(`surah-${a.number}`, a.audio, (key) => {
-                    const idx = (surahAyahs || []).findIndex((x) => `surah-${x.number}` === key)
-                    const nextAyah = idx >= 0 ? surahAyahs[idx + 1] : null
-                    return nextAyah ? { key: `surah-${nextAyah.number}`, url: nextAyah.audio } : null
-                  })}
-                />
-              )}
-              <p className="duas-arabic">
-                {a.arabic}
-                <span className="duas-ayah-badge">{a.number}</span>
-              </p>
-              {a.transliteration && <p className="duas-translit">{a.transliteration}</p>}
-              <p className="duas-translation">{a.translation}</p>
-              {a.hindi && <p className="duas-translation duas-translation--hindi">{a.hindi}</p>}
-            </div>
-          ))}
+          {(surahAyahs || []).slice(0, visibleCount).map((a, idx, arr) => {
+            const startsNewRuku = a.ruku != null && a.ruku !== arr[idx - 1]?.ruku
+            return (
+              <Fragment key={a.number}>
+                {startsNewRuku && <div className="duas-ruku-marker">Ruku {a.ruku}</div>}
+                <div
+                  ref={(el) => { ayahCardRefs.current[a.number] = el }}
+                  className={`duas-card${playingKey === `surah-${a.number}` ? ' duas-card--playing' : ''}`}
+                >
+                  {a.audio && (
+                    <AudioButton
+                      playing={playingKey === `surah-${a.number}`}
+                      onClick={() => toggleAudio(`surah-${a.number}`, a.audio, (key) => {
+                        const i = (surahAyahs || []).findIndex((x) => `surah-${x.number}` === key)
+                        const nextAyah = i >= 0 ? surahAyahs[i + 1] : null
+                        return nextAyah ? { key: `surah-${nextAyah.number}`, url: nextAyah.audio } : null
+                      })}
+                    />
+                  )}
+                  <p className="duas-arabic">
+                    {a.arabic}
+                    <span className="duas-ayah-badge">{a.number}</span>
+                  </p>
+                  {a.transliteration && <p className="duas-translit">{a.transliteration}</p>}
+                  <p className="duas-translation">{a.translation}</p>
+                  {a.hindi && <p className="duas-translation duas-translation--hindi">{a.hindi}</p>}
+                </div>
+              </Fragment>
+            )
+          })}
         </div>
         {surahAyahs && visibleCount < surahAyahs.length && (
           <button className="duas-load-more" onClick={() => setVisibleCount((v) => v + PAGE_SIZE)}>
@@ -517,6 +583,16 @@ function QuranTab() {
         </div>
       ) : (
         <>
+          {lastRead && (
+            <button className="duas-continue-card" onClick={resumeLastRead}>
+              <span className="material-symbols-outlined">bookmark</span>
+              <span className="duas-continue-info">
+                <span className="duas-continue-label">Continue Reading</span>
+                <span className="duas-continue-detail">{lastRead.surahName} · Ayah {lastRead.ayah}</span>
+              </span>
+              <span className="material-symbols-outlined">chevron_right</span>
+            </button>
+          )}
           <p className="duas-settings-hint">Browse by Surah, in sequence:</p>
           <div className="duas-booklist">
             {surahList.map((s) => (

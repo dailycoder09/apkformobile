@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank } from '../utils/txnMeta'
+import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 
 const PAGE_SIZE = 15
 
@@ -64,6 +65,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [customCategories, setCustomCategories] = useState(() => loadCustomCategories(session.userId))
   const [banks, setBanks] = useState(() => loadBanks(session.userId, []))
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const statementInputRef = useRef(null)
 
   // Listen for incoming transaction confirmations (own), new ones from server, edits, deletes, and history
   useEffect(() => {
@@ -209,6 +211,30 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     if (!isNaN(num) && num > 0) setBudget(num)
   }
 
+  async function handleStatementUpload(e) {
+    const file = e.target.files?.[0]
+    e.target.value = '' // allow re-selecting the same file later
+    if (!file) return
+    try {
+      const text = await file.text()
+      const parsed = parsePhonePeStatementCsv(text)
+      if (parsed.length === 0) {
+        window.alert('No transactions found in that file — is it a PhonePe statement CSV?')
+        return
+      }
+      parsed.forEach(txn => sendMsg({ type: 'transaction_add', transaction: txn }))
+      // Optimistic local update — server-side exact-id dedup means re-uploading an
+      // overlapping statement won't create visible duplicates once transactions_list refreshes.
+      setTxns(prev => {
+        const existingIds = new Set(prev.map(t => t.id))
+        return [...parsed.filter(t => !existingIds.has(t.id)), ...prev].sort((a, b) => b.date - a.date)
+      })
+      window.alert(`Imported ${parsed.length} transactions from the statement.`)
+    } catch (err) {
+      window.alert('Could not read that file — make sure it\'s an unmodified PhonePe statement CSV export.')
+    }
+  }
+
   const filtered    = txns.filter(t => tab === 'all' || t.type === tab)
   const visibleTxns = filtered.slice(0, visibleCount)
   const groups      = groupByDate(visibleTxns)
@@ -327,6 +353,16 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <span className="material-symbols-outlined">arrow_back</span>
         </button>
         <span className="txn-title">Finance</span>
+        <button className="txn-header-icon-btn" onClick={() => statementInputRef.current?.click()} aria-label="Upload PhonePe statement">
+          <span className="material-symbols-outlined">upload_file</span>
+        </button>
+        <input
+          ref={statementInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          style={{ display: 'none' }}
+          onChange={handleStatementUpload}
+        />
       </div>
 
       <div className="txn-body">
@@ -531,8 +567,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                         {t.type === 'transfer'
                           ? <span className="txn-bank-tag">Self Transfer</span>
                           : <span className="txn-bank-tag">{t.bank}</span>}
-                        {t.source === 'sms' && <span className="txn-sms-tag">SMS</span>}
-                        {t.source === 'notification' && <span className="txn-sms-tag">Auto</span>}
+                        {t.source === 'statement' && <span className="txn-sms-tag">Statement</span>}
                         <span className="txn-time">{formatTime(t.date)}</span>
                       </span>
                     </div>
