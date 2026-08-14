@@ -9,5 +9,8 @@
     "Filesystem": {
       "iosScheme": "capacitor"
     }
+  },
+  "cordova": {
+    "accessOrigins": ["https://familywatch.duckdns.org"]
   }
 }

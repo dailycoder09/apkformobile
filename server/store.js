@@ -1,4 +1,5 @@
 const path     = require('path')
+const crypto   = require('crypto')
 const Database = require('better-sqlite3')
 
 const db = new Database(path.join(__dirname, 'data.sqlite'))
@@ -31,6 +32,16 @@ db.exec(`
   )
 `)
 
+// Small durable key/value table for server-generated secrets (e.g. the screenshot
+// encryption key) that must survive a process restart — see getOrCreateSecret().
+db.exec(`
+  CREATE TABLE IF NOT EXISTS secrets (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    created_at INTEGER
+  )
+`)
+
 const stmts = {}
 for (const table of Object.values(TABLES)) {
   stmts[table] = {
@@ -39,12 +50,16 @@ for (const table of Object.values(TABLES)) {
     insert: db.prepare(`INSERT OR IGNORE INTO ${table} (id, owner_name, ts, data) VALUES (?, ?, ?, ?)`),
     update: db.prepare(`UPDATE ${table} SET ts = ?, data = ? WHERE id = ? AND owner_name = ?`),
     delete: db.prepare(`DELETE FROM ${table} WHERE id = ? AND owner_name = ?`),
+    deleteAll: db.prepare(`DELETE FROM ${table} WHERE owner_name = ?`),
   }
 }
 
 const getUserStmt    = db.prepare('SELECT user_id FROM known_users WHERE name = ?')
 const insertUserStmt = db.prepare('INSERT OR IGNORE INTO known_users (name, user_id, created_at) VALUES (?, ?, ?)')
 const nameByIdStmt   = db.prepare('SELECT name FROM known_users WHERE user_id = ?')
+
+const getSecretStmt    = db.prepare('SELECT value FROM secrets WHERE name = ?')
+const insertSecretStmt = db.prepare('INSERT OR IGNORE INTO secrets (name, value, created_at) VALUES (?, ?, ?)')
 
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
@@ -91,6 +106,26 @@ function deleteItem(table, ownerName, id) {
   return info.changes > 0
 }
 
+// Wipes every row for a given owner in the given table — e.g. "delete all browsing
+// history" / "delete all call logs" for a child, requested by the admin.
+function deleteAllForOwner(table, ownerName) {
+  const info = stmts[table].deleteAll.run(ownerName)
+  return info.changes
+}
+
+// Returns a persisted secret value, generating and storing one on first use.
+// Survives process restarts (unlike a random in-memory Buffer), so data encrypted
+// with it stays decryptable across deploys/restarts.
+function getOrCreateSecret(name) {
+  const existing = getSecretStmt.get(name)
+  if (existing) return existing.value
+  const value = crypto.randomBytes(32).toString('hex')
+  insertSecretStmt.run(name, value, Date.now())
+  // Re-read in case of a concurrent-insert race (INSERT OR IGNORE) — ensures every
+  // caller converges on the single stored value rather than each keeping its own.
+  return getSecretStmt.get(name).value
+}
+
 module.exports = {
   TABLES,
   getOrAssignUserId,
@@ -99,4 +134,6 @@ module.exports = {
   appendItem,
   updateItem,
   deleteItem,
+  deleteAllForOwner,
+  getOrCreateSecret,
 }

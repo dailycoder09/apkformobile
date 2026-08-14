@@ -10,6 +10,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
@@ -102,10 +103,30 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
+    // Only server this build is ever allowed to talk to — matches SERVER_URL baked into
+    // client/src/components/Login.jsx. Defense-in-depth: a compromised/malicious page
+    // running in the WebView (or anything else able to reach this bridge) can't repoint
+    // the background service at an attacker-controlled host.
+    private static final String ALLOWED_SERVER_HOST = "familywatch.duckdns.org";
+
+    private static boolean isAllowedServerUrl(String serverUrl) {
+        if (serverUrl == null) return false;
+        try {
+            Uri uri = Uri.parse(serverUrl);
+            return "https".equals(uri.getScheme()) && ALLOWED_SERVER_HOST.equalsIgnoreCase(uri.getHost());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     class MeeeeNative {
         @JavascriptInterface
         public void connect(String serverUrl, String name) {
-            getSharedPreferences("meeee", Context.MODE_PRIVATE)
+            if (!isAllowedServerUrl(serverUrl)) {
+                Log.w("MeeeeNative", "connect() rejected — serverUrl is not the allowed host");
+                return;
+            }
+            SecurePrefs.get(MainActivity.this)
                 .edit()
                 .putString("serverUrl", serverUrl)
                 .putString("name", name)
@@ -158,7 +179,7 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void disconnect() {
             // Clear saved credentials so service doesn't reconnect
-            getSharedPreferences("meeee", Context.MODE_PRIVATE)
+            SecurePrefs.get(MainActivity.this)
                 .edit()
                 .remove("serverUrl")
                 .remove("name")

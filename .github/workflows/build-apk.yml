@@ -39,10 +39,10 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Install server dependencies
-        run: npm --prefix server install --production
+        run: npm --prefix server ci --production
 
       - name: Install client dependencies
-        run: npm --prefix client install
+        run: npm --prefix client ci
 
       - name: Build React app
         run: npm --prefix client run build
@@ -94,7 +94,7 @@ jobs:
           retention-days: 30
 
       - name: Deploy server to GCP VM
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: familywatch.duckdns.org
           username: fatemasayed760
@@ -104,8 +104,8 @@ jobs:
             git fetch origin ${{ github.ref_name }}
             git checkout ${{ github.ref_name }} 2>/dev/null || git checkout -b ${{ github.ref_name }} origin/${{ github.ref_name }}
             git reset --hard origin/${{ github.ref_name }}
-            npm --prefix server install --production
-            npm --prefix client install
+            npm --prefix server ci --production
+            npm --prefix client ci
             npm --prefix client run build
             sudo systemctl restart familywatch
             echo "✓ Server deployed"
@@ -116,7 +116,7 @@ jobs:
         # re-run every deploy (copy + daemon-reload + enable --now are all
         # idempotent). continue-on-error so a hiccup here never blocks or
         # fails the core app deploy above, which is the critical path.
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         continue-on-error: true
         with:
           host: familywatch.duckdns.org

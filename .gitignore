@@ -6,3 +6,4 @@ client/android/.gradle/
 client/android/build/
 client/android/app/build/
 .DS_Store
+server/*.sqlite*

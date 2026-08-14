@@ -19,8 +19,7 @@ public class ServiceRestartWorker extends Worker {
     public Result doWork() {
         Context ctx = getApplicationContext();
         // Only restart if the user was previously connected (credentials saved)
-        String url = ctx.getSharedPreferences("meeee", Context.MODE_PRIVATE)
-            .getString("serverUrl", null);
+        String url = SecurePrefs.get(ctx).getString("serverUrl", null);
         if (url != null && !url.isEmpty()) {
             Intent svc = new Intent(ctx, KeepAliveService.class);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

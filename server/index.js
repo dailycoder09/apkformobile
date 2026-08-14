@@ -14,16 +14,71 @@ const store = require('./store')
 const outboundProxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY
 if (outboundProxy) setGlobalDispatcher(new ProxyAgent(outboundProxy))
 
+// Falls back to a well-known insecure dev PIN if ADMIN_PIN isn't set, so local dev
+// keeps working with zero setup — but this is NEVER safe for production, hence the
+// loud startup warning below (see server.listen callback).
 const ADMIN_PIN   = process.env.ADMIN_PIN || '1234'
 const CLIENT_DIR  = path.join(__dirname, '../client/dist')
 const MAX_FILE_MB = 200
 
+// ── Simple in-memory PIN brute-force guard ──────────────────────────────────
+// Per-source (IP for HTTP, remote address for WS) attempt tracking: 5 failed
+// attempts within 5 minutes locks that source out for 15 minutes. Not meant to
+// stop a distributed attacker — just closes the trivial single-IP brute-force
+// case against a short numeric PIN.
+const PIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000
+const PIN_LOCKOUT_MS        = 15 * 60 * 1000
+const PIN_MAX_ATTEMPTS      = 5
+const pinAttempts = new Map() // source → { count, firstAttemptAt, lockedUntil }
+
+// Returns { locked: true } if this source is currently locked out. Otherwise returns
+// { locked: false }. Call recordPinFailure()/clearPinAttempts() based on the outcome
+// of the PIN check that follows.
+function checkPinLockout(source) {
+  const rec = pinAttempts.get(source)
+  if (!rec) return { locked: false }
+  if (rec.lockedUntil && Date.now() < rec.lockedUntil) return { locked: true }
+  // Lockout expired or window expired — reset
+  if (rec.lockedUntil && Date.now() >= rec.lockedUntil) {
+    pinAttempts.delete(source)
+    return { locked: false }
+  }
+  if (Date.now() - rec.firstAttemptAt > PIN_ATTEMPT_WINDOW_MS) {
+    pinAttempts.delete(source)
+    return { locked: false }
+  }
+  return { locked: false }
+}
+
+function recordPinFailure(source) {
+  const now = Date.now()
+  let rec = pinAttempts.get(source)
+  if (!rec || now - rec.firstAttemptAt > PIN_ATTEMPT_WINDOW_MS) {
+    rec = { count: 0, firstAttemptAt: now, lockedUntil: 0 }
+  }
+  rec.count += 1
+  if (rec.count >= PIN_MAX_ATTEMPTS) {
+    rec.lockedUntil = now + PIN_LOCKOUT_MS
+  }
+  pinAttempts.set(source, rec)
+}
+
+function clearPinAttempts(source) {
+  pinAttempts.delete(source)
+}
+
 // Gates plain HTTP GETs (e.g. <img src>, which can't carry a WebSocket session or custom
-// auth headers) behind the same PIN already used for admin WebSocket auth.
-function isAdminRequest(req) {
+// auth headers) behind the same PIN already used for admin WebSocket auth. Returns a
+// status so callers can tell a locked-out source (→ 429) apart from a bad PIN (→ 403).
+function checkAdminAuth(req) {
+  const ip = req.socket.remoteAddress
+  if (checkPinLockout(ip).locked) return 'locked'
   const params = new URL(req.url, 'http://x').searchParams
   const pin = params.get('pin') || req.headers['x-admin-pin']
-  return pin === ADMIN_PIN
+  const ok = pin === ADMIN_PIN
+  if (ok) { clearPinAttempts(ip); return 'ok' }
+  recordPinFailure(ip)
+  return 'forbidden'
 }
 
 // Auto-update: the repo is private, so the client never gets a GitHub token — the server
@@ -48,18 +103,22 @@ async function fetchLatestRelease() {
 // Auto-expires after 10 minutes
 const fileStore = new Map()
 
+// Bounds how many uploads can be buffering into memory at once (each up to MAX_FILE_MB).
+const MAX_CONCURRENT_UPLOADS = 5
+let activeUploads = 0
+
 // Screenshot store: id → { iv, authTag, ciphertext, userId, userName, ts }
 // Keyed by userId for list lookup: screenshotIndex userId → [id, ...]
-// Encrypted at rest (AES-256-GCM) — plaintext is never stored. Falls back to a random
-// per-process key if SCREENSHOT_ENC_KEY isn't configured, so screenshots are still always
-// encrypted; the only downside of the fallback is they become undecryptable across a
-// restart, which is fine given the 24h TTL below.
+// Encrypted at rest (AES-256-GCM) — plaintext is never stored. Key is persisted via
+// store.getOrCreateSecret so it survives process restarts (same durable-storage pattern
+// already used for transactions/browsing/call-logs); SCREENSHOT_ENC_KEY still wins if
+// explicitly set, for deployment flexibility.
 const screenshotStore = new Map()
 const screenshotIndex = new Map()  // userId → [id, ...]
 const SCREENSHOT_TTL  = 24 * 60 * 60 * 1000  // 24 h
 const SCREENSHOT_KEY  = process.env.SCREENSHOT_ENC_KEY
   ? Buffer.from(process.env.SCREENSHOT_ENC_KEY, 'base64')
-  : crypto.randomBytes(32)
+  : Buffer.from(store.getOrCreateSecret('screenshot_key'), 'hex')
 
 function encryptScreenshot(data) {
   const iv = crypto.randomBytes(12)
@@ -193,6 +252,22 @@ const server = http.createServer(async (req, res) => {
       const name       = decodeURIComponent(req.headers['x-file-name'] || 'file')
       const mime       = req.headers['content-type'] || 'application/octet-stream'
 
+      // fromUserId is client-supplied and used to attribute the file_ready notification —
+      // only trust it if it actually matches a currently-connected user session, otherwise
+      // any device could impersonate another child's uploads.
+      if (fromUserId && !users.has(fromUserId)) {
+        res.writeHead(403); res.end('Unknown or disconnected user session'); return
+      }
+
+      // Cap total concurrent in-flight uploads — each one buffers up to MAX_FILE_MB in
+      // memory, so unbounded concurrency is an easy way to OOM the process.
+      if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+        res.writeHead(503); res.end('Too many concurrent uploads — try again shortly'); return
+      }
+      activeUploads++
+      let uploadCounted = true
+      const releaseUpload = () => { if (uploadCounted) { uploadCounted = false; activeUploads-- } }
+
       const chunks = []
       let totalBytes = 0
       const maxBytes = MAX_FILE_MB * 1024 * 1024
@@ -201,6 +276,7 @@ const server = http.createServer(async (req, res) => {
         totalBytes += chunk.length
         if (totalBytes > maxBytes) {
           req.destroy()
+          releaseUpload()
           res.writeHead(413); res.end(`File exceeds ${MAX_FILE_MB}MB limit`)
           return
         }
@@ -208,6 +284,7 @@ const server = http.createServer(async (req, res) => {
       })
 
       req.on('end', () => {
+        releaseUpload()
         const data = Buffer.concat(chunks)
         fileStore.set(requestId, { data, mime, name, adminId, fromUserId })
 
@@ -231,12 +308,15 @@ const server = http.createServer(async (req, res) => {
         setTimeout(() => fileStore.delete(requestId), 10 * 60 * 1000)
       })
 
-      req.on('error', () => { res.writeHead(500); res.end('Upload error') })
+      req.on('error', () => { releaseUpload(); res.writeHead(500); res.end('Upload error') })
       return
     }
 
     // ── File download for admin (supports Range for video streaming) ─────
     if (req.method === 'GET' && urlPath.startsWith('/api/file/')) {
+      const authStatus = checkAdminAuth(req)
+      if (authStatus === 'locked') { res.writeHead(429); res.end('Too many attempts — try again later'); return }
+      if (authStatus !== 'ok') { res.writeHead(403); res.end('Forbidden'); return }
       const requestId = urlPath.replace('/api/file/', '')
       const file = fileStore.get(requestId)
       if (!file) { res.writeHead(404); res.end('File not found or expired'); return }
@@ -289,7 +369,9 @@ const server = http.createServer(async (req, res) => {
 
     // ── Screenshot list for admin ────────────────────────────────────────────
     if (req.method === 'GET' && urlPath.startsWith('/api/screenshots/')) {
-      if (!isAdminRequest(req)) { res.writeHead(403); res.end('Forbidden'); return }
+      const authStatus = checkAdminAuth(req)
+      if (authStatus === 'locked') { res.writeHead(429); res.end('Too many attempts — try again later'); return }
+      if (authStatus !== 'ok') { res.writeHead(403); res.end('Forbidden'); return }
       const userId = urlPath.replace('/api/screenshots/', '')
       const ids = screenshotIndex.get(userId) || []
       const list = ids.map(id => {
@@ -303,7 +385,9 @@ const server = http.createServer(async (req, res) => {
 
     // ── Single screenshot download ───────────────────────────────────────────
     if (req.method === 'GET' && urlPath.startsWith('/api/screenshot/')) {
-      if (!isAdminRequest(req)) { res.writeHead(403); res.end('Forbidden'); return }
+      const authStatus = checkAdminAuth(req)
+      if (authStatus === 'locked') { res.writeHead(429); res.end('Too many attempts — try again later'); return }
+      if (authStatus !== 'ok') { res.writeHead(403); res.end('Forbidden'); return }
       const id = urlPath.replace('/api/screenshot/', '')
       const shot = screenshotStore.get(id)
       if (!shot) { res.writeHead(404); res.end('Not found or expired'); return }
@@ -465,8 +549,9 @@ function getUserList() {
     .map(u => ({ id: u.userId, name: u.name }))
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   let meta = null
+  const remoteAddress = req.socket.remoteAddress
 
   ws.on('message', (raw) => {
     try {
@@ -479,10 +564,16 @@ wss.on('connection', (ws) => {
         const userId = makeId()
 
         if (msg.role === 'admin') {
+          if (checkPinLockout(remoteAddress).locked) {
+            send(ws, { type: 'auth_fail', reason: 'Too many attempts — try again later' })
+            return
+          }
           if (msg.pin !== ADMIN_PIN) {
+            recordPinFailure(remoteAddress)
             send(ws, { type: 'auth_fail', reason: 'Wrong PIN' })
             return
           }
+          clearPinAttempts(remoteAddress)
           meta = { ws, role: 'admin', userId, name: 'Parent' }
           admins.set(userId, meta)
           byWs.set(ws, meta)
@@ -591,11 +682,29 @@ wss.on('connection', (ws) => {
         return
       }
 
+      // Admin-only: wipe all browsing history for a child. No client UI wired up to this
+      // yet — a "Delete history" button in AdminBrowsingView.jsx is a follow-up.
+      if (meta.role === 'admin' && msg.type === 'browsing_delete_all') {
+        const ownerName = resolveOwnerName(msg.userId)
+        if (ownerName) store.deleteAllForOwner(store.TABLES.BROWSING_HISTORY, ownerName)
+        broadcastToAdmins({ type: 'browsing_cleared', userId: msg.userId })
+        return
+      }
+
       // ── Admin commands ── call log ───────────────────
       if (meta.role === 'admin' && msg.type === 'call_log_get') {
         const ownerName = resolveOwnerName(msg.userId)
         const list = ownerName ? store.getList(store.TABLES.CALL_LOGS, ownerName) : []
         send(ws, { type: 'call_log_list', userId: msg.userId, entries: list })
+        return
+      }
+
+      // Admin-only: wipe all call log entries for a child. No client UI wired up to this
+      // yet — a "Delete history" button in AdminCallLogView.jsx is a follow-up.
+      if (meta.role === 'admin' && msg.type === 'call_log_delete_all') {
+        const ownerName = resolveOwnerName(msg.userId)
+        if (ownerName) store.deleteAllForOwner(store.TABLES.CALL_LOGS, ownerName)
+        broadcastToAdmins({ type: 'call_log_cleared', userId: msg.userId })
         return
       }
 
@@ -740,6 +849,11 @@ server.listen(PORT, () => {
   console.log(`\n🚀 FamilyWatch running on port ${PORT}`)
   console.log(`   App:       http://localhost:${PORT}`)
   console.log(`   WebSocket: ws://localhost:${PORT}/ws`)
-  console.log(`   Admin PIN: ${ADMIN_PIN}`)
+  if (process.env.ADMIN_PIN) {
+    console.log('   Admin PIN: configured')
+  } else {
+    console.warn('   Admin PIN: NOT SET')
+    console.warn('   ⚠️  ADMIN_PIN not set — using an insecure default. Set ADMIN_PIN in the environment before deploying.')
+  }
   console.log(`   Dist:      ${fs.existsSync(CLIENT_DIR) ? '✓ found' : '✗ MISSING — run: npm --prefix client run build'}\n`)
 })

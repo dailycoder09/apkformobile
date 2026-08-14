@@ -374,8 +374,9 @@ User=fatemasayed760
 WorkingDirectory=/home/fatemasayed760/chat-pwa
 Environment=PORT=8080
 Environment=LIVEKIT_URL=wss://familywatch.duckdns.org/livekit
-Environment=LIVEKIT_API_KEY=fwApiKey
-Environment=LIVEKIT_API_SECRET=fwApiSecret2024xyz
+Environment=LIVEKIT_API_KEY=<see EnvironmentFile, not committed>
+Environment=LIVEKIT_API_SECRET=<see EnvironmentFile, not committed>
+Environment=ADMIN_PIN=<see EnvironmentFile, not committed — do NOT rely on the code default>
 ExecStart=/usr/bin/node server/index.js
 Restart=always
 RestartSec=3
@@ -391,11 +392,15 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now familywatch
 ```
 
-> These are the actual production LiveKit API key/secret values found in place on the
-> VM. Treat this file as sensitive — it is reproduced here only because it already
-> exists in plaintext in the deployed systemd unit. Consider rotating these values and
-> moving them to a secrets manager or an `EnvironmentFile=` outside of version control
-> if this runbook is ever shared more broadly.
+> **2026-08-15 security note:** this file previously reproduced the real production
+> LiveKit API key/secret in plaintext. Those values must be treated as compromised
+> (this repo was briefly public) and have been rotated; the real values now live only
+> on the VM (an `EnvironmentFile=` outside of git) and in the LiveKit container's own
+> config, never in version control. The same applies to `ADMIN_PIN` — the code's
+> hardcoded `'1234'` fallback (`server/index.js`) must never be relied on in
+> production; set a strong value directly in the environment. Do not reproduce real
+> secret values in this file again, even for operational reference — use placeholders
+> and point to where the real value is stored instead.
 
 ### 5.4 nginx site config — `/etc/nginx/sites-enabled/familywatch`
 
@@ -454,7 +459,7 @@ rtc:
   port_range_end: 60000
   use_external_ip: true
 keys:
-  fwApiKey: fwApiSecret2024xyz
+  <api-key>: <api-secret>   # rotated 2026-08-15 — real values live only on the VM, never in git
 ```
 
 The container listens directly on the host's `7880`/`7881` plus the full
@@ -467,9 +472,14 @@ sudo docker run -d \
   --restart always \
   --net=host \
   -v /path/to/config.yaml:/config.yaml \
-  livekit/livekit-server \
+  livekit/livekit-server:v1.9.1 \
   --config /config.yaml
 ```
+
+> Pin the image tag explicitly (confirm the actual running version with
+> `sudo docker inspect livekit --format '{{.Config.Image}}'` before relying on this for
+> a real rebuild) — `livekit/livekit-server` with no tag resolves to `:latest`, an
+> unpinned, undocumented dependency for a disaster-recovery procedure.
 
 > The exact original `docker run` invocation was not independently captured in this
 > session (only inferred from the running container's network behavior and config).
@@ -489,9 +499,19 @@ gcloud compute firewall-rules create allow-familywatch-web \
   --target-tags=familywatch
 
 gcloud compute firewall-rules create allow-familywatch-livekit \
-  --allow=tcp:7881,udp:50000-60000 \
+  --allow=tcp:7881,udp:50000-50200 \
   --target-tags=familywatch
 ```
+
+> **2026-08-15 security note:** the UDP range above was narrowed from the previously
+> documented `udp:50000-60000` (a needlessly wide 10,000-port exposure) to
+> `udp:50000-50200` — 201 ports is generous headroom for a small number of concurrent
+> family AV sessions per typical LiveKit sizing guidance (each participant's RTC media
+> needs one port from the range). The **live** GCP firewall rule and the VM's LiveKit
+> `config.yaml` (`rtc.port_range_start` / `rtc.port_range_end`, see Section 5.5) both
+> still need to be updated to match if this narrower range is ever applied for
+> real — this section only documents what a from-scratch rebuild *should* create, it
+> does not change anything currently running.
 
 Then create the instance with `--tags=familywatch` from the start.
 
