@@ -62,29 +62,38 @@ class TransactionNotificationListener : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        val bankLabel = targetPackages[sbn?.packageName] ?: return
+        val pkg = sbn?.packageName
+        val bankLabel = targetPackages[pkg]
+        if (bankLabel == null) {
+            // Never logs content for non-whitelisted apps — package name only, so this stays
+            // useful for debugging ("is my banking app even in the whitelist?") without
+            // reading anything from apps outside the declared scope.
+            debug("skip: package not whitelisted ($pkg)")
+            return
+        }
 
         val extras = sbn!!.notification.extras
         val title = extras.getString("android.title") ?: ""
         val text = extras.getCharSequence("android.text")?.toString() ?: ""
-        if (title.isBlank() && text.isBlank()) return
+        if (title.isBlank() && text.isBlank()) { debug("skip: blank notification content ($bankLabel)"); return }
 
         val combined = "$title $text"
         val lower = combined.lowercase()
-        if (skipKeywords.any { lower.contains(it) }) return
+        if (skipKeywords.any { lower.contains(it) }) { debug("skip: matched skip-keyword ($bankLabel): \"$combined\""); return }
 
         val type = when {
             debitKeywords.any { lower.contains(it) } -> "debit"
             creditKeywords.any { lower.contains(it) } -> "credit"
-            else -> return
+            else -> { debug("skip: no debit/credit keyword matched ($bankLabel): \"$combined\""); return }
         }
 
-        val amountMatch = amountRegex.find(combined) ?: return
-        val amount = amountMatch.groupValues[1].replace(",", "").toDoubleOrNull() ?: return
-        if (amount <= 0) return
+        val amountMatch = amountRegex.find(combined)
+        if (amountMatch == null) { debug("skip: no amount pattern matched ($bankLabel): \"$combined\""); return }
+        val amount = amountMatch.groupValues[1].replace(",", "").toDoubleOrNull()
+        if (amount == null || amount <= 0) { debug("skip: amount parse failed ($bankLabel): \"$combined\""); return }
 
         val fingerprint = "$type|$amount|${System.currentTimeMillis() / 60_000}"
-        if (isDuplicate(fingerprint)) return
+        if (isDuplicate(fingerprint)) { debug("skip: deduped as recent repeat ($bankLabel) amount=$amount"); return }
 
         val merchant = merchantRegex.find(combined)?.groupValues?.get(1)?.trim() ?: bankLabel
 
@@ -101,7 +110,18 @@ class TransactionNotificationListener : NotificationListenerService() {
                 put("bank", bankLabel)
                 put("balance", JSONObject.NULL)
             }
+            debug("captured: $type amount=$amount merchant=$merchant ($bankLabel)")
             KeepAliveService.sendTransaction(applicationContext, txn)
+        } catch (ignored: Exception) {
+        }
+    }
+
+    // Fire-and-forget diagnostic trail, visible in the server's own logs (not stored/shown in
+    // any UI) — lets us watch exactly what's happening in real time while testing, without
+    // needing device logcat access. Temporary aid, not meant to stay noisy long-term.
+    private fun debug(message: String) {
+        try {
+            KeepAliveService.sendDebugLog(applicationContext, "notification: $message")
         } catch (ignored: Exception) {
         }
     }

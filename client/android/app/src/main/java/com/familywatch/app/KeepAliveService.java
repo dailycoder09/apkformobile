@@ -313,6 +313,20 @@ public class KeepAliveService extends Service {
         handler.postDelayed(this::connectWebSocket, 3000);
     }
 
+    // ── Diagnostic trail (temporary, not queued/persisted — best-effort only) ───
+    // Lets us watch what's happening on-device in real time via the server's own logs
+    // while debugging a capture pipeline, without needing physical device/logcat access.
+    public static void sendDebugLog(Context ctx, String message) {
+        KeepAliveService svc = instance;
+        if (svc == null || svc.nativeWs == null || svc.userId == null) return;
+        try {
+            JSONObject out = new JSONObject();
+            out.put("type", "debug_log");
+            out.put("message", message);
+            svc.nativeWs.send(out.toString());
+        } catch (Exception ignored) {}
+    }
+
     // ── Auto-captured transactions (from TransactionNotificationListener) ───────
     // Static entry point so other in-process components can submit a transaction
     // without needing their own WebSocket connection. Sends immediately if we're
