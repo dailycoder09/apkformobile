@@ -780,31 +780,48 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               <div className="txn-group-header">{dateLabel}</div>
               {items.map(t => {
                 const meta = getCategoryMeta(t)
+                // The fuller bank narration is only worth showing when it says something
+                // the extracted merchant name doesn't already say (statement imports
+                // duplicate it verbatim when extractMerchant() can't parse a known shape).
+                const hasDesc = t.description && t.description.trim() && t.description.trim() !== (t.merchant || '').trim()
                 return (
                   <div key={t.id} className="txn-row" onClick={() => openEdit(t)}>
-                    <div className="txn-cat-icon" style={{ background: `${meta.color}22` }}>
-                      <span className="material-symbols-outlined" style={{ color: meta.color }}>{meta.icon}</span>
+                    <div className="txn-card-top">
+                      <div className="txn-cat-icon" style={{ background: `${meta.color}22` }}>
+                        <span className="material-symbols-outlined" style={{ color: meta.color }}>{meta.icon}</span>
+                      </div>
+                      <div className="txn-row-info">
+                        <span className="txn-merchant">{t.merchant}</span>
+                      </div>
+                      <div className="txn-card-right">
+                        <span className={`txn-amount ${t.type}`}>
+                          {t.type === 'debit' ? '−' : t.type === 'credit' ? '+' : ''}{formatINR(t.amount)}
+                        </span>
+                        <button
+                          className="txn-row-delete"
+                          onClick={(e) => { e.stopPropagation(); deleteTxn(t.id) }}
+                          aria-label="Delete transaction"
+                        >
+                          <span className="material-symbols-outlined">delete</span>
+                        </button>
+                      </div>
                     </div>
-                    <div className="txn-row-info">
-                      <span className="txn-merchant">{t.merchant}</span>
+
+                    {/* Truncated to 2 lines here — tapping the card (openEdit) already
+                        surfaces the full text in the Note field, so nothing is lost. */}
+                    {hasDesc && <p className="txn-desc clamped">{t.description}</p>}
+
+                    <div className="txn-card-bottom">
                       <span className="txn-meta">
+                        <span className="txn-cat-chip" style={{ background: `${meta.color}18`, color: meta.color }}>{meta.label}</span>
                         {t.type === 'transfer'
                           ? <span className="txn-bank-tag">Self Transfer</span>
                           : <span className="txn-bank-tag">{t.bank}</span>}
                         {t.source === 'statement' && <span className="txn-sms-tag">Statement</span>}
                         <span className="txn-time">{formatTime(t.date)}</span>
                       </span>
+                      {t.balance != null && <span className="txn-balance">Bal {formatINRShort(t.balance)}</span>}
                     </div>
-                    <span className={`txn-amount ${t.type}`}>
-                      {t.type === 'debit' ? '−' : t.type === 'credit' ? '+' : ''}{formatINR(t.amount)}
-                    </span>
-                    <button
-                      className="txn-row-delete"
-                      onClick={(e) => { e.stopPropagation(); deleteTxn(t.id) }}
-                      aria-label="Delete transaction"
-                    >
-                      <span className="material-symbols-outlined">delete</span>
-                    </button>
                   </div>
                 )
               })}

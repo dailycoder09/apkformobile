@@ -533,25 +533,43 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
               <div className="txn-group-header">{dateLabel}</div>
               {items.map(t => {
                 const meta = getCategoryMeta(t)
+                // The fuller bank narration is only worth showing when it says something
+                // the extracted merchant name doesn't already say (statement imports
+                // duplicate it verbatim when extractMerchant() can't parse a known shape).
+                const hasDesc = t.description && t.description.trim() && t.description.trim() !== (t.merchant || '').trim()
                 return (
                   <div key={t.id} className="txn-row">
-                    <div className="txn-cat-icon" style={{ background: `${meta.color}22` }}>
-                      <span className="material-symbols-outlined" style={{ color: meta.color }}>{meta.icon}</span>
+                    <div className="txn-card-top">
+                      <div className="txn-cat-icon" style={{ background: `${meta.color}22` }}>
+                        <span className="material-symbols-outlined" style={{ color: meta.color }}>{meta.icon}</span>
+                      </div>
+                      <div className="txn-row-info">
+                        <span className="txn-merchant">{t.merchant}</span>
+                      </div>
+                      <div className="txn-card-right">
+                        <span className={`txn-amount ${t.type}`}>
+                          {t.type === 'debit' ? '−' : t.type === 'credit' ? '+' : ''}{formatINR(t.amount)}
+                        </span>
+                      </div>
                     </div>
-                    <div className="txn-row-info">
-                      <span className="txn-merchant">{t.merchant}</span>
+
+                    {/* Rows here are inert (read-only, no edit sheet to reveal the rest),
+                        so — unlike TransactionPanel — the narration is shown in full,
+                        wrapping rather than clamping, so nothing is ever hidden. */}
+                    {hasDesc && <p className="txn-desc">{t.description}</p>}
+
+                    <div className="txn-card-bottom">
                       <span className="txn-meta">
                         {activeUser === 'all' && <span className="txn-user-tag">{t.userName}</span>}
+                        <span className="txn-cat-chip" style={{ background: `${meta.color}18`, color: meta.color }}>{meta.label}</span>
                         {t.type === 'transfer'
                           ? <span className="txn-bank-tag">Self Transfer</span>
                           : <span className="txn-bank-tag">{t.bank}</span>}
                         {t.source === 'statement' && <span className="txn-sms-tag">Statement</span>}
                         <span className="txn-time">{formatTime(t.date)}</span>
                       </span>
+                      {t.balance != null && <span className="txn-balance">Bal {formatINRShort(t.balance)}</span>}
                     </div>
-                    <span className={`txn-amount ${t.type}`}>
-                      {t.type === 'debit' ? '−' : t.type === 'credit' ? '+' : ''}{formatINR(t.amount)}
-                    </span>
                   </div>
                 )
               })}

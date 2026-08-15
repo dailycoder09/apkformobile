@@ -3510,7 +3510,7 @@ button { font-family: inherit; cursor: pointer; }
 .txn-tab.active { color: #fff; background: linear-gradient(135deg, var(--txn-rose), var(--txn-rose-dark)); }
 
 /* List */
-.txn-list-card { background: var(--txn-card); border-radius: 20px; padding: 6px 0; box-shadow: var(--shadow-soft); }
+.txn-list-card { background: var(--txn-card); border-radius: 20px; padding: 4px 0 10px; box-shadow: var(--shadow-soft); }
 .txn-list-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px 4px; }
 .txn-list-header-title { font-size: 15px; font-weight: 800; color: var(--txn-ink); }
 
@@ -3524,32 +3524,70 @@ button { font-family: inherit; cursor: pointer; }
 
 .txn-group-header {
   font-size: 11px; font-weight: 700; color: var(--txn-muted);
-  padding: 12px 16px 6px;
+  padding: 12px 14px 6px;
   text-transform: uppercase; letter-spacing: 0.5px;
 }
 
+/* Each transaction is its own card: a rounded, softly-shadowed block (rather than a
+   flat single-line row) so merchant names / narrations that HDFC statements produce
+   (much longer than PhonePe's) have room to wrap instead of being clipped. */
 .txn-row {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 0 14px 10px; padding: 12px 14px;
+  background: var(--txn-card);
+  border: 1px solid rgba(58, 42, 46, 0.06);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(58, 42, 46, 0.06);
 }
-.txn-row:active { background: rgba(0,0,0,0.02); }
+.txn-group .txn-row:last-child { margin-bottom: 2px; }
+.txn-row:active { background: rgba(224, 52, 92, 0.04); }
+
+.txn-card-top { display: flex; align-items: flex-start; gap: 12px; }
 .txn-cat-icon {
   display: flex; align-items: center; justify-content: center;
   width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
   background: var(--txn-rose-pastel);
 }
 .txn-cat-icon .material-symbols-outlined { font-size: 20px; color: var(--txn-rose-dark); }
-.txn-row-info   { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.txn-merchant   { font-size: 14.5px; font-weight: 700; color: var(--txn-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.txn-meta       { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.txn-bank-tag   { font-size: 10px; background: rgba(0,0,0,0.05); color: var(--txn-muted); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-.txn-sms-tag    { font-size: 10px; background: var(--txn-green-pastel); color: var(--txn-green-dark); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-.txn-user-tag   { font-size: 10px; background: var(--txn-gold-pastel); color: #7a5c0a; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-.txn-time       { font-size: 10px; color: var(--txn-muted); font-weight: 600; }
-.txn-amount     { font-size: 14.5px; font-weight: 800; white-space: nowrap; flex-shrink: 0; }
+
+/* Merchant/payee — the field HDFC narrations blow past PhonePe's short names on.
+   No more nowrap+ellipsis single line: it now wraps onto as many lines as it needs. */
+.txn-row-info { flex: 1; min-width: 0; }
+.txn-merchant {
+  font-size: 15px; font-weight: 700; color: var(--txn-ink);
+  white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+  line-height: 1.3;
+}
+
+.txn-card-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.txn-amount     { font-size: 16px; font-weight: 800; white-space: nowrap; }
 .txn-amount.debit    { color: var(--txn-rose); }
 .txn-amount.credit   { color: var(--txn-green); }
 .txn-amount.transfer { color: #64748b; }
+
+/* Fuller narration (bank ref numbers etc.) — secondary, muted, wraps freely. Only
+   rendered when it says something the merchant name alone doesn't. */
+.txn-desc {
+  font-size: 11.5px; color: var(--txn-muted); line-height: 1.4; margin: 0;
+  overflow-wrap: anywhere; padding-left: 52px;
+}
+.txn-desc.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.txn-card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 52px; }
+.txn-meta       { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.txn-cat-chip   { font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
+.txn-bank-tag   {
+  font-size: 10px; background: rgba(0,0,0,0.05); color: var(--txn-muted); padding: 1px 6px;
+  border-radius: 4px; font-weight: 600; display: inline-block; max-width: 150px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
+}
+.txn-sms-tag    { font-size: 10px; background: var(--txn-green-pastel); color: var(--txn-green-dark); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+.txn-user-tag   { font-size: 10px; background: var(--txn-gold-pastel); color: #7a5c0a; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+.txn-time       { font-size: 10px; color: var(--txn-muted); font-weight: 600; }
+/* Running balance from the HDFC statement parser — small and muted since it's
+   supplementary, but genuinely useful data that was previously parsed and unused. */
+.txn-balance    { font-size: 10.5px; color: var(--txn-muted); font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+
 .txn-row-delete {
   display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
