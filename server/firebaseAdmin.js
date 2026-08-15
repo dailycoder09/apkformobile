@@ -30,15 +30,20 @@
 // Guarded so a missing/misconfigured Firebase project never crashes the server —
 // local dev with no FIREBASE_PROJECT_ID set just logs a warning and every phone
 // verification fails closed (rejected), never silently accepted.
-const admin = require('firebase-admin')
+// firebase-admin v14 restructured the classic admin.credential.applicationDefault() /
+// admin.auth() namespaced API into separate modular imports -- there is no
+// `admin.credential` at all in this version, so the old pattern throws
+// "Cannot read properties of undefined (reading 'applicationDefault')".
+const { initializeApp, applicationDefault } = require('firebase-admin/app')
+const { getAuth } = require('firebase-admin/auth')
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || ''
 
 let app = null
 if (PROJECT_ID) {
   try {
-    app = admin.initializeApp({
-      credential: admin.credential.applicationDefault(),
+    app = initializeApp({
+      credential: applicationDefault(),
       projectId: PROJECT_ID,
     })
   } catch (e) {
@@ -62,7 +67,7 @@ function isConfigured() {
 async function verifyPhoneToken(idToken) {
   if (!app) throw new Error('Firebase Admin not configured on this server')
   if (!idToken || typeof idToken !== 'string') throw new Error('Missing idToken')
-  const decoded = await admin.auth().verifyIdToken(idToken)
+  const decoded = await getAuth(app).verifyIdToken(idToken)
   if (!decoded.phone_number) throw new Error('Token has no verified phone number')
   return decoded.phone_number
 }
