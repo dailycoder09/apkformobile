@@ -1,6 +1,24 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank } from '../utils/txnMeta'
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
+import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
+
+// Supported statement formats, tried in order — auto-detected from file content so the
+// upload flow stays a single tap (no "pick your bank" dropdown). Adding a new bank later is
+// just one more { name, detect, parse } entry here.
+const STATEMENT_FORMATS = [
+  {
+    name: 'PhonePe',
+    detect: text => text.includes('Date,Time,Transaction Details,Transaction ID,UTR,Transaction Type,Credit/debit instrument,Amount'),
+    parse: parsePhonePeStatementCsv,
+  },
+  {
+    name: 'HDFC Bank',
+    detect: text => text.includes('Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance')
+      || text.slice(0, 2000).toUpperCase().includes('HDFC BANK'),
+    parse: parseHdfcStatementCsv,
+  },
+]
 
 const PAGE_SIZE = 15
 
@@ -321,9 +339,14 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     if (!file) return
     try {
       const text = await file.text()
-      const parsed = parsePhonePeStatementCsv(text)
+      const format = STATEMENT_FORMATS.find(f => f.detect(text))
+      if (!format) {
+        window.alert('Couldn\'t recognize this statement format — supported: PhonePe, HDFC Bank')
+        return
+      }
+      const parsed = format.parse(text)
       if (parsed.length === 0) {
-        window.alert('No transactions found in that file — is it a PhonePe statement CSV?')
+        window.alert(`No transactions found in that ${format.name} statement.`)
         return
       }
       parsed.forEach(txn => sendMsg({ type: 'transaction_add', transaction: txn }))
@@ -333,9 +356,9 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
         const existingIds = new Set(prev.map(t => t.id))
         return [...parsed.filter(t => !existingIds.has(t.id)), ...prev].sort((a, b) => b.date - a.date)
       })
-      window.alert(`Imported ${parsed.length} transactions from the statement.`)
+      window.alert(`Imported ${parsed.length} transactions from the ${format.name} statement.`)
     } catch (err) {
-      window.alert('Could not read that file — make sure it\'s an unmodified PhonePe statement CSV export.')
+      window.alert('Could not read that file — make sure it\'s an unmodified statement CSV export.')
     }
   }
 
@@ -485,7 +508,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <span className="material-symbols-outlined">arrow_back</span>
         </button>
         <span className="txn-title">Finance</span>
-        <button className="txn-header-icon-btn" onClick={() => statementInputRef.current?.click()} aria-label="Upload PhonePe statement">
+        <button className="txn-header-icon-btn" onClick={() => statementInputRef.current?.click()} aria-label="Upload bank statement">
           <span className="material-symbols-outlined">upload_file</span>
         </button>
         <button className="txn-header-icon-btn" onClick={clearAllTxns} disabled={txns.length === 0} aria-label="Clear all transactions">
