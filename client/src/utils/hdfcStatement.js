@@ -97,13 +97,74 @@ function extractMerchant(narration) {
 // into e.g. 'shopping' or 'utilities' would just be a different kind of wrong guess.
 const FOOD_REMARK_RE = /^FOOD\b/i
 
+// Fallback signals checked only when the trailing remark above doesn't already resolve a
+// category — these look at the *whole* narration (merchant name + VPA), because the giveaway
+// fragment is sometimes only present in the VPA (e.g. "ACTCORP", "PPAUTOPAYELECTRICITY") and
+// not in extractMerchant()'s narrower "second hyphen-segment" slice. Kept deliberately narrow:
+// every pattern below is tied either to a real merchant actually seen in the 87-row sample or
+// to a very well-established, unambiguous Indian brand/service name — never a guess at an
+// unfamiliar one (see the deliberately-NOT-mapped cases noted where this is used).
+//
+// - "ATRIA CONVERGENCE"/"ACTCORP": ACT Fibernet, a well-known home-broadband ISP (real row:
+//   "UPI-ATRIA CONVERGENCE TE-ACTCORP1.PAYU@HDFCBANK-...-UPIINTENT"). "FIBERNET"/"BROADBAND"
+//   added as generic ISP fragments for the same reason even though not present in this sample.
+// - "ELECTRICITY": literal in the VPA of a real row ("PPAUTOPAYELECTRICITY@YBL"), an
+//   unambiguous utility-bill signal.
+// - "RECHARGE": real row "UPI-JIO RECHARGE-JIOINAPPDIRECT1@YBL-...". Jio is a well-known
+//   Indian telecom operator and "<name> RECHARGE" is the standard UPI narration shape for a
+//   prepaid mobile/DTH recharge — a utility-style bill payment.
+const UTILITY_KEYWORD_RE = /ATRIA CONVERGENCE|ACTCORP|FIBERNET|BROADBAND|ELECTRICITY|\bRECHARGE\b/i
+
+// - "BLINKIT": real row "UPI-BLINKIT-BLINKIT.RZP@HDFCBANK-...", a well-known Indian
+//   quick-commerce grocery delivery app.
+// - "SPAR"/"HYPERMARKET": real row "UPI-SPAR HYPERMARKETS-LANDMARKSPAR@YBL-...". SPAR is a
+//   well-known supermarket/hypermarket chain; "HYPERMARKET" kept as a generic fragment too.
+const FOOD_KEYWORD_RE = /\bBLINKIT\b|\bSPAR\b|HYPERMARKET/i
+
+// - "RETAIL": real row (x2) "UPI-LMD RETAIL SPECTRUM-...-PAY TO LMD RETAIL". No food-specific
+//   context (unlike a "hypermarket"), so a generic retail merchant is treated as shopping
+//   rather than food.
+const SHOPPING_KEYWORD_RE = /\bRETAIL\b/i
+
+// POS narrations have no free-text remark field at all, so they're otherwise left 'manual'
+// entirely (see below). A literal "FOOD" in the merchant name itself is still an unambiguous
+// signal though — real rows: "POS ... HYDERABAD M S AA FOOD DELIGHTS L" (x2). This is
+// intentionally narrow (just the literal word) rather than an attempt at general POS
+// categorization.
+const POS_FOOD_KEYWORD_RE = /\bFOOD\b/i
+
+// Deliberately NOT mapped, despite being considered (left 'manual' — a wrong guess is worse
+// than an uncategorized transaction):
+// - POS "... RANGA REDDY AJMAL": "AJMAL" could be a perfume/attar brand or a person's name —
+//   not confident enough either way.
+// - POS "... AMB CINEMAS L L P": clearly a cinema, but there's no entertainment category in
+//   txnMeta.js's CATEGORIES to map it onto.
+// - POS "... BEIJING BITES": likely a food outlet by name, but "BITES" is too generic a
+//   fragment to add as a rule (would risk matching unrelated merchants), and it's not a
+//   nationally-unambiguous brand the way Blinkit/SPAR are.
+// - UPI "CHINTAN COLLECTION": "COLLECTION" is too generic/ambiguous a business-name fragment
+//   (could be all sorts of businesses) to map to shopping.
+// - "ME DC SI ... GOOGLEPLAY": Google Play purchases could be apps, games, or subscriptions —
+//   no confident single-category fit, and ME DC SI rows are intentionally out of scope here.
+// - "SCHOOLFEES" remark: a genuine self-applied category, but there's no education/school-fees
+//   bucket in CATEGORIES to map it onto (already noted above for the remark-based rule).
+
 function extractCategory(narration) {
   const n = narration.trim()
-  if (!/^UPI-/i.test(n) && !/^IMPS-/i.test(n)) return 'manual'
 
-  const parts = n.split('-')
-  const remark = parts[parts.length - 1].trim()
-  if (FOOD_REMARK_RE.test(remark)) return 'food'
+  if (/^UPI-/i.test(n) || /^IMPS-/i.test(n)) {
+    const parts = n.split('-')
+    const remark = parts[parts.length - 1].trim()
+    if (FOOD_REMARK_RE.test(remark)) return 'food'
+
+    if (UTILITY_KEYWORD_RE.test(n)) return 'utilities'
+    if (FOOD_KEYWORD_RE.test(n)) return 'food'
+    if (SHOPPING_KEYWORD_RE.test(n)) return 'shopping'
+
+    return 'manual'
+  }
+
+  if (/^POS\s/i.test(n) && POS_FOOD_KEYWORD_RE.test(n)) return 'food'
 
   return 'manual'
 }
