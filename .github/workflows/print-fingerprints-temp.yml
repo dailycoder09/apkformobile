@@ -1,0 +1,19 @@
+name: TEMP - Print keystore fingerprints
+
+on:
+  workflow_dispatch:
+
+jobs:
+  print-fingerprints:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decode signing keystore
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+
+      - name: Print SHA fingerprints
+        run: |
+          keytool -list -v \
+            -keystore release.keystore \
+            -alias "${{ secrets.ANDROID_KEY_ALIAS }}" \
+            -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" \
+            | grep -E "SHA1:|SHA256:"
