@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1002001889933",
+    "project_id": "familykit-dd384",
+    "storage_bucket": "familykit-dd384.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1002001889933:android:81514e758f0c7c9cdb40c4",
+        "android_client_info": {
+          "package_name": "com.familywatch.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBZIrzRUUi0_Ov17dmGDYb6S-xMEUwybmE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
