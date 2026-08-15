@@ -107,6 +107,11 @@ jobs:
             npm --prefix server ci --production
             npm --prefix client ci
             npm --prefix client run build
+            if ! sudo grep -q "^Environment=FIREBASE_PROJECT_ID=" /etc/systemd/system/familywatch.service; then
+              sudo sed -i '/^\[Service\]/a Environment=FIREBASE_PROJECT_ID=familykit-dd384' /etc/systemd/system/familywatch.service
+              sudo systemctl daemon-reload
+              echo "✓ Added FIREBASE_PROJECT_ID to systemd unit"
+            fi
             sudo systemctl restart familywatch
             echo "✓ Server deployed"
 
