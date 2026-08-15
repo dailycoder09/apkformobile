@@ -82,6 +82,21 @@ function getPinFromUrl() {
   return new URLSearchParams(location.search).get('pin') || ''
 }
 
+// Message types that mutate the user's own durable data (transactions). Losing one of
+// these to a momentary disconnect isn't a stale live-monitor frame, it's data loss — a
+// screen lock / network handoff / app-swipe-away on a real phone can easily land right
+// on top of "tap Add", and until now sendMsg() below just silently swallowed the send
+// if the socket wasn't OPEN yet, with no queue and no retry. The optimistic local UI
+// update in TransactionPanel happened regardless, so the transaction looked saved right
+// up until the next full reload re-fetched from the server and it was simply never
+// there. Everything else sent via sendMsg (camera/mic/location streaming, chat, file
+// transfer chunks) is intentionally NOT queued here — those are either naturally lossy
+// live data or have their own in-band framing, and replaying a backlog of them after a
+// reconnect would itself be a bug (e.g. blasting stale audio/location on resume).
+const DURABLE_MSG_TYPES = new Set([
+  'transaction_add', 'transaction_update', 'transaction_delete', 'transaction_delete_all',
+])
+
 export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState(null)
   const [wsStatus, setWsStatus]   = useState('idle')
@@ -95,6 +110,8 @@ export default function App() {
   const authPayloadRef = useRef(null)
   const serverUrlRef   = useRef('')
   const listenersRef   = useRef([])
+  const authedRef      = useRef(false) // true only once THIS socket's auth_ok has landed
+  const pendingRef     = useRef([])    // queued DURABLE_MSG_TYPES messages awaiting a live, authed socket
 
   useEffect(() => {
     const h = (e) => { e.preventDefault(); setDeferredPrompt(e) }
@@ -150,6 +167,7 @@ export default function App() {
     clearTimeout(reconnectRef.current)
     wsRef.current?.close()
     setWsStatus('connecting')
+    authedRef.current = false
 
     const ws = new WebSocket(buildWsUrl(serverUrl || serverUrlRef.current))
     wsRef.current = ws
@@ -177,6 +195,16 @@ export default function App() {
       if (msg.type === 'auth_ok') {
         setLoginError(null)
         setSession({ role: msg.role, userId: msg.userId, name: msg.name || 'Admin', initialUsers: msg.users || [] })
+        // This socket is now authenticated — flush anything that queued up in sendMsg()
+        // while we were offline/reconnecting (see DURABLE_MSG_TYPES above) instead of
+        // leaving it stranded, which is exactly what used to make added transactions
+        // vanish after a reconnect.
+        authedRef.current = true
+        if (pendingRef.current.length) {
+          const queued = pendingRef.current
+          pendingRef.current = []
+          queued.forEach((m) => ws.send(JSON.stringify(m)))
+        }
       } else if (msg.type === 'auth_fail') {
         setLoginError(msg.reason || 'Authentication failed')
         ws.close()
@@ -188,6 +216,7 @@ export default function App() {
 
     ws.onclose = () => {
       setWsStatus('closed')
+      authedRef.current = false
       if (authPayloadRef.current) {
         reconnectRef.current = setTimeout(() => connect(authPayloadRef.current), 3000)
       }
@@ -211,11 +240,17 @@ export default function App() {
     wsRef.current?.close()
     setSession(null)
     setWsStatus('idle')
+    authedRef.current = false
+    pendingRef.current = [] // don't carry a queued mutation over to whoever logs in next
   }, [])
 
   const sendMsg = useCallback((msg) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (authedRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg))
+    } else if (DURABLE_MSG_TYPES.has(msg.type)) {
+      // Socket is down or still (re)authenticating — don't silently drop a data-mutating
+      // message. It'll be flushed as soon as this session's next auth_ok lands.
+      pendingRef.current.push(msg)
     }
   }, [])
 

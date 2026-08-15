@@ -3316,6 +3316,10 @@ button { font-family: inherit; cursor: pointer; }
 .txn-budget-bar { width: 100%; height: 10px; border-radius: 999px; background: rgba(0,0,0,0.06); overflow: hidden; }
 .txn-budget-bar-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--txn-rose), var(--txn-rose-dark)); transition: width 0.6s ease; }
 .txn-budget-bar-fill.over { background: linear-gradient(90deg, #b91c1c, #7f1d1d); }
+.txn-budget-row--secondary { margin-top: 10px; margin-bottom: 0; }
+.txn-budget-income { color: var(--txn-green-dark); }
+.txn-budget-net.good { color: var(--txn-green-dark); }
+.txn-budget-net.bad  { color: var(--txn-rose-dark); }
 
 /* Summary bar */
 .txn-summary {
@@ -3420,7 +3424,6 @@ button { font-family: inherit; cursor: pointer; }
 .txn-stat-value.good { color: var(--txn-green-dark); }
 .txn-stat-value.bad  { color: var(--txn-rose-dark); }
 .txn-stat-sub { font-size: 11px; color: var(--txn-muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.txn-stat-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
 
 /* Filters panel (type/category/source/bank multi-select + include-vs-exclude toggle) */
 .txn-filter-panel {

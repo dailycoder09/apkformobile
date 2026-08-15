@@ -526,6 +526,14 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <div className="txn-budget-bar">
             <span className={`txn-budget-bar-fill${budgetOver ? ' over' : ''}`} style={{ width: `${budgetPct}%` }} />
           </div>
+          {/* This month's income/net — the only place these two figures live, now that
+              the separate "this month at a glance" tile row (which duplicated the
+              Spent/Net summary bar below) has been folded in here instead of removed
+              outright. */}
+          <div className="txn-budget-row txn-budget-row--secondary">
+            <span className="txn-budget-income">Income {formatINRShort(monthStats.income)}</span>
+            <span className={`txn-budget-net${monthStats.net >= 0 ? ' good' : ' bad'}`}>Net {formatINRShort(monthStats.net)}</span>
+          </div>
         </div>
 
         {/* Summary bar */}
@@ -543,22 +551,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <div className={`txn-summary-item ${totalCredit - totalDebit >= 0 ? 'credit' : 'debit'}`}>
             <span className="txn-summary-label">Net</span>
             <span className="txn-summary-val">{formatINR(Math.abs(totalCredit - totalDebit))}</span>
-          </div>
-        </div>
-
-        {/* This month at a glance */}
-        <div className="txn-stat-grid cols-3">
-          <div className="txn-stat-card">
-            <span className="txn-stat-label">This Month Spent</span>
-            <span className="txn-stat-value">{formatINRShort(monthStats.spent)}</span>
-          </div>
-          <div className="txn-stat-card">
-            <span className="txn-stat-label">This Month Income</span>
-            <span className="txn-stat-value">{formatINRShort(monthStats.income)}</span>
-          </div>
-          <div className="txn-stat-card">
-            <span className="txn-stat-label">Net</span>
-            <span className={`txn-stat-value${monthStats.net >= 0 ? ' good' : ' bad'}`}>{formatINRShort(monthStats.net)}</span>
           </div>
         </div>
 
