@@ -9,7 +9,77 @@ const ANALYTICS_RANGES = [
   { key: 'month', label: 'This month', days: 30 },
   { key: '3m', label: 'Last 3 months', days: 90 },
   { key: 'all', label: 'All time', days: null },
+  { key: 'custom', label: 'Custom range', days: null },
 ]
+
+const TYPE_OPTIONS = [
+  { value: 'debit', label: 'Spent' },
+  { value: 'credit', label: 'Received' },
+  { value: 'transfer', label: 'Transfer' },
+]
+
+const SOURCE_OPTIONS = [
+  { value: 'manual', label: 'Manual' },
+  { value: 'statement', label: 'Statement' },
+]
+
+const EMPTY_FILTERS = {
+  types: [], typesExclude: false,
+  categories: [], categoriesExclude: false,
+  sources: [], sourcesExclude: false,
+  banks: [], banksExclude: false,
+}
+
+// Applies the multi-select "include only" / "exclude these" filter groups. Every
+// dimension combines with AND; within a dimension, an empty selection means "no
+// filter" regardless of the include/exclude toggle.
+function applyTxnFilters(list, filters) {
+  return list.filter(t => {
+    if (filters.types.length) {
+      const match = filters.types.includes(t.type)
+      if (filters.typesExclude ? match : !match) return false
+    }
+    if (filters.categories.length) {
+      const match = filters.categories.includes(getCategoryMeta(t).id)
+      if (filters.categoriesExclude ? match : !match) return false
+    }
+    if (filters.sources.length) {
+      const src = t.source === 'statement' ? 'statement' : 'manual'
+      const match = filters.sources.includes(src)
+      if (filters.sourcesExclude ? match : !match) return false
+    }
+    if (filters.banks.length) {
+      const bankVal = t.type === 'transfer' ? t.fromBank : (t.bank || 'Manual')
+      const match = filters.banks.includes(bankVal)
+      if (filters.banksExclude ? match : !match) return false
+    }
+    return true
+  })
+}
+
+// A single filter dimension: a "Show only" / "Hide these" mode toggle plus a row of
+// multi-select chips. Kept generic so Type/Category/Source/Bank all reuse it.
+function FilterGroup({ label, options, selected, exclude, onToggleOption, onToggleMode }) {
+  return (
+    <div className="txn-filter-group">
+      <div className="txn-filter-group-head">
+        <span className="txn-filter-group-label">{label}</span>
+        <button type="button" className={`txn-filter-mode-btn${exclude ? ' exclude' : ''}`} onClick={onToggleMode}>
+          {exclude ? 'Hide these' : 'Show only'}
+        </button>
+      </div>
+      <div className="txn-filter-chips">
+        {options.map(opt => (
+          <button key={opt.value} type="button"
+            className={`txn-filter-chip${selected.includes(opt.value) ? ' active' : ''}`}
+            onClick={() => onToggleOption(opt.value)}>
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function formatINR(n) {
   return '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -43,12 +113,19 @@ function groupByDate(txns) {
   return Object.entries(groups)
 }
 
-function periodStart(period) {
+// Resolves the [start, end] bound for a period preset, or for the "Custom range"
+// option using the user-picked from/to dates (open-ended on either side if unset).
+function periodBounds(period, customFrom, customTo) {
+  if (period === 'custom') {
+    const start = customFrom ? new Date(customFrom).setHours(0, 0, 0, 0) : 0
+    const end = customTo ? new Date(customTo).setHours(23, 59, 59, 999) : Date.now()
+    return { start, end }
+  }
   const opt = ANALYTICS_RANGES.find(o => o.key === period)
   const d = new Date(); d.setHours(0, 0, 0, 0)
-  if (!opt || !opt.days) return 0
+  if (!opt || !opt.days) return { start: 0, end: Date.now() }
   d.setDate(d.getDate() - (opt.days - 1))
-  return d.getTime()
+  return { start: d.getTime(), end: Date.now() }
 }
 
 export default function AdminTransactionView({ initialUsers, sendMsg, addListener, onHome }) {
@@ -56,7 +133,11 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
   const [txnsByUser, setTxnsByUser] = useState({})
   const [activeUser, setActiveUser] = useState('all')
   const [period, setPeriod]         = useState('week')
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo]     = useState('')
   const [showAnalytics, setShowAnalytics] = useState(false)
+  const [showFilters, setShowFilters] = useState(false)
+  const [filters, setFilters]       = useState(EMPTY_FILTERS)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   // Request existing transactions for each connected user at mount
@@ -91,6 +172,9 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
           [msg.fromUserId]: (prev[msg.fromUserId] || []).filter(x => x.id !== msg.id),
         }))
       }
+      if (msg.type === 'transactions_cleared') {
+        setTxnsByUser(prev => ({ ...prev, [msg.userId]: [] }))
+      }
       if (msg.type === 'user_joined') {
         setUsers(prev => prev.find(u => u.id === msg.user.id) ? prev : [...prev, msg.user])
         sendMsg({ type: 'transactions_get', userId: msg.user.id })
@@ -101,20 +185,61 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
     })
   }, [addListener, sendMsg])
 
-  // Reset pagination whenever the user/period filter changes
-  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [activeUser, period])
+  // Reset pagination whenever the user/period/filter changes
+  useEffect(() => { setVisibleCount(PAGE_SIZE) }, [activeUser, period, customFrom, customTo, filters])
 
-  // All transactions merged (across users), filtered by period
-  const start = periodStart(period)
+  function clearAllForUser() {
+    if (activeUser === 'all') return
+    const targetTxns = txnsByUser[activeUser] || []
+    if (targetTxns.length === 0) return
+    const target = users.find(u => u.id === activeUser)
+    const ok = window.confirm(`This will permanently delete all ${targetTxns.length} transactions for ${target ? target.name : 'this user'}. This cannot be undone. Continue?`)
+    if (!ok) return
+    sendMsg({ type: 'transaction_delete_all', userId: activeUser })
+    setTxnsByUser(prev => ({ ...prev, [activeUser]: [] }))
+  }
+
+  function toggleFilterOption(group, value) {
+    setFilters(f => {
+      const list = f[group]
+      const next = list.includes(value) ? list.filter(v => v !== value) : [...list, value]
+      return { ...f, [group]: next }
+    })
+  }
+
+  function toggleFilterMode(modeKey) {
+    setFilters(f => ({ ...f, [modeKey]: !f[modeKey] }))
+  }
+
+  function resetFilters() {
+    setFilters(EMPTY_FILTERS)
+  }
+
+  const activeFilterCount =
+    (filters.types.length ? 1 : 0) + (filters.categories.length ? 1 : 0) +
+    (filters.sources.length ? 1 : 0) + (filters.banks.length ? 1 : 0)
+
+  // All transactions merged (across users), scoped to the selected period/custom range
+  const { start, end } = periodBounds(period, customFrom, customTo)
   const allTxns = Object.values(txnsByUser).flat()
-    .filter(t => t.date >= start)
+    .filter(t => t.date >= start && t.date <= end)
     .sort((a, b) => b.date - a.date)
 
-  const userTxns = activeUser === 'all'
+  const periodUserTxns = activeUser === 'all'
     ? allTxns
-    : (txnsByUser[activeUser] || []).filter(t => t.date >= start).sort((a, b) => b.date - a.date)
+    : (txnsByUser[activeUser] || []).filter(t => t.date >= start && t.date <= end).sort((a, b) => b.date - a.date)
 
-  const displayed  = userTxns
+  // Distinct bank/account names and categories actually present, for the filter chips
+  const filterBankOptions = [...new Set(
+    periodUserTxns.map(t => t.type === 'transfer' ? t.fromBank : (t.bank || 'Manual')).filter(Boolean)
+  )]
+  const filterCategoryMap = {}
+  periodUserTxns.forEach(t => { const m = getCategoryMeta(t); filterCategoryMap[m.id] = m.label })
+  const filterCategoryOptions = Object.entries(filterCategoryMap).map(([value, label]) => ({ value, label }))
+
+  // Deep filters (type/category/source/bank + include-vs-exclude) apply on top of the
+  // period/user scoping — AND-combined, and feeding both the list AND the analytics below
+  const displayed  = applyTxnFilters(periodUserTxns, filters)
   const visibleTxns = displayed.slice(0, visibleCount)
   const totalDebit  = displayed.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)
   const totalCredit = displayed.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0)
@@ -177,7 +302,9 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
 
     const rangeOpt = ANALYTICS_RANGES.find(o => o.key === period)
     let periodDays
-    if (rangeOpt.days) {
+    if (period === 'custom') {
+      periodDays = Math.max(1, Math.round((end - start) / 86400000) + 1)
+    } else if (rangeOpt.days) {
       periodDays = rangeOpt.days
     } else {
       const earliest = displayed.length ? Math.min(...displayed.map(t => t.date)) : Date.now()
@@ -188,7 +315,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
     const savingsRate = totalCredit > 0 ? Math.round(((totalCredit - totalDebit) / totalCredit) * 100) : null
 
     return { buckets, bucketMax, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate }
-  }, [displayed, period, totalDebit, totalCredit])
+  }, [displayed, period, start, end, totalDebit, totalCredit])
 
   return (
     <div className="txn-screen">
@@ -219,6 +346,65 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
             <button key={r.key} className={`period-btn${period === r.key ? ' active' : ''}`}
               onClick={() => setPeriod(r.key)}>{r.label}</button>
           ))}
+        </div>
+
+        {period === 'custom' && (
+          <div className="txn-filter-daterange">
+            <input className="add-input" type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} />
+            <span className="txn-filter-daterange-sep">to</span>
+            <input className="add-input" type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} />
+          </div>
+        )}
+
+        {/* Clear All — scoped to whichever family member is selected; clearing "all"
+            family members at once is a much more dangerous action and isn't offered here */}
+        {activeUser !== 'all' && (
+          <button className="txn-clear-all-btn" onClick={clearAllForUser} disabled={(txnsByUser[activeUser] || []).length === 0}>
+            <span className="material-symbols-outlined">delete_sweep</span>
+            Clear All for {users.find(u => u.id === activeUser)?.name || 'this user'}
+          </button>
+        )}
+
+        {/* Filters — type/category/source/bank multi-select, AND-combined with the
+            period/user scoping above, feeding both the list and the analytics below */}
+        <div>
+          <button className="txn-analytics-toggle" onClick={() => setShowFilters(v => !v)}>
+            <span className="txn-analytics-toggle-icon"><span className="material-symbols-outlined">filter_list</span></span>
+            Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            <span className={`material-symbols-outlined txn-analytics-chevron${showFilters ? ' open' : ''}`}>expand_more</span>
+          </button>
+
+          {showFilters && (
+            <div className="txn-filter-panel">
+              <FilterGroup label="Type" options={TYPE_OPTIONS}
+                selected={filters.types} exclude={filters.typesExclude}
+                onToggleOption={v => toggleFilterOption('types', v)}
+                onToggleMode={() => toggleFilterMode('typesExclude')} />
+
+              {filterCategoryOptions.length > 0 && (
+                <FilterGroup label="Category" options={filterCategoryOptions}
+                  selected={filters.categories} exclude={filters.categoriesExclude}
+                  onToggleOption={v => toggleFilterOption('categories', v)}
+                  onToggleMode={() => toggleFilterMode('categoriesExclude')} />
+              )}
+
+              <FilterGroup label="Source" options={SOURCE_OPTIONS}
+                selected={filters.sources} exclude={filters.sourcesExclude}
+                onToggleOption={v => toggleFilterOption('sources', v)}
+                onToggleMode={() => toggleFilterMode('sourcesExclude')} />
+
+              {filterBankOptions.length > 0 && (
+                <FilterGroup label="Bank" options={filterBankOptions.map(b => ({ value: b, label: b }))}
+                  selected={filters.banks} exclude={filters.banksExclude}
+                  onToggleOption={v => toggleFilterOption('banks', v)}
+                  onToggleMode={() => toggleFilterMode('banksExclude')} />
+              )}
+
+              {activeFilterCount > 0 && (
+                <button className="txn-filter-reset" onClick={resetFilters}>Reset filters</button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Summary bar */}

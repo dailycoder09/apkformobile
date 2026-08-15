@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Capacitor } from '@capacitor/core'
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication'
 import { Room } from 'livekit-client'
 import Login from './components/Login'
 import AdminPanel from './components/AdminPanel'
@@ -13,6 +14,7 @@ import TransactionPanel from './components/TransactionPanel'
 import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
 import NamazTracker from './components/NamazTracker'
+import ProfilePage from './components/ProfilePage'
 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
 const IS_NATIVE = Capacitor.isNativePlatform()
@@ -87,6 +89,7 @@ export default function App() {
   const [module, setModule]       = useState(null)  // null=home | 'messages' | 'transactions' | 'namaz' | 'workout'
   const [updateInfo, setUpdateInfo] = useState(null)
   const [loginError, setLoginError] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
   const wsRef          = useRef(null)
   const reconnectRef   = useRef(null)
   const authPayloadRef = useRef(null)
@@ -105,6 +108,26 @@ export default function App() {
   useEffect(() => {
     const pin = getPinFromUrl()
     if (pin) login('admin', '', pin, '')
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A previously-registered child should never see the phone/OTP screens again — Firebase
+  // persists the signed-in phone-auth user across app restarts on its own, so on mount we
+  // just ask it whether someone's already signed in and, if so, reconnect straight away
+  // (connect() below fetches a fresh ID token itself). Admin has no equivalent persisted
+  // login (only the ephemeral ?pin= URL param above), so there's nothing to mirror there.
+  useEffect(() => {
+    if (getPinFromUrl()) { setAuthChecked(true); return }
+    let cancelled = false
+    FirebaseAuthentication.getCurrentUser()
+      .then(({ user }) => {
+        if (cancelled || !user) return
+        const serverUrl = localStorage.getItem('meeee_server') || ''
+        const name = localStorage.getItem('meeee_name') || user.displayName || 'User'
+        if (serverUrl) login('user', name, '', serverUrl)
+      })
+      .catch(() => {}) // no Firebase user yet — fall through to the phone/OTP screen
+      .finally(() => { if (!cancelled) setAuthChecked(true) })
+    return () => { cancelled = true }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Check for updates on native app startup
@@ -131,9 +154,22 @@ export default function App() {
     const ws = new WebSocket(buildWsUrl(serverUrl || serverUrlRef.current))
     wsRef.current = ws
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       setWsStatus('open')
-      ws.send(JSON.stringify(payload))
+      let toSend = payload
+      // ID tokens expire hourly — fetch a CURRENT one on every (re)connect rather than
+      // reusing whatever was current when the user first logged in. The Firebase SDK
+      // caches/auto-refreshes internally, so this is cheap and never returns a stale token.
+      if (payload.role === 'user') {
+        try {
+          const { token } = await FirebaseAuthentication.getIdToken()
+          toSend = { ...payload, idToken: token }
+        } catch {
+          // Not signed in / token fetch failed — send as-is and let the server's
+          // auth_fail response surface the problem.
+        }
+      }
+      ws.send(JSON.stringify(toSend))
     }
 
     ws.onmessage = (e) => {
@@ -367,7 +403,7 @@ export default function App() {
         <InstallPrompt onInstall={handleInstall} onDismiss={() => setDeferredPrompt(null)} />
       )}
       {!session ? (
-        autoPin
+        autoPin || !authChecked
           ? <div className="auto-login-screen"><div className="auto-login-spinner">◌</div></div>
           : <Login onLogin={login} status={wsStatus} error={loginError} />
       ) : (
@@ -394,6 +430,10 @@ export default function App() {
               : null
           ) : module === 'namaz' ? (
             <NamazTracker />
+          ) : module === 'profile' ? (
+            session.role === 'admin'
+              ? null
+              : <ProfilePage session={session} sendMsg={sendMsg} addListener={addListener} />
           ) : module === 'workout' ? (
             <ComingSoon title="Workout" icon="💪" onHome={() => setModule(null)} />
           ) : null}

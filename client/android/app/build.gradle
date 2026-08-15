@@ -64,6 +64,12 @@ dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:2.1.0"
     implementation 'io.livekit:livekit-android:2.7.0'
     implementation 'androidx.security:security-crypto:1.1.0-alpha07'
+    // Declared as `implementation` (not `api`) inside the @capacitor-firebase/authentication
+    // plugin's own build.gradle, so it isn't exposed transitively — redeclare it here so
+    // MainActivity/KeepAliveService can call the native FirebaseAuth SDK directly (needed for
+    // KeepAliveService, which runs independently of the WebView/JS layer and the plugin's bridge).
+    // Version matches the plugin's own default (firebaseAuthVersion in its android/build.gradle).
+    implementation 'com.google.firebase:firebase-auth:24.0.1'
 }
 
 apply from: 'capacitor.build.gradle'

@@ -54,6 +54,77 @@ function rangeStart(key) {
 
 const EMPTY_FORM = { id: null, amount: '', type: 'debit', category: 'manual', merchant: '', note: '', date: '', bank: '', fromBank: '', toBank: '' }
 
+const TYPE_OPTIONS = [
+  { value: 'debit', label: 'Spent' },
+  { value: 'credit', label: 'Received' },
+  { value: 'transfer', label: 'Transfer' },
+]
+
+const SOURCE_OPTIONS = [
+  { value: 'manual', label: 'Manual' },
+  { value: 'statement', label: 'Statement' },
+]
+
+const EMPTY_FILTERS = {
+  types: [], typesExclude: false,
+  categories: [], categoriesExclude: false,
+  sources: [], sourcesExclude: false,
+  banks: [], banksExclude: false,
+}
+
+// Applies the multi-select "include only" / "exclude these" filter groups plus an
+// optional date-range bound. Every dimension combines with AND; within a dimension,
+// an empty selection means "no filter" regardless of the include/exclude toggle.
+function applyTxnFilters(list, filters, dateFromMs, dateToMs) {
+  return list.filter(t => {
+    if (filters.types.length) {
+      const match = filters.types.includes(t.type)
+      if (filters.typesExclude ? match : !match) return false
+    }
+    if (filters.categories.length) {
+      const match = filters.categories.includes(getCategoryMeta(t).id)
+      if (filters.categoriesExclude ? match : !match) return false
+    }
+    if (filters.sources.length) {
+      const src = t.source === 'statement' ? 'statement' : 'manual'
+      const match = filters.sources.includes(src)
+      if (filters.sourcesExclude ? match : !match) return false
+    }
+    if (filters.banks.length) {
+      const bankVal = t.type === 'transfer' ? t.fromBank : (t.bank || 'Manual')
+      const match = filters.banks.includes(bankVal)
+      if (filters.banksExclude ? match : !match) return false
+    }
+    if (dateFromMs != null && t.date < dateFromMs) return false
+    if (dateToMs != null && t.date > dateToMs) return false
+    return true
+  })
+}
+
+// A single filter dimension: a "Show only" / "Hide these" mode toggle plus a row of
+// multi-select chips. Kept generic so Type/Category/Source/Bank all reuse it.
+function FilterGroup({ label, options, selected, exclude, onToggleOption, onToggleMode }) {
+  return (
+    <div className="txn-filter-group">
+      <div className="txn-filter-group-head">
+        <span className="txn-filter-group-label">{label}</span>
+        <button type="button" className={`txn-filter-mode-btn${exclude ? ' exclude' : ''}`} onClick={onToggleMode}>
+          {exclude ? 'Hide these' : 'Show only'}
+        </button>
+      </div>
+      <div className="txn-filter-chips">
+        {options.map(opt => (
+          <button key={opt.value} type="button"
+            className={`txn-filter-chip${selected.includes(opt.value) ? ' active' : ''}`}
+            onClick={() => onToggleOption(opt.value)}>
+            {opt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function TransactionPanel({ session, sendMsg, addListener, onHome }) {
   const [txns, setTxns]       = useState([])
   const [tab, setTab]         = useState('all')
@@ -65,6 +136,10 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [customCategories, setCustomCategories] = useState(() => loadCustomCategories(session.userId))
   const [banks, setBanks] = useState(() => loadBanks(session.userId, []))
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const [showFilters, setShowFilters] = useState(false)
+  const [filters, setFilters] = useState(EMPTY_FILTERS)
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const statementInputRef = useRef(null)
 
   // Listen for incoming transaction confirmations (own), new ones from server, edits, deletes, and history
@@ -88,6 +163,9 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           const merged = [...prev, ...(msg.transactions || []).filter(t => !ids.has(t.id))]
           return merged.sort((a, b) => b.date - a.date)
         })
+      }
+      if (msg.type === 'transactions_cleared' && msg.userId === session.userId) {
+        setTxns([])
       }
     })
   }, [addListener, session.userId])
@@ -204,6 +282,32 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     if (form.id === id) { setSheetMode(null); setForm(EMPTY_FORM) }
   }
 
+  function clearAllTxns() {
+    if (txns.length === 0) return
+    const ok = window.confirm(`This will permanently delete all ${txns.length} transactions for ${session.name}. This cannot be undone. Continue?`)
+    if (!ok) return
+    sendMsg({ type: 'transaction_delete_all' })
+    setTxns([])
+  }
+
+  function toggleFilterOption(group, value) {
+    setFilters(f => {
+      const list = f[group]
+      const next = list.includes(value) ? list.filter(v => v !== value) : [...list, value]
+      return { ...f, [group]: next }
+    })
+  }
+
+  function toggleFilterMode(modeKey) {
+    setFilters(f => ({ ...f, [modeKey]: !f[modeKey] }))
+  }
+
+  function resetFilters() {
+    setFilters(EMPTY_FILTERS)
+    setDateFrom('')
+    setDateTo('')
+  }
+
   function editBudget() {
     const next = window.prompt('Set your monthly budget (₹)', String(budget))
     if (next == null) return
@@ -235,21 +339,48 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     }
   }
 
-  const filtered    = txns.filter(t => tab === 'all' || t.type === tab)
+  // Deep filters (type/category/source/bank + include-vs-exclude per group, plus the
+  // custom date range) apply across the board — the list below AND every analytics/
+  // summary calculation derive from this same filtered set, per the family's request
+  // that e.g. excluding "Transfer" recompute spending totals without transfers.
+  const dateFromMs = dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null
+  const dateToMs   = dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : null
+  const filteredTxns = useMemo(
+    () => applyTxnFilters(txns, filters, dateFromMs, dateToMs),
+    [txns, filters, dateFromMs, dateToMs]
+  )
+  const activeFilterCount =
+    (filters.types.length ? 1 : 0) + (filters.categories.length ? 1 : 0) +
+    (filters.sources.length ? 1 : 0) + (filters.banks.length ? 1 : 0) +
+    (dateFrom || dateTo ? 1 : 0)
+
+  const filtered    = filteredTxns.filter(t => tab === 'all' || t.type === tab)
   const visibleTxns = filtered.slice(0, visibleCount)
   const groups      = groupByDate(visibleTxns)
 
-  const totalDebit  = txns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)
-  const totalCredit = txns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0)
+  const totalDebit  = filteredTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)
+  const totalCredit = filteredTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0)
 
-  // Current calendar month spend, for the budget card + category donut
+  // Distinct bank/account names actually present, for the Bank filter chips
+  const filterBankOptions = useMemo(
+    () => [...new Set(txns.map(t => t.type === 'transfer' ? t.fromBank : (t.bank || 'Manual')).filter(Boolean))],
+    [txns]
+  )
+  const filterCategoryOptions = useMemo(
+    () => [...CATEGORIES, ...customCategories].map(c => ({ value: c.id, label: c.label })),
+    [customCategories]
+  )
+
+  // Current calendar month spend/income, for the budget card + category donut + this-month tiles
   const monthStats = useMemo(() => {
     const now = new Date()
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
-    const monthTxns = txns.filter(t => t.date >= monthStart && t.type === 'debit')
-    const spent = monthTxns.reduce((s, t) => s + t.amount, 0)
+    const monthTxns = filteredTxns.filter(t => t.date >= monthStart)
+    const debitTxns = monthTxns.filter(t => t.type === 'debit')
+    const spent = debitTxns.reduce((s, t) => s + t.amount, 0)
+    const income = monthTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0)
     const byCategory = {}
-    monthTxns.forEach(t => {
+    debitTxns.forEach(t => {
       const meta = getCategoryMeta(t)
       if (!byCategory[meta.id]) byCategory[meta.id] = { ...meta, amount: 0 }
       byCategory[meta.id].amount += t.amount
@@ -257,8 +388,8 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     const categories = Object.values(byCategory)
       .map(c => ({ ...c, pct: spent ? Math.round((c.amount / spent) * 100) : 0 }))
       .sort((a, b) => b.amount - a.amount)
-    return { spent, categories, label: now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) }
-  }, [txns])
+    return { spent, income, net: income - spent, categories, label: now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) }
+  }, [filteredTxns])
 
   const donutGradient = useMemo(() => {
     if (!monthStats.categories.length) return null
@@ -282,10 +413,11 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     return Math.round(((thisSpend - lastSpend) / lastSpend) * 100)
   }, [txns])
 
-  // Period-filtered analytics: trend, category/bank breakdowns, and quick-glance stats
+  // Period-filtered analytics: trend, category/bank breakdowns, and quick-glance stats.
+  // Scoped by both the analyticsRange dropdown AND the deep filters above (AND-combined).
   const analyticsData = useMemo(() => {
     const start = rangeStart(analyticsRange)
-    const inRange = txns.filter(t => t.date >= start)
+    const inRange = filteredTxns.filter(t => t.date >= start)
     const dayMap = {}
     inRange.forEach(t => {
       if (t.type === 'transfer') return
@@ -341,7 +473,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
       : null
 
     return { buckets, bucketMax, topCategories, topMax, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate }
-  }, [txns, analyticsRange])
+  }, [filteredTxns, analyticsRange])
 
   const budgetPct = budget ? Math.min(100, Math.round((monthStats.spent / budget) * 100)) : 0
   const budgetOver = monthStats.spent > budget
@@ -355,6 +487,9 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
         <span className="txn-title">Finance</span>
         <button className="txn-header-icon-btn" onClick={() => statementInputRef.current?.click()} aria-label="Upload PhonePe statement">
           <span className="material-symbols-outlined">upload_file</span>
+        </button>
+        <button className="txn-header-icon-btn" onClick={clearAllTxns} disabled={txns.length === 0} aria-label="Clear all transactions">
+          <span className="material-symbols-outlined">delete_sweep</span>
         </button>
         <input
           ref={statementInputRef}
@@ -408,6 +543,22 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <div className={`txn-summary-item ${totalCredit - totalDebit >= 0 ? 'credit' : 'debit'}`}>
             <span className="txn-summary-label">Net</span>
             <span className="txn-summary-val">{formatINR(Math.abs(totalCredit - totalDebit))}</span>
+          </div>
+        </div>
+
+        {/* This month at a glance */}
+        <div className="txn-stat-grid cols-3">
+          <div className="txn-stat-card">
+            <span className="txn-stat-label">This Month Spent</span>
+            <span className="txn-stat-value">{formatINRShort(monthStats.spent)}</span>
+          </div>
+          <div className="txn-stat-card">
+            <span className="txn-stat-label">This Month Income</span>
+            <span className="txn-stat-value">{formatINRShort(monthStats.income)}</span>
+          </div>
+          <div className="txn-stat-card">
+            <span className="txn-stat-label">Net</span>
+            <span className={`txn-stat-value${monthStats.net >= 0 ? ' good' : ' bad'}`}>{formatINRShort(monthStats.net)}</span>
           </div>
         </div>
 
@@ -542,6 +693,57 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           ))}
         </div>
 
+        {/* Filters — type/category/source/bank multi-select + date range, all AND-combined
+            and feeding both the list below and every analytics/summary figure above */}
+        <div>
+          <button className="txn-analytics-toggle" onClick={() => setShowFilters(v => !v)}>
+            <span className="txn-analytics-toggle-icon"><span className="material-symbols-outlined">filter_list</span></span>
+            Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+            <span className={`material-symbols-outlined txn-analytics-chevron${showFilters ? ' open' : ''}`}>expand_more</span>
+          </button>
+
+          {showFilters && (
+            <div className="txn-filter-panel">
+              <FilterGroup label="Type" options={TYPE_OPTIONS}
+                selected={filters.types} exclude={filters.typesExclude}
+                onToggleOption={v => toggleFilterOption('types', v)}
+                onToggleMode={() => toggleFilterMode('typesExclude')} />
+
+              <FilterGroup label="Category" options={filterCategoryOptions}
+                selected={filters.categories} exclude={filters.categoriesExclude}
+                onToggleOption={v => toggleFilterOption('categories', v)}
+                onToggleMode={() => toggleFilterMode('categoriesExclude')} />
+
+              <FilterGroup label="Source" options={SOURCE_OPTIONS}
+                selected={filters.sources} exclude={filters.sourcesExclude}
+                onToggleOption={v => toggleFilterOption('sources', v)}
+                onToggleMode={() => toggleFilterMode('sourcesExclude')} />
+
+              {filterBankOptions.length > 0 && (
+                <FilterGroup label="Bank" options={filterBankOptions.map(b => ({ value: b, label: b }))}
+                  selected={filters.banks} exclude={filters.banksExclude}
+                  onToggleOption={v => toggleFilterOption('banks', v)}
+                  onToggleMode={() => toggleFilterMode('banksExclude')} />
+              )}
+
+              <div className="txn-filter-group">
+                <div className="txn-filter-group-head">
+                  <span className="txn-filter-group-label">Date range</span>
+                </div>
+                <div className="txn-filter-daterange">
+                  <input className="add-input" type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+                  <span className="txn-filter-daterange-sep">to</span>
+                  <input className="add-input" type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} />
+                </div>
+              </div>
+
+              {activeFilterCount > 0 && (
+                <button className="txn-filter-reset" onClick={resetFilters}>Reset filters</button>
+              )}
+            </div>
+          )}
+        </div>
+
         {/* Transaction list */}
         <div className="txn-list-card">
           {txns.length === 0 && (
@@ -549,6 +751,13 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               <span className="material-symbols-outlined txn-empty-icon">credit_card_off</span>
               <p>No transactions yet</p>
               <p className="txn-empty-sub">Tap + to add a transaction</p>
+            </div>
+          )}
+          {txns.length > 0 && filtered.length === 0 && (
+            <div className="txn-empty">
+              <span className="material-symbols-outlined txn-empty-icon">filter_alt_off</span>
+              <p>No transactions match your filters</p>
+              <p className="txn-empty-sub">Try adjusting the filters above</p>
             </div>
           )}
           {groups.map(([dateLabel, items]) => (

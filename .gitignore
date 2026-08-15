@@ -7,3 +7,4 @@ client/android/build/
 client/android/app/build/
 .DS_Store
 server/*.sqlite*
+server/uploads/

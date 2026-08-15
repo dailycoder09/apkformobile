@@ -7,6 +7,7 @@ const { WebSocketServer, WebSocket } = require('ws')
 const { AccessToken } = require('livekit-server-sdk')
 const { ProxyAgent, setGlobalDispatcher } = require('undici')
 const store = require('./store')
+const firebaseAdmin = require('./firebaseAdmin')
 
 // Respect standard HTTP(S)_PROXY env vars for outbound fetch() calls (e.g.
 // to Quran Foundation) — Node's built-in fetch doesn't honor these by
@@ -20,6 +21,19 @@ if (outboundProxy) setGlobalDispatcher(new ProxyAgent(outboundProxy))
 const ADMIN_PIN   = process.env.ADMIN_PIN || '1234'
 const CLIENT_DIR  = path.join(__dirname, '../client/dist')
 const MAX_FILE_MB = 200
+
+// Profile photos — persistent (no TTL, unlike the screenshot/file-transfer stores
+// above), stored as plain files on the VM's disk. Small scale, no need for a DB
+// blob or cloud storage.
+const UPLOADS_DIR        = path.join(__dirname, 'uploads')
+const PROFILE_PHOTOS_DIR = path.join(UPLOADS_DIR, 'profiles')
+const MAX_PHOTO_MB       = 5
+fs.mkdirSync(PROFILE_PHOTOS_DIR, { recursive: true })
+
+// Stable userIds look like `${seq}-${4 random base36 chars}` (see makeId() below) —
+// validate any userId taken from a URL path against that shape before touching the
+// filesystem with it, so a hostile path segment can never escape PROFILE_PHOTOS_DIR.
+const isValidUserId = (id) => /^[A-Za-z0-9_-]{1,64}$/.test(id)
 
 // ── Simple in-memory PIN brute-force guard ──────────────────────────────────
 // Per-source (IP for HTTP, remote address for WS) attempt tracking: 5 failed
@@ -402,6 +416,75 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
+    // ── Profile photo upload (self-service) ──────────────────────────────────
+    // Known gap: unlike the WS connection (which knows exactly who authenticated
+    // via the Firebase-verified phone number), a plain HTTP POST doesn't carry
+    // that session inherently. There's no existing "prove you are this userId
+    // over HTTP" mechanism elsewhere in this file either — the closest precedent
+    // is /api/file/'s fromUserId header, which is trusted only if it matches a
+    // currently-connected session (see users.has() check there). This endpoint
+    // follows the same convention: it trusts the :userId path segment as long as
+    // that userId currently has a live WS session. That's the same trust boundary
+    // the file-upload endpoint already has, not new/weaker — but it's still not a
+    // real proof of identity (any device that learns another user's userId string
+    // could overwrite their photo while that user happens to be connected).
+    if (req.method === 'POST' && urlPath.startsWith('/api/profile-photo/')) {
+      const userId = decodeURIComponent(urlPath.replace('/api/profile-photo/', ''))
+      if (!isValidUserId(userId)) { res.writeHead(400); res.end('Invalid userId'); return }
+      if (!users.has(userId)) { res.writeHead(403); res.end('Unknown or disconnected user session'); return }
+
+      const chunks = []
+      let total = 0
+      let rejected = false
+      const maxBytes = MAX_PHOTO_MB * 1024 * 1024
+
+      req.on('data', (chunk) => {
+        if (rejected) return
+        total += chunk.length
+        if (total > maxBytes) {
+          rejected = true
+          req.destroy()
+          res.writeHead(413); res.end(`Photo exceeds ${MAX_PHOTO_MB}MB limit`)
+          return
+        }
+        chunks.push(chunk)
+      })
+
+      req.on('end', () => {
+        if (rejected) return
+        const data = Buffer.concat(chunks)
+        const destPath = path.join(PROFILE_PHOTOS_DIR, `${userId}.jpg`)
+        fs.writeFile(destPath, data, (err) => {
+          if (err) {
+            console.error('Profile photo write error:', err.message)
+            res.writeHead(500); res.end('Failed to save photo'); return
+          }
+          store.setProfilePhotoPath(userId, destPath)
+          res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true, photoUrl: `/api/profile-photo/${userId}` }))
+        })
+      })
+
+      req.on('error', () => { res.writeHead(500); res.end('Upload error') })
+      return
+    }
+
+    // ── Profile photo download ────────────────────────────────────────────────
+    // Ungated on purpose — it's just a family member's own display photo, not
+    // sensitive monitoring data like screenshots/file transfers, so there's no
+    // reason a child should need the admin PIN to see their own picture.
+    if (req.method === 'GET' && urlPath.startsWith('/api/profile-photo/')) {
+      const userId = decodeURIComponent(urlPath.replace('/api/profile-photo/', ''))
+      if (!isValidUserId(userId)) { res.writeHead(400); res.end('Invalid userId'); return }
+      const filePath = path.join(PROFILE_PHOTOS_DIR, `${userId}.jpg`)
+      fs.readFile(filePath, (err, data) => {
+        if (err) { res.writeHead(404); res.end('Not found'); return }
+        res.writeHead(200, { ...CORS, 'Content-Type': 'image/jpeg', 'Content-Length': data.length })
+        res.end(data)
+      })
+      return
+    }
+
     // LiveKit token — child publishes, admin subscribes, room = child's userId
     if (urlPath === '/api/lk-token' && req.method === 'GET') {
       const params   = new URL(req.url, 'http://x').searchParams
@@ -524,11 +607,16 @@ const byWs   = new Map()   // ws → meta
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
 
-// Admin only knows the target's userId (from getUserList()); persisted data is keyed by
-// name, so resolve via the live session first and fall back to the stable-id table.
-function resolveOwnerName(userId) {
-  const online = users.get(userId)
-  return online ? online.name : store.getNameForUserId(userId)
+// Builds the WS-facing profile payload (see profile_get/profile_update) — photoUrl
+// is a server-relative path the client fetches separately over plain HTTP, never
+// inline bytes in the JSON message.
+function toProfilePayload(userId, profile) {
+  return {
+    firstName: profile?.firstName ?? null,
+    lastName: profile?.lastName ?? null,
+    email: profile?.email ?? null,
+    photoUrl: profile?.photoPath ? `/api/profile-photo/${userId}` : null,
+  }
 }
 
 function send(ws, msg) {
@@ -551,6 +639,8 @@ function getUserList() {
 
 wss.on('connection', (ws, req) => {
   let meta = null
+  let authPending = false // guards against a second 'auth' message racing in while
+                           // the first one's Firebase verification is still in flight
   const remoteAddress = req.socket.remoteAddress
 
   ws.on('message', (raw) => {
@@ -559,9 +649,7 @@ wss.on('connection', (ws, req) => {
 
       // ── Authentication ─────────────────────────────
       if (msg.type === 'auth') {
-        if (meta) return
-
-        const userId = makeId()
+        if (meta || authPending) return
 
         if (msg.role === 'admin') {
           if (checkPinLockout(remoteAddress).locked) {
@@ -574,6 +662,9 @@ wss.on('connection', (ws, req) => {
             return
           }
           clearPinAttempts(remoteAddress)
+          // Admins aren't monitored family members — they don't have a phone-verified
+          // identity or a known_users/profiles row, just a fresh per-connection id.
+          const userId = makeId()
           meta = { ws, role: 'admin', userId, name: 'Parent' }
           admins.set(userId, meta)
           byWs.set(ws, meta)
@@ -582,53 +673,74 @@ wss.on('connection', (ws, req) => {
         }
 
         if (msg.role === 'user') {
-          const rawName = (msg.name || '').trim().slice(0, 30) || `User-${userId.split('-')[0]}`
-          // Native background service appends __bg__ — strip it for display
-          const isBg   = rawName.endsWith('__bg__')
-          const name   = isBg ? rawName.slice(0, -6) : rawName
+          // Identity now comes from a Firebase-verified phone number, never from the
+          // freely-editable `name` field — this is the fix for the exact hijack hole
+          // this rework exists to close (registering with someone else's name used
+          // to force-disconnect and steal their session). `name` is purely cosmetic
+          // from here on: a display label, never used to look anyone up.
+          //
+          // Wire contract (documented in full in the security-rework report):
+          //   Primary: { type: 'auth', role: 'user', idToken, name }
+          //   Background (KeepAliveService): { type: 'auth', role: 'user', idToken, name, isBg: true }
+          // `isBg` is an explicit boolean now — replaces the old `name.endsWith('__bg__')`
+          // string-suffix hack, which is no longer necessary once there's a real
+          // verified identity (userId) to link bg↔primary against.
+          const isBg = msg.isBg === true
+          authPending = true
 
-          if (isBg) {
-            // Background service: find the existing JS session for this user
-            // and link them — don't create a visible new entry
-            const existing = [...users.values()].find(u => u.name === name)
-            if (existing) {
+          firebaseAdmin.verifyPhoneToken(msg.idToken).then((phoneNumber) => {
+            authPending = false
+            if (meta) return // connection already authenticated by another message
+
+            const stableId = store.getOrAssignUserId(phoneNumber)
+            const name = (msg.name || '').trim().slice(0, 30) || `User-${stableId.split('-')[0]}`
+
+            if (isBg) {
+              // Background service: link to the existing primary session for this
+              // same verified phone number — never by string-matching the name.
+              const existing = users.get(stableId)
+              if (!existing) {
+                send(ws, { type: 'auth_fail', reason: 'No active primary session for this account' })
+                return
+              }
               // Store bg ws on the existing meta so file requests go to native
               existing.bgWs = ws
-              meta = { ws, role: 'user', userId, name, isBg: true, primaryId: existing.userId }
+              meta = { ws, role: 'user', userId: stableId, name, isBg: true, primaryId: existing.userId }
               byWs.set(ws, meta)
               // Give native service the same userId as the JS session
               send(ws, { type: 'auth_ok', role: 'user', userId: existing.userId, name, users: [] })
               return
             }
-          }
 
-          // Reconnect to existing session with same name — preserves userId so
-          // admin panel's targetUser.id stays valid across screen-lock reconnects
-          let reconnecting = null
-          for (const [, m] of users) {
-            if (m.name === name && !m.isBg) { reconnecting = m; break }
-          }
+            // Reconnect to an existing session for the same verified phone number —
+            // preserves userId (so admin panel's targetUser.id stays valid) across
+            // screen-lock/app-relaunch reconnects. Two connections presenting valid
+            // tokens for the SAME phone are legitimately the same person reconnecting;
+            // two connections for DIFFERENT phones can never collide, regardless of
+            // what `name` either one sends.
+            const reconnecting = users.get(stableId)
+            if (reconnecting) {
+              byWs.delete(reconnecting.ws)
+              try { reconnecting.ws.close() } catch {}
+              reconnecting.ws = ws
+              reconnecting.name = name
+              meta = reconnecting
+              byWs.set(ws, meta)
+              send(ws, { type: 'auth_ok', role: 'user', userId: stableId, name, users: getUserList() })
+              // No user_left / user_joined — seamless reconnect, same userId
+              return
+            }
 
-          if (reconnecting) {
-            byWs.delete(reconnecting.ws)
-            try { reconnecting.ws.close() } catch {}
-            reconnecting.ws = ws
-            meta = reconnecting
+            meta = { ws, role: 'user', userId: stableId, name, isBg: false }
+            users.set(stableId, meta)
             byWs.set(ws, meta)
-            send(ws, { type: 'auth_ok', role: 'user', userId: reconnecting.userId, name, users: getUserList() })
-            // No user_left / user_joined — seamless reconnect, same userId
-            return
-          }
-
-          // Stable per-name id — same name always gets the same userId back, even after
-          // a server restart wipes the in-memory `users` map above.
-          const stableId = store.getOrAssignUserId(name)
-          meta = { ws, role: 'user', userId: stableId, name, isBg: false }
-          users.set(stableId, meta)
-          byWs.set(ws, meta)
-          send(ws, { type: 'auth_ok', role: 'user', userId: stableId, name, users: getUserList() })
-          broadcastToAdmins({ type: 'user_joined', user: { id: stableId, name } })
-          broadcastAll({ type: 'users_list', users: getUserList() })
+            send(ws, { type: 'auth_ok', role: 'user', userId: stableId, name, users: getUserList() })
+            broadcastToAdmins({ type: 'user_joined', user: { id: stableId, name } })
+            broadcastAll({ type: 'users_list', users: getUserList() })
+          }).catch((err) => {
+            authPending = false
+            send(ws, { type: 'auth_fail', reason: `Phone verification failed: ${err.message}` })
+          })
           return
         }
       }
@@ -667,17 +779,26 @@ wss.on('connection', (ws, req) => {
       }
 
       // ── Admin commands ── transactions ─────────────
+      // Data tables are now keyed directly by the stable userId (not by name), so
+      // admin handlers no longer need a userId→name resolution step beforehand —
+      // this replaces the old resolveOwnerName() indirection entirely.
       if (meta.role === 'admin' && msg.type === 'transactions_get') {
-        const ownerName = resolveOwnerName(msg.userId)
-        const list = ownerName ? store.getList(store.TABLES.TRANSACTIONS, ownerName) : []
+        const list = store.getList(store.TABLES.TRANSACTIONS, msg.userId)
         send(ws, { type: 'transactions_list', userId: msg.userId, transactions: list })
+        return
+      }
+
+      // Admin-only: wipe all transactions for a family member (e.g. "Clear All" scoped
+      // to whichever user is selected in AdminTransactionView.jsx).
+      if (meta.role === 'admin' && msg.type === 'transaction_delete_all') {
+        store.deleteAllForOwner(store.TABLES.TRANSACTIONS, msg.userId)
+        broadcastToAdmins({ type: 'transactions_cleared', userId: msg.userId })
         return
       }
 
       // ── Admin commands ── browsing activity ─────────
       if (meta.role === 'admin' && msg.type === 'browsing_get') {
-        const ownerName = resolveOwnerName(msg.userId)
-        const list = ownerName ? store.getList(store.TABLES.BROWSING_HISTORY, ownerName) : []
+        const list = store.getList(store.TABLES.BROWSING_HISTORY, msg.userId)
         send(ws, { type: 'browsing_list', userId: msg.userId, entries: list })
         return
       }
@@ -685,16 +806,14 @@ wss.on('connection', (ws, req) => {
       // Admin-only: wipe all browsing history for a child. No client UI wired up to this
       // yet — a "Delete history" button in AdminBrowsingView.jsx is a follow-up.
       if (meta.role === 'admin' && msg.type === 'browsing_delete_all') {
-        const ownerName = resolveOwnerName(msg.userId)
-        if (ownerName) store.deleteAllForOwner(store.TABLES.BROWSING_HISTORY, ownerName)
+        store.deleteAllForOwner(store.TABLES.BROWSING_HISTORY, msg.userId)
         broadcastToAdmins({ type: 'browsing_cleared', userId: msg.userId })
         return
       }
 
       // ── Admin commands ── call log ───────────────────
       if (meta.role === 'admin' && msg.type === 'call_log_get') {
-        const ownerName = resolveOwnerName(msg.userId)
-        const list = ownerName ? store.getList(store.TABLES.CALL_LOGS, ownerName) : []
+        const list = store.getList(store.TABLES.CALL_LOGS, msg.userId)
         send(ws, { type: 'call_log_list', userId: msg.userId, entries: list })
         return
       }
@@ -702,9 +821,15 @@ wss.on('connection', (ws, req) => {
       // Admin-only: wipe all call log entries for a child. No client UI wired up to this
       // yet — a "Delete history" button in AdminCallLogView.jsx is a follow-up.
       if (meta.role === 'admin' && msg.type === 'call_log_delete_all') {
-        const ownerName = resolveOwnerName(msg.userId)
-        if (ownerName) store.deleteAllForOwner(store.TABLES.CALL_LOGS, ownerName)
+        store.deleteAllForOwner(store.TABLES.CALL_LOGS, msg.userId)
         broadcastToAdmins({ type: 'call_log_cleared', userId: msg.userId })
+        return
+      }
+
+      // ── Admin commands ── profile (view-only; editing is self-service) ──
+      if (meta.role === 'admin' && msg.type === 'profile_get') {
+        const profile = store.getProfile(msg.userId)
+        send(ws, { type: 'profile', userId: msg.userId, profile: toProfilePayload(msg.userId, profile) })
         return
       }
 
@@ -721,10 +846,10 @@ wss.on('connection', (ws, req) => {
           // amount/time-window check was considered instead, but real statement data shows
           // genuinely distinct transactions (different people, different ids) can share the
           // same type+amount within the same minute — that would falsely collapse them.
-          const isDuplicate = store.getList(store.TABLES.TRANSACTIONS, meta.name).some(t => t.id === txn.id)
+          const isDuplicate = store.getList(store.TABLES.TRANSACTIONS, uid).some(t => t.id === txn.id)
           if (!isDuplicate) {
             // INSERT OR IGNORE inside appendItem backstops this at the DB level too
-            const inserted = store.appendItem(store.TABLES.TRANSACTIONS, meta.name, txn)
+            const inserted = store.appendItem(store.TABLES.TRANSACTIONS, uid, txn)
             if (inserted) broadcastToAdmins({ type: 'transaction_new', transaction: txn, fromUserId: uid, fromUserName: meta.name })
           }
           return
@@ -734,7 +859,7 @@ wss.on('connection', (ws, req) => {
         if (msg.type === 'transaction_update') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const patch = { ...msg.transaction, userId: uid, userName: meta.name }
-          const txn = store.updateItem(store.TABLES.TRANSACTIONS, meta.name, msg.transaction?.id, patch)
+          const txn = store.updateItem(store.TABLES.TRANSACTIONS, uid, msg.transaction?.id, patch)
           if (!txn) return
           broadcastToAdmins({ type: 'transaction_updated', transaction: txn, fromUserId: uid })
           return
@@ -743,7 +868,7 @@ wss.on('connection', (ws, req) => {
         // Transaction deleted by its owner
         if (msg.type === 'transaction_delete') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
-          const deleted = store.deleteItem(store.TABLES.TRANSACTIONS, meta.name, msg.id)
+          const deleted = store.deleteItem(store.TABLES.TRANSACTIONS, uid, msg.id)
           if (!deleted) return
           broadcastToAdmins({ type: 'transaction_deleted', id: msg.id, fromUserId: uid })
           return
@@ -752,8 +877,19 @@ wss.on('connection', (ws, req) => {
         // Self-fetch — user requesting their own transaction history
         if (msg.type === 'transactions_get') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
-          const list = store.getList(store.TABLES.TRANSACTIONS, meta.name)
+          const list = store.getList(store.TABLES.TRANSACTIONS, uid)
           send(ws, { type: 'transactions_list', userId: uid, transactions: list })
+          return
+        }
+
+        // Self-clear — user wiping their own transaction history. Never trust a
+        // client-supplied id for a self-action — resolve uid from the authenticated
+        // session only, same principle as the self-fetch handler above.
+        if (msg.type === 'transaction_delete_all') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.deleteAllForOwner(store.TABLES.TRANSACTIONS, uid)
+          broadcastToAdmins({ type: 'transactions_cleared', userId: uid })
+          send(ws, { type: 'transactions_cleared', userId: uid })
           return
         }
 
@@ -763,7 +899,7 @@ wss.on('connection', (ws, req) => {
         if (msg.type === 'browsing_add') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const entry = { ...msg.entry, userId: uid, userName: meta.name }
-          store.appendItem(store.TABLES.BROWSING_HISTORY, meta.name, entry)
+          store.appendItem(store.TABLES.BROWSING_HISTORY, uid, entry)
           broadcastToAdmins({ type: 'browsing_new', entry, fromUserId: uid, fromUserName: meta.name })
           return
         }
@@ -772,8 +908,31 @@ wss.on('connection', (ws, req) => {
         if (msg.type === 'call_log_add') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const entry = { ...msg.entry, userId: uid, userName: meta.name }
-          store.appendItem(store.TABLES.CALL_LOGS, meta.name, entry)
+          store.appendItem(store.TABLES.CALL_LOGS, uid, entry)
           broadcastToAdmins({ type: 'call_log_new', entry, fromUserId: uid, fromUserName: meta.name })
+          return
+        }
+
+        // Self-service profile — own view, e.g. to populate a "My Profile" screen.
+        if (msg.type === 'profile_get') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const profile = store.getProfile(uid)
+          send(ws, { type: 'profile', userId: uid, profile: toProfilePayload(uid, profile) })
+          return
+        }
+
+        // Self-service profile update — always applies to the authenticated session's
+        // own userId, never a client-supplied target (same principle as the
+        // self-fetch/self-clear handlers above). Photo is handled separately via the
+        // HTTP /api/profile-photo/:userId endpoints, not this message.
+        if (msg.type === 'profile_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const profile = store.upsertProfile(uid, {
+            firstName: (msg.firstName || '').trim().slice(0, 60) || null,
+            lastName:  (msg.lastName  || '').trim().slice(0, 60) || null,
+            email:     (msg.email     || '').trim().slice(0, 254) || null,
+          })
+          send(ws, { type: 'profile', userId: uid, profile: toProfilePayload(uid, profile) })
           return
         }
 
@@ -818,7 +977,7 @@ wss.on('connection', (ws, req) => {
       admins.delete(meta.userId)
     } else if (meta.isBg) {
       // Background session closed — remove bgWs reference from primary session
-      const primary = [...users.values()].find(u => u.userId === meta.primaryId)
+      const primary = users.get(meta.primaryId)
       if (primary) delete primary.bgWs
     } else {
       // If bg service is still alive, keep child visible in admin list

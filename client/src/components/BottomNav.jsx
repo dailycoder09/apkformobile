@@ -39,6 +39,14 @@ const NAV_ITEMS = [
       <path d="M3 7a2 2 0 0 1 2-2h13a1 1 0 0 1 1 1v2H5m-2-1v11a2 2 0 0 0 2 2h14a1 1 0 0 0 1-1v-9a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2Zm13 7h2" />
     ),
   },
+  {
+    value: 'profile',
+    key: 'profile',
+    label: 'Profile',
+    icon: (
+      <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" />
+    ),
+  },
 ]
 
 export default function BottomNav({ active, onNavigate }) {

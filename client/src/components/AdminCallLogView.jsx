@@ -80,6 +80,9 @@ export default function AdminCallLogView({ initialUsers, sendMsg, addListener, o
           return { ...prev, [e.userId]: deduped }
         })
       }
+      if (msg.type === 'call_log_cleared') {
+        setEntriesByUser(prev => ({ ...prev, [msg.userId]: [] }))
+      }
       if (msg.type === 'user_joined') {
         setUsers(prev => prev.find(u => u.id === msg.user.id) ? prev : [...prev, msg.user])
         sendMsg({ type: 'call_log_get', userId: msg.user.id })
@@ -91,6 +94,17 @@ export default function AdminCallLogView({ initialUsers, sendMsg, addListener, o
   }, [addListener, sendMsg])
 
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [activeUser, period])
+
+  function clearHistoryForUser() {
+    if (activeUser === 'all') return
+    const targetEntries = entriesByUser[activeUser] || []
+    if (targetEntries.length === 0) return
+    const target = users.find(u => u.id === activeUser)
+    const ok = window.confirm(`This will permanently delete all ${targetEntries.length} call log entries for ${target ? target.name : 'this user'}. This cannot be undone. Continue?`)
+    if (!ok) return
+    sendMsg({ type: 'call_log_delete_all', userId: activeUser })
+    setEntriesByUser(prev => ({ ...prev, [activeUser]: [] }))
+  }
 
   const start = periodStart(period)
   const allEntries = Object.values(entriesByUser).flat()
@@ -135,6 +149,15 @@ export default function AdminCallLogView({ initialUsers, sendMsg, addListener, o
               onClick={() => setPeriod(p.key)}>{p.label}</button>
           ))}
         </div>
+
+        {/* Delete history — scoped to whichever family member is selected; clearing "all"
+            family members at once is a much more dangerous action and isn't offered here */}
+        {activeUser !== 'all' && (
+          <button className="browse-clear-all-btn" onClick={clearHistoryForUser} disabled={(entriesByUser[activeUser] || []).length === 0}>
+            <span className="material-symbols-outlined">delete_sweep</span>
+            Delete history for {users.find(u => u.id === activeUser)?.name || 'this user'}
+          </button>
+        )}
 
         <div className="browse-summary">
           <div className="browse-summary-item">

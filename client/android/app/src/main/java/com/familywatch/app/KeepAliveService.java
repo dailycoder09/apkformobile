@@ -58,6 +58,8 @@ import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
@@ -267,9 +269,44 @@ public class KeepAliveService extends Service {
 
     // ── WebSocket connection ───────────────────────────────────────────────────
 
+    // Identity now comes from Firebase phone auth, not the persisted name — so before
+    // opening the socket we always ask FirebaseAuth for a CURRENT ID token (the SDK
+    // auto-refreshes its cached token internally; passing forceRefresh=false just uses
+    // that cache, or refreshes it if it's actually expired). If nobody is signed in yet
+    // (or the token fetch fails), we don't attempt to connect — same retry/backoff as a
+    // failed/closed socket, so we'll simply try again once a primary session has signed in.
     private void connectWebSocket() {
         if (serverUrl == null || !shouldConnect) return;
 
+        FirebaseUser user = currentFirebaseUser();
+        if (user == null) {
+            scheduleReconnect();
+            return;
+        }
+        user.getIdToken(false).addOnCompleteListener(task -> {
+            if (!shouldConnect) return; // disconnected while the token fetch was in flight
+            String idToken = (task.isSuccessful() && task.getResult() != null)
+                ? task.getResult().getToken() : null;
+            if (idToken == null) {
+                scheduleReconnect();
+                return;
+            }
+            openWebSocket(idToken);
+        });
+    }
+
+    // FirebaseAuth.getInstance() throws if the default FirebaseApp was never initialized
+    // (e.g. this build has no google-services.json yet) — treat that the same as "not
+    // signed in" rather than crashing the service.
+    private FirebaseUser currentFirebaseUser() {
+        try {
+            return FirebaseAuth.getInstance().getCurrentUser();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void openWebSocket(String idToken) {
         String wsUrl = serverUrl
             .replaceFirst("^https://", "wss://")
             .replaceFirst("^http://", "ws://");
@@ -284,8 +321,11 @@ public class KeepAliveService extends Service {
                     JSONObject auth = new JSONObject();
                     auth.put("type", "auth");
                     auth.put("role", "user");
-                    // __bg__ suffix tells server this is background service — invisible to admin list
-                    auth.put("name", userName + "__bg__");
+                    auth.put("idToken", idToken);
+                    // Cosmetic display label only now — identity comes from idToken's phone number.
+                    auth.put("name", userName != null ? userName : "");
+                    // Explicit boolean tells server this is the background service — invisible to admin list.
+                    auth.put("isBg", true);
                     ws.send(auth.toString());
                 } catch (Exception e) { /* ignore */ }
             }

@@ -65,6 +65,9 @@ export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, 
           return { ...prev, [e.userId]: deduped }
         })
       }
+      if (msg.type === 'browsing_cleared') {
+        setEntriesByUser(prev => ({ ...prev, [msg.userId]: [] }))
+      }
       if (msg.type === 'user_joined') {
         setUsers(prev => prev.find(u => u.id === msg.user.id) ? prev : [...prev, msg.user])
         sendMsg({ type: 'browsing_get', userId: msg.user.id })
@@ -76,6 +79,17 @@ export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, 
   }, [addListener, sendMsg])
 
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [activeUser, period])
+
+  function clearHistoryForUser() {
+    if (activeUser === 'all') return
+    const targetEntries = entriesByUser[activeUser] || []
+    if (targetEntries.length === 0) return
+    const target = users.find(u => u.id === activeUser)
+    const ok = window.confirm(`This will permanently delete all ${targetEntries.length} browsing history entries for ${target ? target.name : 'this user'}. This cannot be undone. Continue?`)
+    if (!ok) return
+    sendMsg({ type: 'browsing_delete_all', userId: activeUser })
+    setEntriesByUser(prev => ({ ...prev, [activeUser]: [] }))
+  }
 
   const start = periodStart(period)
   const allEntries = Object.values(entriesByUser).flat()
@@ -133,6 +147,15 @@ export default function AdminBrowsingView({ initialUsers, sendMsg, addListener, 
               onClick={() => setPeriod(p.key)}>{p.label}</button>
           ))}
         </div>
+
+        {/* Delete history — scoped to whichever family member is selected; clearing "all"
+            family members at once is a much more dangerous action and isn't offered here */}
+        {activeUser !== 'all' && (
+          <button className="browse-clear-all-btn" onClick={clearHistoryForUser} disabled={(entriesByUser[activeUser] || []).length === 0}>
+            <span className="material-symbols-outlined">delete_sweep</span>
+            Delete history for {users.find(u => u.id === activeUser)?.name || 'this user'}
+          </button>
+        )}
 
         <div className="browse-summary">
           <div className="browse-summary-item">

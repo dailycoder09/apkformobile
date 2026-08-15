@@ -8,6 +8,9 @@
   "plugins": {
     "Filesystem": {
       "iosScheme": "capacitor"
+    },
+    "FirebaseAuthentication": {
+      "providers": ["phone"]
     }
   },
   "cordova": {
