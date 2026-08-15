@@ -100,6 +100,7 @@ jobs:
           username: fatemasayed760
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
+            set -e
             cd ~/chat-pwa
             git fetch origin ${{ github.ref_name }}
             git checkout ${{ github.ref_name }} 2>/dev/null || git checkout -b ${{ github.ref_name }} origin/${{ github.ref_name }}
@@ -128,6 +129,7 @@ jobs:
           username: fatemasayed760
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
+            set -e
             cd ~/chat-pwa
             sudo cp deploy/familywatch-backup.service /etc/systemd/system/familywatch-backup.service
             sudo cp deploy/familywatch-backup.timer /etc/systemd/system/familywatch-backup.timer
