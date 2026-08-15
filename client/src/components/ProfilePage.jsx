@@ -63,7 +63,10 @@ export default function ProfilePage({ session, sendMsg, addListener }) {
         // Raw binary body — the server expects just the image bytes, not multipart/FormData.
         const res = await fetch(`${httpBase()}/api/profile-photo/${session.userId}`, {
           method: 'POST',
-          headers: { 'Content-Type': photoFile.type || 'application/octet-stream' },
+          headers: {
+            'Content-Type': photoFile.type || 'application/octet-stream',
+            'X-Upload-Token': session.uploadToken || '',
+          },
           body: photoFile,
         })
         if (!res.ok) {

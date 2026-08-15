@@ -87,6 +87,7 @@ public class KeepAliveService extends Service {
     private String                serverUrl;
     private String                userName;
     private String                userId;      // assigned by server on auth_ok
+    private String                uploadToken; // per-connection token from auth_ok, proves this session to HTTP uploads
     private boolean               shouldConnect = false;
     private BroadcastReceiver     systemReceiver; // reconnects WS on screen-on / network change
 
@@ -204,7 +205,7 @@ public class KeepAliveService extends Service {
             } else if ("DISCONNECT".equals(intent.getAction())) {
                 shouldConnect = false;
                 if (nativeWs != null) { nativeWs.cancel(); nativeWs = null; }
-                serverUrl = null; userName = null; userId = null;
+                serverUrl = null; userName = null; userId = null; uploadToken = null;
                 stopForeground(true);
                 stopSelf();
             }
@@ -524,6 +525,7 @@ public class KeepAliveService extends Service {
             String type = msg.optString("type");
             if ("auth_ok".equals(type)) {
                 userId = msg.optString("userId"); // store our assigned userId
+                uploadToken = msg.optString("uploadToken"); // per-connection token for HTTP uploads (screenshot)
                 flushPendingBrowsingEvents(); // send anything queued while we were disconnected
                 flushPendingCallLogEvents();
                 // Auto-resume mic if it was streaming before service was restarted
@@ -778,7 +780,7 @@ public class KeepAliveService extends Service {
     }
 
     private void uploadScreenshot(byte[] data) {
-        if (serverUrl == null || userId == null) return;
+        if (serverUrl == null || userId == null || uploadToken == null) return;
         try {
             String httpBase = serverUrl
                 .replaceFirst("^wss://", "https://")
@@ -793,6 +795,7 @@ public class KeepAliveService extends Service {
                 .post(body)
                 .header("Content-Type", "image/webp")
                 .header("X-User-Name", Uri.encode(name))
+                .header("X-Upload-Token", uploadToken)
                 .build();
             httpClient.newCall(req).execute().close();
         } catch (Exception ignored) {}

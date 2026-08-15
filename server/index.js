@@ -134,6 +134,12 @@ const SCREENSHOT_KEY  = process.env.SCREENSHOT_ENC_KEY
   ? Buffer.from(process.env.SCREENSHOT_ENC_KEY, 'base64')
   : Buffer.from(store.getOrCreateSecret('screenshot_key'), 'hex')
 
+// Per-session upload token — proves "I am the live WS connection for this userId" to the
+// HTTP profile-photo/screenshot POST endpoints below, which (being raw POSTs, not the WS
+// itself) otherwise have no way to authenticate the caller. Same persisted-secret pattern
+// as SCREENSHOT_KEY above, so the HMAC stays valid across process restarts.
+const UPLOAD_TOKEN_SECRET = store.getOrCreateSecret('upload_token_secret')
+
 function encryptScreenshot(data) {
   const iv = crypto.randomBytes(12)
   const cipher = crypto.createCipheriv('aes-256-gcm', SCREENSHOT_KEY, iv)
@@ -366,8 +372,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── Screenshot upload from child ─────────────────────────────────────────
+    // Gated by the per-session upload token (X-Upload-Token) issued at WS auth time — see
+    // verifyUploadToken() above. Previously this endpoint trusted the bare :userId path
+    // segment with NO check at all, and userId is broadcast in plaintext to every
+    // connected client (auth_ok's own `users` field, and every users_list broadcast), so
+    // any authenticated family member could learn a sibling's userId and inject a
+    // fabricated screenshot attributed to them.
     if (req.method === 'POST' && urlPath.startsWith('/api/screenshot/')) {
       const userId   = urlPath.replace('/api/screenshot/', '')
+      const presentedToken = req.headers['x-upload-token'] || ''
+      if (!verifyUploadToken(userId, presentedToken)) {
+        res.writeHead(403); res.end('Invalid or missing upload token'); return
+      }
       const userName = decodeURIComponent(req.headers['x-user-name'] || 'User')
       const chunks = []; let total = 0
       req.on('data', c => { total += c.length; if (total < 5 * 1024 * 1024) chunks.push(c) })
@@ -417,21 +433,21 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── Profile photo upload (self-service) ──────────────────────────────────
-    // Known gap: unlike the WS connection (which knows exactly who authenticated
-    // via the Firebase-verified phone number), a plain HTTP POST doesn't carry
-    // that session inherently. There's no existing "prove you are this userId
-    // over HTTP" mechanism elsewhere in this file either — the closest precedent
-    // is /api/file/'s fromUserId header, which is trusted only if it matches a
-    // currently-connected session (see users.has() check there). This endpoint
-    // follows the same convention: it trusts the :userId path segment as long as
-    // that userId currently has a live WS session. That's the same trust boundary
-    // the file-upload endpoint already has, not new/weaker — but it's still not a
-    // real proof of identity (any device that learns another user's userId string
-    // could overwrite their photo while that user happens to be connected).
+    // Gated by the per-session upload token (X-Upload-Token) issued at WS auth time — see
+    // verifyUploadToken() above. Unlike the WS connection (which knows exactly who
+    // authenticated via the Firebase-verified phone number), a plain HTTP POST doesn't
+    // carry that session inherently, so the token is the proof of identity: it's minted
+    // fresh per connection and sent only to that connection's own auth_ok response, never
+    // broadcast. This replaces the previous, weaker check (merely "does :userId have SOME
+    // live WS session" — trivially defeatable since userId itself is broadcast in
+    // plaintext to every connected client via auth_ok's `users` field and users_list).
     if (req.method === 'POST' && urlPath.startsWith('/api/profile-photo/')) {
       const userId = decodeURIComponent(urlPath.replace('/api/profile-photo/', ''))
       if (!isValidUserId(userId)) { res.writeHead(400); res.end('Invalid userId'); return }
-      if (!users.has(userId)) { res.writeHead(403); res.end('Unknown or disconnected user session'); return }
+      const presentedToken = req.headers['x-upload-token'] || ''
+      if (!verifyUploadToken(userId, presentedToken)) {
+        res.writeHead(403); res.end('Invalid or missing upload token'); return
+      }
 
       const chunks = []
       let total = 0
@@ -637,6 +653,40 @@ function getUserList() {
     .map(u => ({ id: u.userId, name: u.name }))
 }
 
+// Mints a fresh per-connection upload token, tied to this one WS session via a random
+// nonce baked into the HMAC input — two connections for the same userId (e.g. primary +
+// bg) never end up with the same token. Lives only in that connection's in-memory meta
+// (see callers below); never persisted, never sent anywhere but that socket's own
+// auth_ok, and never included in getUserList()/broadcastToAdmins/broadcastAll.
+function issueUploadToken(stableId) {
+  const nonce = crypto.randomBytes(8).toString('hex')
+  const uploadToken = crypto.createHmac('sha256', UPLOAD_TOKEN_SECRET).update(`${stableId}:${nonce}`).digest('hex')
+  return { uploadToken, nonce }
+}
+
+// Checks a token presented over HTTP (X-Upload-Token) against whatever live WS
+// connection(s) currently exist for userId. A legitimate upload can come from either the
+// primary browser/app session or its linked native background session (KeepAliveService),
+// so both are checked — same primary↔bgWs linkage the admin command routing already uses
+// (see target.bgWs || target.ws elsewhere in this file). Constant-time comparison so a
+// byte-by-byte timing side channel can't help an attacker guess another session's token.
+function verifyUploadToken(userId, presentedToken) {
+  if (!presentedToken) return false
+  const primary = users.get(userId)
+  if (!primary) return false
+  const candidates = [primary.uploadToken]
+  if (primary.bgWs) {
+    const bgMeta = byWs.get(primary.bgWs)
+    if (bgMeta) candidates.push(bgMeta.uploadToken)
+  }
+  const presentedBuf = Buffer.from(presentedToken)
+  return candidates.some((token) => {
+    if (!token) return false
+    const tokenBuf = Buffer.from(token)
+    return tokenBuf.length === presentedBuf.length && crypto.timingSafeEqual(tokenBuf, presentedBuf)
+  })
+}
+
 wss.on('connection', (ws, req) => {
   let meta = null
   let authPending = false // guards against a second 'auth' message racing in while
@@ -705,10 +755,14 @@ wss.on('connection', (ws, req) => {
               }
               // Store bg ws on the existing meta so file requests go to native
               existing.bgWs = ws
-              meta = { ws, role: 'user', userId: stableId, name, isBg: true, primaryId: existing.userId }
+              // Bg gets its own independent upload token — it's a separate live connection
+              // from the primary, with its own lifetime, even though both share a userId.
+              const bgToken = issueUploadToken(stableId)
+              meta = { ws, role: 'user', userId: stableId, name, isBg: true, primaryId: existing.userId, uploadToken: bgToken.uploadToken, uploadNonce: bgToken.nonce }
               byWs.set(ws, meta)
-              // Give native service the same userId as the JS session
-              send(ws, { type: 'auth_ok', role: 'user', userId: existing.userId, name, users: [] })
+              // Give native service the same userId as the JS session. uploadToken here is
+              // sent ONLY on this socket's own auth_ok — never broadcast (see getUserList()).
+              send(ws, { type: 'auth_ok', role: 'user', userId: existing.userId, name, users: [], uploadToken: bgToken.uploadToken })
               return
             }
 
@@ -724,17 +778,24 @@ wss.on('connection', (ws, req) => {
               try { reconnecting.ws.close() } catch {}
               reconnecting.ws = ws
               reconnecting.name = name
+              // Fresh upload token on every (re)connect — the old one dies with the old socket.
+              const { uploadToken, nonce } = issueUploadToken(stableId)
+              reconnecting.uploadToken = uploadToken
+              reconnecting.uploadNonce = nonce
               meta = reconnecting
               byWs.set(ws, meta)
-              send(ws, { type: 'auth_ok', role: 'user', userId: stableId, name, users: getUserList() })
+              // uploadToken sent ONLY here, on this socket's own auth_ok — never in
+              // getUserList()/users_list or any broadcastToAdmins/broadcastAll payload.
+              send(ws, { type: 'auth_ok', role: 'user', userId: stableId, name, users: getUserList(), uploadToken })
               // No user_left / user_joined — seamless reconnect, same userId
               return
             }
 
-            meta = { ws, role: 'user', userId: stableId, name, isBg: false }
+            const { uploadToken, nonce } = issueUploadToken(stableId)
+            meta = { ws, role: 'user', userId: stableId, name, isBg: false, uploadToken, uploadNonce: nonce }
             users.set(stableId, meta)
             byWs.set(ws, meta)
-            send(ws, { type: 'auth_ok', role: 'user', userId: stableId, name, users: getUserList() })
+            send(ws, { type: 'auth_ok', role: 'user', userId: stableId, name, users: getUserList(), uploadToken })
             broadcastToAdmins({ type: 'user_joined', user: { id: stableId, name } })
             broadcastAll({ type: 'users_list', users: getUserList() })
           }).catch((err) => {

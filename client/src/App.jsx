@@ -194,7 +194,10 @@ export default function App() {
       const msg = JSON.parse(e.data)
       if (msg.type === 'auth_ok') {
         setLoginError(null)
-        setSession({ role: msg.role, userId: msg.userId, name: msg.name || 'Admin', initialUsers: msg.users || [] })
+        // uploadToken proves "I am this session" to the HTTP profile-photo/screenshot POST
+        // endpoints (see server's verifyUploadToken) — it's per-connection and only ever
+        // arrives on this socket's own auth_ok, never via any broadcast.
+        setSession({ role: msg.role, userId: msg.userId, name: msg.name || 'Admin', initialUsers: msg.users || [], uploadToken: msg.uploadToken || '' })
         // This socket is now authenticated — flush anything that queued up in sendMsg()
         // while we were offline/reconnecting (see DURABLE_MSG_TYPES above) instead of
         // leaving it stranded, which is exactly what used to make added transactions
@@ -291,6 +294,7 @@ export default function App() {
           headers: {
             'Content-Type': 'image/webp',
             'X-User-Name': encodeURIComponent(session.name || ''),
+            'X-Upload-Token': session.uploadToken || '',
           },
           body: blob,
         })
