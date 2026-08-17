@@ -14,6 +14,11 @@ export const CATEGORIES = [
 
 export const TRANSFER_META = { id: 'transfer', label: 'Transfer', icon: 'swap_horiz', color: '#64748b' }
 
+// Reserved "category" value used to store the overall (non-per-category) monthly budget
+// in the same server-side budgets table as real per-category limits — see budget_get/
+// budget_set in server/index.js and getBudgets/setBudget in server/store.js.
+export const OVERALL_BUDGET_CATEGORY = '__overall__'
+
 const CUSTOM_PALETTE = ['#d946a8', '#0891b2', '#65a30d', '#9333ea', '#dc2626', '#0d9488', '#ca8a04']
 
 // Resolves display meta (icon/label/color) for any transaction, including custom

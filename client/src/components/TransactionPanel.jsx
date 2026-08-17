@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank } from '../utils/txnMeta'
+import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank, OVERALL_BUDGET_CATEGORY } from '../utils/txnMeta'
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
+import { detectRecurring } from '../utils/recurringDetection'
 
 // Supported statement formats, tried in order — auto-detected from file content so the
 // upload flow stays a single tap (no "pick your bank" dropdown). Adding a new bank later is
@@ -21,6 +22,10 @@ const STATEMENT_FORMATS = [
 ]
 
 const PAGE_SIZE = 15
+
+// Fallback shown until the user (or their parent) has ever set an overall budget on the
+// server — matches the previous localStorage-only default so first-run behavior is unchanged.
+const DEFAULT_BUDGET = 20000
 
 const ANALYTICS_RANGES = [
   { key: 'week', label: 'This week', days: 7 },
@@ -148,7 +153,11 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [tab, setTab]         = useState('all')
   const [sheetMode, setSheetMode] = useState(null) // null | 'add' | 'edit'
   const [form, setForm]       = useState(EMPTY_FORM)
-  const [budget, setBudget] = useState(() => Number(localStorage.getItem('meeee_txn_budget') || 20000))
+  // Server-synced budgets: { [category]: monthlyLimit }, overall budget keyed by the
+  // reserved OVERALL_BUDGET_CATEGORY. Both this user and their parent can set entries.
+  const [budgets, setBudgets] = useState({})
+  const [budgetSheet, setBudgetSheet] = useState(null) // null | { category, label }
+  const [budgetInput, setBudgetInput] = useState('')
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [analyticsRange, setAnalyticsRange] = useState('month')
   const [customCategories, setCustomCategories] = useState(() => loadCustomCategories(session.userId))
@@ -185,15 +194,17 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
       if (msg.type === 'transactions_cleared' && msg.userId === session.userId) {
         setTxns([])
       }
+      if (msg.type === 'budgets' && msg.userId === session.userId) {
+        setBudgets(msg.budgets || {})
+      }
     })
   }, [addListener, session.userId])
 
-  // Fetch own transaction history on mount
+  // Fetch own transaction history + budgets on mount
   useEffect(() => {
     sendMsg({ type: 'transactions_get' })
+    sendMsg({ type: 'budget_get' })
   }, [sendMsg])
-
-  useEffect(() => { localStorage.setItem('meeee_txn_budget', String(budget)) }, [budget])
 
   // Refresh the observed-bank list whenever the transaction set changes (e.g. new SMS-derived banks)
   useEffect(() => { setBanks(loadBanks(session.userId, txns)) }, [session.userId, txns.length])
@@ -326,11 +337,22 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     setDateTo('')
   }
 
-  function editBudget() {
-    const next = window.prompt('Set your monthly budget (₹)', String(budget))
-    if (next == null) return
-    const num = parseFloat(next)
-    if (!isNaN(num) && num > 0) setBudget(num)
+  // Opens the shared add-txn-sheet-style modal, pre-filled with the current limit for
+  // this category (blank if none is set yet) — used for both the overall budget and
+  // each individual per-category budget.
+  function openBudgetSheet(category, label) {
+    const current = budgets[category]
+    setBudgetInput(current != null ? String(current) : '')
+    setBudgetSheet({ category, label })
+  }
+
+  function submitBudget() {
+    if (!budgetSheet) return
+    const num = parseFloat(budgetInput)
+    if (isNaN(num) || num <= 0) return
+    sendMsg({ type: 'budget_set', category: budgetSheet.category, monthlyLimit: num })
+    setBudgets(prev => ({ ...prev, [budgetSheet.category]: num })) // optimistic
+    setBudgetSheet(null)
   }
 
   async function handleStatementUpload(e) {
@@ -498,8 +520,34 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     return { buckets, bucketMax, topCategories, topMax, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate }
   }, [filteredTxns, analyticsRange])
 
-  const budgetPct = budget ? Math.min(100, Math.round((monthStats.spent / budget) * 100)) : 0
-  const budgetOver = monthStats.spent > budget
+  const overallBudget = budgets[OVERALL_BUDGET_CATEGORY] ?? DEFAULT_BUDGET
+  const budgetPct = overallBudget ? Math.min(100, Math.round((monthStats.spent / overallBudget) * 100)) : 0
+  const budgetOver = monthStats.spent > overallBudget
+
+  // Per-category budget rows: every category with spend this month, plus any category
+  // that has a limit set but no spend yet (so a newly-set budget shows immediately),
+  // sorted by spend so the categories most worth watching float to the top.
+  const budgetCategories = useMemo(() => {
+    const spentMap = {}
+    monthStats.categories.forEach(c => { spentMap[c.id] = c })
+    const allCatMeta = [...CATEGORIES, ...customCategories]
+    const ids = new Set([
+      ...Object.keys(spentMap),
+      ...Object.keys(budgets).filter(id => id !== OVERALL_BUDGET_CATEGORY),
+    ])
+    return [...ids]
+      .map(id => {
+        const meta = spentMap[id] || allCatMeta.find(c => c.id === id) || getCategoryMeta({ category: id })
+        return { ...meta, id, amount: spentMap[id]?.amount || 0, limit: budgets[id] }
+      })
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 6)
+  }, [monthStats.categories, budgets, customCategories])
+
+  // Recurring-payment detection runs over the full loaded history (not the deep-filtered
+  // list) — month-over-month regularity needs to see every month, regardless of whatever
+  // tab/date-range filter is currently applied to the visible list.
+  const recurring = useMemo(() => detectRecurring(txns), [txns])
 
   return (
     <div className="txn-screen">
@@ -535,16 +583,16 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
             <div className="txn-budget-amounts">
               <div>
                 <span className="txn-budget-spent">{formatINRShort(monthStats.spent)}</span>
-                <span className="txn-budget-of"> / {formatINRShort(budget)}</span>
+                <span className="txn-budget-of"> / {formatINRShort(overallBudget)}</span>
               </div>
-              <button className="txn-budget-edit" onClick={editBudget} aria-label="Edit budget">
+              <button className="txn-budget-edit" onClick={() => openBudgetSheet(OVERALL_BUDGET_CATEGORY, 'Overall Monthly Budget')} aria-label="Edit budget">
                 <span className="material-symbols-outlined">edit</span>
               </button>
             </div>
           </div>
           <div className="txn-budget-row">
             <span className="txn-budget-pct">{budgetPct}% Spent</span>
-            <span className="txn-budget-remaining">{formatINRShort(Math.max(0, budget - monthStats.spent))} Remaining</span>
+            <span className="txn-budget-remaining">{formatINRShort(Math.max(0, overallBudget - monthStats.spent))} Remaining</span>
           </div>
           <div className="txn-budget-bar">
             <span className={`txn-budget-bar-fill${budgetOver ? ' over' : ''}`} style={{ width: `${budgetPct}%` }} />
@@ -558,6 +606,57 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
             <span className={`txn-budget-net${monthStats.net >= 0 ? ' good' : ' bad'}`}>Net {formatINRShort(monthStats.net)}</span>
           </div>
         </div>
+
+        {/* Per-category budgets — same server-synced budgets map as the overall card
+            above, keyed by real category id instead of OVERALL_BUDGET_CATEGORY */}
+        {budgetCategories.length > 0 && (
+          <div className="txn-cat-budgets-card">
+            <div className="txn-donut-title">Category Budgets — {monthStats.label}</div>
+            {budgetCategories.map(c => {
+              const hasLimit = c.limit != null
+              const pct = hasLimit ? Math.min(100, Math.round((c.amount / c.limit) * 100)) : 0
+              const over = hasLimit && c.amount > c.limit
+              return (
+                <div key={c.id} className="txn-cat-budget-row">
+                  <div className="txn-cat-budget-icon" style={{ background: `${c.color}22` }}>
+                    <span className="material-symbols-outlined" style={{ color: c.color }}>{c.icon}</span>
+                  </div>
+                  <div className="txn-cat-budget-info">
+                    <div className="txn-cat-budget-top">
+                      <span className="txn-cat-budget-name">{c.label}</span>
+                      <span className="txn-cat-budget-amt">
+                        {hasLimit ? `${formatINRShort(c.amount)} / ${formatINRShort(c.limit)}` : 'No budget set'}
+                      </span>
+                    </div>
+                    <div className="txn-cat-budget-bar">
+                      <span className={`txn-cat-budget-fill${over ? ' over' : ''}`} style={{ width: `${hasLimit ? pct : 0}%` }} />
+                    </div>
+                  </div>
+                  <button className="txn-cat-budget-edit" onClick={() => openBudgetSheet(c.id, c.label)} aria-label={`Set ${c.label} budget`}>
+                    <span className="material-symbols-outlined">{hasLimit ? 'edit' : 'add'}</span>
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Recurring payments summary — detected purely client-side from the loaded
+            transaction history, no server round-trip */}
+        {recurring.groups.length > 0 && (
+          <div className="txn-recurring-card">
+            <div className="txn-recurring-icon"><span className="material-symbols-outlined">autorenew</span></div>
+            <div className="txn-recurring-info">
+              <span className="txn-recurring-label">
+                {recurring.groups.length} Recurring Payment{recurring.groups.length > 1 ? 's' : ''}
+              </span>
+              <span className="txn-recurring-sub">
+                {recurring.groups.map(g => g.merchant).slice(0, 3).join(', ')}{recurring.groups.length > 3 ? '…' : ''}
+              </span>
+            </div>
+            <span className="txn-recurring-amt">{formatINRShort(recurring.totalMonthly)}/mo</span>
+          </div>
+        )}
 
         {/* Summary bar */}
         <div className="txn-summary">
@@ -818,6 +917,11 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                           ? <span className="txn-bank-tag">Self Transfer</span>
                           : <span className="txn-bank-tag">{t.bank}</span>}
                         {t.source === 'statement' && <span className="txn-sms-tag">Statement</span>}
+                        {recurring.byTxnId.has(t.id) && (
+                          <span className="txn-recurring-tag">
+                            <span className="material-symbols-outlined">autorenew</span>Recurring
+                          </span>
+                        )}
                         <span className="txn-time">{formatTime(t.date)}</span>
                       </span>
                       {t.balance != null && <span className="txn-balance">Bal {formatINRShort(t.balance)}</span>}
@@ -945,6 +1049,30 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                 Delete Transaction
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Budget edit sheet — same interaction pattern as the add/edit transaction sheet
+          above, reused for both the overall budget and every per-category budget */}
+      {budgetSheet && (
+        <div className="add-txn-overlay" onClick={e => e.target === e.currentTarget && setBudgetSheet(null)}>
+          <div className="add-txn-sheet">
+            <div className="add-txn-header">
+              <span>{budgetSheet.label} Budget</span>
+              <button className="add-txn-close" onClick={() => setBudgetSheet(null)}>
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="add-field">
+              <label className="add-label">Monthly limit (₹)</label>
+              <input className="add-input" type="number" inputMode="decimal" placeholder="0.00" autoFocus
+                value={budgetInput} onChange={e => setBudgetInput(e.target.value)} />
+            </div>
+            <button className="add-txn-submit" onClick={submitBudget}
+              disabled={!budgetInput || isNaN(parseFloat(budgetInput)) || parseFloat(budgetInput) <= 0}>
+              Save Budget
+            </button>
           </div>
         </div>
       )}

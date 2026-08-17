@@ -79,6 +79,22 @@ db.exec(`
   )
 `)
 
+// Per-category monthly budgets — both the child (self-management) and the parent
+// (guidance/override) can set these, mirroring how transactions themselves already work:
+// each user manages their own data, but the admin has broader visibility/control. The
+// Phase-1 overall (non-category) budget lives in this same table under a reserved
+// category value the client uses (OVERALL_BUDGET_CATEGORY = '__overall__' in
+// txnMeta.js), rather than being tracked by a separate mechanism.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS budgets (
+    owner_user_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    monthly_limit REAL NOT NULL,
+    updated_at INTEGER,
+    PRIMARY KEY (owner_user_id, category)
+  )
+`)
+
 const stmts = {}
 for (const table of Object.values(TABLES)) {
   stmts[table] = {
@@ -96,6 +112,15 @@ const insertUserStmt = db.prepare('INSERT OR IGNORE INTO known_users (phone_numb
 
 const getSecretStmt    = db.prepare('SELECT value FROM secrets WHERE name = ?')
 const insertSecretStmt = db.prepare('INSERT OR IGNORE INTO secrets (name, value, created_at) VALUES (?, ?, ?)')
+
+const getBudgetsStmt = db.prepare('SELECT category, monthly_limit FROM budgets WHERE owner_user_id = ?')
+const upsertBudgetStmt = db.prepare(`
+  INSERT INTO budgets (owner_user_id, category, monthly_limit, updated_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(owner_user_id, category) DO UPDATE SET
+    monthly_limit = excluded.monthly_limit,
+    updated_at    = excluded.updated_at
+`)
 
 const getProfileStmt = db.prepare('SELECT * FROM profiles WHERE user_id = ?')
 const upsertProfileStmt = db.prepare(`
@@ -214,6 +239,22 @@ function setProfilePhotoPath(userId, photoPath) {
   return getProfile(userId)
 }
 
+// Returns { category: monthlyLimit, ... } for every budget the owner has set (including
+// the reserved overall-budget category, if set) — empty object if none set yet.
+function getBudgets(ownerUserId) {
+  const rows = getBudgetsStmt.all(ownerUserId)
+  const map = {}
+  rows.forEach(r => { map[r.category] = r.monthly_limit })
+  return map
+}
+
+// Upserts a single category's monthly limit and returns the owner's full updated budget
+// map, so callers can broadcast one consistent snapshot rather than a single delta.
+function setBudget(ownerUserId, category, monthlyLimit) {
+  upsertBudgetStmt.run(ownerUserId, category, monthlyLimit, Date.now())
+  return getBudgets(ownerUserId)
+}
+
 module.exports = {
   TABLES,
   getOrAssignUserId,
@@ -226,4 +267,6 @@ module.exports = {
   getProfile,
   upsertProfile,
   setProfilePhotoPath,
+  getBudgets,
+  setBudget,
 }

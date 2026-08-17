@@ -894,6 +894,27 @@ wss.on('connection', (ws, req) => {
         return
       }
 
+      // ── Admin commands ── budgets (a parent can view/set budgets for a child, same
+      // dual-role model as transactions: the child manages their own, the admin can
+      // also set/override for guidance) ──
+      if (meta.role === 'admin' && msg.type === 'budget_get') {
+        const budgets = store.getBudgets(msg.userId)
+        send(ws, { type: 'budgets', userId: msg.userId, budgets })
+        return
+      }
+      if (meta.role === 'admin' && msg.type === 'budget_set') {
+        const category = String(msg.category || '').trim().slice(0, 100)
+        const monthlyLimit = Number(msg.monthlyLimit)
+        if (!msg.userId || !category || !Number.isFinite(monthlyLimit) || monthlyLimit < 0) return
+        const budgets = store.setBudget(msg.userId, category, monthlyLimit)
+        broadcastToAdmins({ type: 'budgets', userId: msg.userId, budgets })
+        // Push the same update to the child's own live session (if connected) so their
+        // budget view updates in real time when a parent sets/overrides it.
+        const target = users.get(msg.userId)
+        if (target) send(target.bgWs || target.ws, { type: 'budgets', userId: msg.userId, budgets })
+        return
+      }
+
       // ── User messages ───────────────────────────────
       if (meta.role === 'user') {
         // Transaction added by user (manual or auto-captured) — store + broadcast to admins.
@@ -951,6 +972,30 @@ wss.on('connection', (ws, req) => {
           store.deleteAllForOwner(store.TABLES.TRANSACTIONS, uid)
           broadcastToAdmins({ type: 'transactions_cleared', userId: uid })
           send(ws, { type: 'transactions_cleared', userId: uid })
+          return
+        }
+
+        // Self-fetch — user requesting their own budgets (overall + per-category, keyed
+        // by the reserved OVERALL_BUDGET_CATEGORY / real category ids from the client).
+        if (msg.type === 'budget_get') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const budgets = store.getBudgets(uid)
+          send(ws, { type: 'budgets', userId: uid, budgets })
+          return
+        }
+
+        // Self-service budget set — always applies to the authenticated session's own
+        // userId, never a client-supplied target (same principle as the self-fetch/
+        // self-clear handlers above). Broadcast to admins so a parent's view updates
+        // live when the child sets/changes their own budget.
+        if (msg.type === 'budget_set') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const category = String(msg.category || '').trim().slice(0, 100)
+          const monthlyLimit = Number(msg.monthlyLimit)
+          if (!category || !Number.isFinite(monthlyLimit) || monthlyLimit < 0) return
+          const budgets = store.setBudget(uid, category, monthlyLimit)
+          send(ws, { type: 'budgets', userId: uid, budgets })
+          broadcastToAdmins({ type: 'budgets', userId: uid, budgets })
           return
         }
 

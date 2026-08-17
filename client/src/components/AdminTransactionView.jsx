@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { getCategoryMeta } from '../utils/txnMeta'
+import { getCategoryMeta, OVERALL_BUDGET_CATEGORY } from '../utils/txnMeta'
+import { detectRecurring } from '../utils/recurringDetection'
 
 const PAGE_SIZE = 15
 
@@ -139,6 +140,10 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
   const [showFilters, setShowFilters] = useState(false)
   const [filters, setFilters]       = useState(EMPTY_FILTERS)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  // Server-synced budgets per family member: { [userId]: { [category]: monthlyLimit } }
+  const [budgetsByUser, setBudgetsByUser] = useState({})
+  const [budgetSheet, setBudgetSheet] = useState(null) // null | { category, label }
+  const [budgetInput, setBudgetInput] = useState('')
 
   // Request existing transactions for each connected user at mount
   useEffect(() => {
@@ -175,6 +180,9 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
       if (msg.type === 'transactions_cleared') {
         setTxnsByUser(prev => ({ ...prev, [msg.userId]: [] }))
       }
+      if (msg.type === 'budgets') {
+        setBudgetsByUser(prev => ({ ...prev, [msg.userId]: msg.budgets || {} }))
+      }
       if (msg.type === 'user_joined') {
         setUsers(prev => prev.find(u => u.id === msg.user.id) ? prev : [...prev, msg.user])
         sendMsg({ type: 'transactions_get', userId: msg.user.id })
@@ -187,6 +195,32 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
 
   // Reset pagination whenever the user/period/filter changes
   useEffect(() => { setVisibleCount(PAGE_SIZE) }, [activeUser, period, customFrom, customTo, filters])
+
+  // Fetch budgets for whichever family member is selected — scoped the same way "Clear
+  // All" is: a specific user, never "all" (there's no single "budgets for everyone" view).
+  useEffect(() => {
+    if (activeUser !== 'all') sendMsg({ type: 'budget_get', userId: activeUser })
+  }, [activeUser]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Opens the shared add-txn-sheet-style modal (same one TransactionPanel.jsx uses for
+  // its own budgets) to set/override a budget for the currently-selected family member.
+  function openBudgetSheet(category, label) {
+    const current = (budgetsByUser[activeUser] || {})[category]
+    setBudgetInput(current != null ? String(current) : '')
+    setBudgetSheet({ category, label })
+  }
+
+  function submitBudget() {
+    if (!budgetSheet || activeUser === 'all') return
+    const num = parseFloat(budgetInput)
+    if (isNaN(num) || num <= 0) return
+    sendMsg({ type: 'budget_set', userId: activeUser, category: budgetSheet.category, monthlyLimit: num })
+    setBudgetsByUser(prev => ({
+      ...prev,
+      [activeUser]: { ...(prev[activeUser] || {}), [budgetSheet.category]: num },
+    })) // optimistic
+    setBudgetSheet(null)
+  }
 
   function clearAllForUser() {
     if (activeUser === 'all') return
@@ -260,6 +294,69 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
       .sort((a, b) => b.amount - a.amount)
     return { spent, categories }
   }, [displayed])
+
+  // Calendar-month-to-date spend for the selected family member — independent of the
+  // period selector above (which can be "This week"/"Last 3 months"/etc.), same
+  // semantics as TransactionPanel's own monthStats so the two budget cards agree.
+  const adminMonthStats = useMemo(() => {
+    if (activeUser === 'all') return { spent: 0, categories: [], label: '' }
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+    const monthTxns = (txnsByUser[activeUser] || []).filter(t => t.date >= monthStart)
+    const debitTxns = monthTxns.filter(t => t.type === 'debit')
+    const spent = debitTxns.reduce((s, t) => s + t.amount, 0)
+    const byCategory = {}
+    debitTxns.forEach(t => {
+      const meta = getCategoryMeta(t)
+      if (!byCategory[meta.id]) byCategory[meta.id] = { ...meta, amount: 0 }
+      byCategory[meta.id].amount += t.amount
+    })
+    const categories = Object.values(byCategory).sort((a, b) => b.amount - a.amount)
+    return { spent, categories, label: now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) }
+  }, [txnsByUser, activeUser])
+
+  const activeBudgets = budgetsByUser[activeUser] || {}
+  const overallBudget = activeBudgets[OVERALL_BUDGET_CATEGORY]
+  const overallBudgetPct = overallBudget ? Math.min(100, Math.round((adminMonthStats.spent / overallBudget) * 100)) : 0
+  const overallBudgetOver = overallBudget != null && adminMonthStats.spent > overallBudget
+
+  // Per-category budget rows for the selected family member — same shape as
+  // TransactionPanel's own budgetCategories, minus that user's local custom-category
+  // metadata (an admin has no access to a child's localStorage), so a category with a
+  // limit set but no spend this month falls back to a generic label until it's spent.
+  const budgetCategories = useMemo(() => {
+    if (activeUser === 'all') return []
+    const spentMap = {}
+    adminMonthStats.categories.forEach(c => { spentMap[c.id] = c })
+    const ids = new Set([
+      ...Object.keys(spentMap),
+      ...Object.keys(activeBudgets).filter(id => id !== OVERALL_BUDGET_CATEGORY),
+    ])
+    return [...ids]
+      .map(id => {
+        const meta = spentMap[id] || getCategoryMeta({ category: id })
+        return { ...meta, id, amount: spentMap[id]?.amount || 0, limit: activeBudgets[id] }
+      })
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 6)
+  }, [adminMonthStats.categories, activeBudgets, activeUser])
+
+  // Recurring-payment detection, computed per family member (a merchant pattern is
+  // specific to one person's spending) — full history per user, not the period/filter-
+  // scoped `displayed` list, since month-over-month regularity needs every month.
+  const recurringByUser = useMemo(() => {
+    const map = {}
+    Object.entries(txnsByUser).forEach(([uid, list]) => { map[uid] = detectRecurring(list) })
+    return map
+  }, [txnsByUser])
+
+  const recurringSummary = useMemo(() => {
+    if (activeUser === 'all') {
+      const allGroups = Object.values(recurringByUser).flatMap(r => r.groups)
+      return { groups: allGroups, totalMonthly: allGroups.reduce((s, g) => s + g.amount, 0) }
+    }
+    return recurringByUser[activeUser] || { groups: [], totalMonthly: 0 }
+  }, [recurringByUser, activeUser])
 
   const donutGradient = useMemo(() => {
     if (!categoryStats.categories.length) return null
@@ -363,6 +460,89 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
             <span className="material-symbols-outlined">delete_sweep</span>
             Clear All for {users.find(u => u.id === activeUser)?.name || 'this user'}
           </button>
+        )}
+
+        {/* Budgets — server-synced, scoped to whichever family member is selected (same
+            scoping as "Clear All" above): a parent can view and set/override a child's
+            overall and per-category monthly limits here. */}
+        {activeUser !== 'all' && (
+          <div className="txn-budget-card">
+            <div className="txn-budget-top">
+              <div>
+                <div className="txn-budget-label">Budget — {users.find(u => u.id === activeUser)?.name || 'this user'}</div>
+                <div className="txn-budget-period">{adminMonthStats.label}</div>
+              </div>
+              <div className="txn-budget-amounts">
+                <div>
+                  <span className="txn-budget-spent">{formatINRShort(adminMonthStats.spent)}</span>
+                  <span className="txn-budget-of"> / {overallBudget != null ? formatINRShort(overallBudget) : 'Not set'}</span>
+                </div>
+                <button className="txn-budget-edit" onClick={() => openBudgetSheet(OVERALL_BUDGET_CATEGORY, 'Overall Monthly Budget')} aria-label="Set overall budget">
+                  <span className="material-symbols-outlined">{overallBudget != null ? 'edit' : 'add'}</span>
+                </button>
+              </div>
+            </div>
+            {overallBudget != null && (
+              <>
+                <div className="txn-budget-row">
+                  <span className="txn-budget-pct">{overallBudgetPct}% Spent</span>
+                  <span className="txn-budget-remaining">{formatINRShort(Math.max(0, overallBudget - adminMonthStats.spent))} Remaining</span>
+                </div>
+                <div className="txn-budget-bar">
+                  <span className={`txn-budget-bar-fill${overallBudgetOver ? ' over' : ''}`} style={{ width: `${overallBudgetPct}%` }} />
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {activeUser !== 'all' && budgetCategories.length > 0 && (
+          <div className="txn-cat-budgets-card">
+            <div className="txn-donut-title">Category Budgets — {adminMonthStats.label}</div>
+            {budgetCategories.map(c => {
+              const hasLimit = c.limit != null
+              const pct = hasLimit ? Math.min(100, Math.round((c.amount / c.limit) * 100)) : 0
+              const over = hasLimit && c.amount > c.limit
+              return (
+                <div key={c.id} className="txn-cat-budget-row">
+                  <div className="txn-cat-budget-icon" style={{ background: `${c.color}22` }}>
+                    <span className="material-symbols-outlined" style={{ color: c.color }}>{c.icon}</span>
+                  </div>
+                  <div className="txn-cat-budget-info">
+                    <div className="txn-cat-budget-top">
+                      <span className="txn-cat-budget-name">{c.label}</span>
+                      <span className="txn-cat-budget-amt">
+                        {hasLimit ? `${formatINRShort(c.amount)} / ${formatINRShort(c.limit)}` : 'No budget set'}
+                      </span>
+                    </div>
+                    <div className="txn-cat-budget-bar">
+                      <span className={`txn-cat-budget-fill${over ? ' over' : ''}`} style={{ width: `${hasLimit ? pct : 0}%` }} />
+                    </div>
+                  </div>
+                  <button className="txn-cat-budget-edit" onClick={() => openBudgetSheet(c.id, c.label)} aria-label={`Set ${c.label} budget`}>
+                    <span className="material-symbols-outlined">{hasLimit ? 'edit' : 'add'}</span>
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Recurring payments — detected client-side; shows a combined total across the
+            family when "All" is selected, or just that member's when one is picked */}
+        {recurringSummary.groups.length > 0 && (
+          <div className="txn-recurring-card">
+            <div className="txn-recurring-icon"><span className="material-symbols-outlined">autorenew</span></div>
+            <div className="txn-recurring-info">
+              <span className="txn-recurring-label">
+                {recurringSummary.groups.length} Recurring Payment{recurringSummary.groups.length > 1 ? 's' : ''}
+              </span>
+              <span className="txn-recurring-sub">
+                {recurringSummary.groups.map(g => g.merchant).slice(0, 3).join(', ')}{recurringSummary.groups.length > 3 ? '…' : ''}
+              </span>
+            </div>
+            <span className="txn-recurring-amt">{formatINRShort(recurringSummary.totalMonthly)}/mo</span>
+          </div>
         )}
 
         {/* Filters — type/category/source/bank multi-select, AND-combined with the
@@ -566,6 +746,11 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
                           ? <span className="txn-bank-tag">Self Transfer</span>
                           : <span className="txn-bank-tag">{t.bank}</span>}
                         {t.source === 'statement' && <span className="txn-sms-tag">Statement</span>}
+                        {recurringByUser[t.userId]?.byTxnId.has(t.id) && (
+                          <span className="txn-recurring-tag">
+                            <span className="material-symbols-outlined">autorenew</span>Recurring
+                          </span>
+                        )}
                         <span className="txn-time">{formatTime(t.date)}</span>
                       </span>
                       {t.balance != null && <span className="txn-balance">Bal {formatINRShort(t.balance)}</span>}
@@ -582,6 +767,30 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
           )}
         </div>
       </div>
+
+      {/* Budget edit sheet — same add-txn-sheet-style modal pattern TransactionPanel.jsx
+          uses for its own budgets, reused here for the selected family member's budget */}
+      {budgetSheet && (
+        <div className="add-txn-overlay" onClick={e => e.target === e.currentTarget && setBudgetSheet(null)}>
+          <div className="add-txn-sheet">
+            <div className="add-txn-header">
+              <span>{budgetSheet.label} Budget</span>
+              <button className="add-txn-close" onClick={() => setBudgetSheet(null)}>
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="add-field">
+              <label className="add-label">Monthly limit (₹)</label>
+              <input className="add-input" type="number" inputMode="decimal" placeholder="0.00" autoFocus
+                value={budgetInput} onChange={e => setBudgetInput(e.target.value)} />
+            </div>
+            <button className="add-txn-submit" onClick={submitBudget}
+              disabled={!budgetInput || isNaN(parseFloat(budgetInput)) || parseFloat(budgetInput) <= 0}>
+              Save Budget
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
