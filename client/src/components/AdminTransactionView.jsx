@@ -107,14 +107,31 @@ function formatTime(ms) {
   return new Date(ms).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
 }
 
+// Pinned to IST rather than the viewing device's own local timezone — see the identical
+// note in TransactionPanel.jsx. Two transactions minted milliseconds apart on the same
+// real IST calendar day could otherwise land in different date groups if the browser's
+// timezone ever differs from IST.
+const IST_TZ = 'Asia/Kolkata'
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000
+function istDateKey(ms) {
+  return new Date(ms).toLocaleDateString('en-CA', { timeZone: IST_TZ }) // YYYY-MM-DD
+}
+function istMidnight(ms) {
+  const s = new Date(ms + IST_OFFSET_MS)
+  return Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate()) - IST_OFFSET_MS
+}
+function istMonthStart(ms) {
+  const s = new Date(ms + IST_OFFSET_MS)
+  return Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), 1) - IST_OFFSET_MS
+}
+function istDateInputToMs(dateStr) {
+  return new Date(`${dateStr}T00:00:00+05:30`).getTime()
+}
 function formatDateLabel(ms) {
-  const d = new Date(ms)
-  const today = new Date(); today.setHours(0,0,0,0)
-  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1)
-  d.setHours(0,0,0,0)
-  if (d.getTime() === today.getTime()) return 'Today'
-  if (d.getTime() === yesterday.getTime()) return 'Yesterday'
-  return new Date(ms).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+  const key = istDateKey(ms)
+  if (key === istDateKey(Date.now())) return 'Today'
+  if (key === istDateKey(Date.now() - 86400000)) return 'Yesterday'
+  return new Date(ms).toLocaleDateString('en-IN', { timeZone: IST_TZ, day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 function groupByDate(txns) {
@@ -137,19 +154,14 @@ function groupByDate(txns) {
 // read as the filter being broken rather than two different windows quietly disagreeing.
 function periodBounds(period, customFrom, customTo) {
   if (period === 'custom') {
-    const start = customFrom ? new Date(customFrom).setHours(0, 0, 0, 0) : 0
-    const end = customTo ? new Date(customTo).setHours(23, 59, 59, 999) : Date.now()
+    const start = customFrom ? istDateInputToMs(customFrom) : 0
+    const end = customTo ? istDateInputToMs(customTo) + 86400000 - 1 : Date.now()
     return { start, end }
   }
-  if (period === 'month') {
-    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0)
-    return { start: d.getTime(), end: Date.now() }
-  }
+  if (period === 'month') return { start: istMonthStart(Date.now()), end: Date.now() }
   const opt = ANALYTICS_RANGES.find(o => o.key === period)
-  const d = new Date(); d.setHours(0, 0, 0, 0)
   if (!opt || !opt.days) return { start: 0, end: Date.now() }
-  d.setDate(d.getDate() - (opt.days - 1))
-  return { start: d.getTime(), end: Date.now() }
+  return { start: istMidnight(Date.now()) - (opt.days - 1) * 86400000, end: Date.now() }
 }
 
 export default function AdminTransactionView({ initialUsers, sendMsg, addListener, onHome }) {
@@ -160,6 +172,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo]     = useState('')
   const [showFilters, setShowFilters] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [showStats, setShowStats] = useState(false)
   const [showCharts, setShowCharts] = useState(false)
   const [filters, setFilters]       = useState(EMPTY_FILTERS)
@@ -271,11 +284,13 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
 
   function resetFilters() {
     setFilters(EMPTY_FILTERS)
+    setSearchQuery('')
   }
 
   const activeFilterCount =
     (filters.types.length ? 1 : 0) + (filters.categories.length ? 1 : 0) +
-    (filters.sources.length ? 1 : 0) + (filters.banks.length ? 1 : 0)
+    (filters.sources.length ? 1 : 0) + (filters.banks.length ? 1 : 0) +
+    (searchQuery.trim() ? 1 : 0)
 
   // All transactions merged (across users), scoped to the selected period/custom range
   const { start, end } = periodBounds(period, customFrom, customTo)
@@ -297,7 +312,9 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
 
   // Deep filters (type/category/source/bank + include-vs-exclude) apply on top of the
   // period/user scoping — AND-combined, and feeding both the list AND the analytics below
+  const searchQ = searchQuery.trim().toLowerCase()
   const displayed  = applyTxnFilters(periodUserTxns, filters)
+    .filter(t => !searchQ || `${t.description || ''} ${t.merchant || ''}`.toLowerCase().includes(searchQ))
   const visibleTxns = displayed.slice(0, visibleCount)
   const totalDebit  = displayed.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)
   const totalCredit = displayed.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0)
@@ -324,8 +341,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
   // semantics as TransactionPanel's own monthStats so the two budget cards agree.
   const adminMonthStats = useMemo(() => {
     if (activeUser === 'all') return { spent: 0, categories: [], label: '' }
-    const now = new Date()
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+    const monthStart = istMonthStart(Date.now())
     const monthTxns = (txnsByUser[activeUser] || []).filter(t => t.date >= monthStart)
     const debitTxns = monthTxns.filter(t => t.type === 'debit')
     const spent = debitTxns.reduce((s, t) => s + t.amount, 0)
@@ -336,7 +352,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
       byCategory[meta.id].amount += t.amount
     })
     const categories = Object.values(byCategory).sort((a, b) => b.amount - a.amount)
-    return { spent, categories, label: now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) }
+    return { spent, categories, label: new Date(monthStart).toLocaleDateString('en-IN', { timeZone: IST_TZ, month: 'long', year: 'numeric' }) }
   }, [txnsByUser, activeUser])
 
   const activeBudgets = budgetsByUser[activeUser] || {}
@@ -398,7 +414,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
     const dayMap = {}
     displayed.forEach(t => {
       if (t.type === 'transfer') return
-      const key = new Date(t.date).toISOString().slice(0, 10)
+      const key = istDateKey(t.date) // IST calendar day, not UTC (see formatDateLabel note)
       if (!dayMap[key]) dayMap[key] = { debit: 0, credit: 0 }
       dayMap[key][t.type] += t.amount
     })
@@ -542,6 +558,14 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
 
           {showFilters && (
             <div className="txn-filter-panel">
+              <div className="txn-filter-group">
+                <div className="txn-filter-group-head">
+                  <span className="txn-filter-group-label">Search narration</span>
+                </div>
+                <input className="add-input" type="text" placeholder="e.g. FOOD CHOTU"
+                  value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+              </div>
+
               <FilterGroup label="Type" options={TYPE_OPTIONS}
                 selected={filters.types} exclude={filters.typesExclude}
                 onToggleOption={v => toggleFilterOption('types', v)}

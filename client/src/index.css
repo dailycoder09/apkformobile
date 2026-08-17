@@ -3325,21 +3325,6 @@ button { font-family: inherit; cursor: pointer; }
 .txn-budget-bar { width: 100%; height: 10px; border-radius: 999px; background: rgba(0,0,0,0.06); overflow: hidden; }
 .txn-budget-bar-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--txn-rose), var(--txn-rose-dark)); transition: width 0.6s ease; }
 .txn-budget-bar-fill.over { background: linear-gradient(90deg, #b91c1c, #7f1d1d); }
-/* Spent/Received/Net — one clean strip inside the budget card itself, instead of a
-   second card underneath repeating the same three numbers. */
-.txn-budget-stats {
-  display: flex; margin-top: 14px; padding-top: 14px;
-  border-top: 1px solid rgba(58, 42, 46, 0.08);
-}
-.txn-budget-stat { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.txn-budget-stat-label { font-size: 10.5px; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
-/* min-width:0 above lets these flex items actually shrink instead of overflowing past their
-   1/3 share — without it, large unbreakable amounts (no spaces to wrap on) ran into each
-   other on narrow phones. overflow-wrap lets a long figure break rather than spill over. */
-.txn-budget-stat-val   { font-size: 14.5px; font-weight: 800; text-align: center; overflow-wrap: anywhere; }
-.txn-budget-stat.debit  .txn-budget-stat-val { color: var(--txn-rose); }
-.txn-budget-stat.credit .txn-budget-stat-val { color: var(--txn-green); }
-
 /* Per-category budgets — a compact list of mini progress bars, one per category, each
    independently editable via the same budget sheet as the overall budget above. Now
    lives inside a .txn-chart-card slide in the charts carousel (see .txn-charts-grid). */
@@ -3803,6 +3788,15 @@ button { font-family: inherit; cursor: pointer; }
 }
 .cat-chip.active { border-color: var(--txn-rose); color: var(--txn-rose-dark); background: var(--txn-rose-pastel); }
 .cat-chip-add { border-style: dashed; }
+
+/* Bulk-recategorize row in the edit sheet */
+.bulk-recat-row { display: flex; align-items: center; gap: 8px; }
+.bulk-recat-suggest {
+  flex-shrink: 0; font-size: 11.5px; font-weight: 700; color: var(--txn-rose-dark);
+  background: var(--txn-rose-pastel); border: none; border-radius: 999px;
+  padding: 8px 12px; white-space: nowrap; cursor: pointer;
+}
+.bulk-recat-hint { font-size: 11.5px; color: var(--txn-muted); margin: 6px 2px 0; line-height: 1.4; }
 
 .add-txn-submit {
   display: block; width: calc(100% - 32px); margin: 16px;

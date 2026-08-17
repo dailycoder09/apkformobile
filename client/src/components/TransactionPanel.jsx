@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank, OVERALL_BUDGET_CATEGORY, hasRealTime } from '../utils/txnMeta'
+import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank, OVERALL_BUDGET_CATEGORY, hasRealTime, loadCategoryOverrides, addCategoryOverride, applyCategoryOverrides } from '../utils/txnMeta'
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
 import { detectRecurring } from '../utils/recurringDetection'
@@ -39,14 +39,50 @@ function formatTime(ms) {
   return new Date(ms).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
 }
 
+// Best-effort starting point for "apply this category to every other transaction tagged
+// like this one" — the account holder's own remark convention almost always puts the
+// distinctive word last (e.g. "...-FOOD RAPIDO" → "RAPIDO"), so the last whitespace-
+// separated token of the description is a reasonable default. Always user-editable before
+// it's actually applied, since this is a guess, not a parse.
+function guessKeyword(description) {
+  const tokens = (description || '').trim().split(/\s+/)
+  return tokens[tokens.length - 1] || ''
+}
+
+// Pinned to IST rather than the viewing device's own local timezone — this app deals
+// exclusively in Indian bank statements, and computing "Today"/"Yesterday"/day-grouping
+// off whatever timezone the browser happens to be set to (which can silently differ from
+// IST — e.g. a device set to UTC, or a spoofed timezone) put two transactions minted
+// milliseconds apart, on the same real IST calendar day, into different date groups even
+// though the underlying stored timestamps were correct.
+const IST_TZ = 'Asia/Kolkata'
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000
+function istDateKey(ms) {
+  return new Date(ms).toLocaleDateString('en-CA', { timeZone: IST_TZ }) // YYYY-MM-DD
+}
+// Same "don't trust the browser's own timezone" fix as istDateKey, for calendar-boundary
+// math (start of day / start of month) instead of just labeling. Works by doing the
+// day/month arithmetic in UTC on a deliberately-shifted instant, so the result is the same
+// regardless of what timezone this code happens to be running in.
+function istMidnight(ms) {
+  const s = new Date(ms + IST_OFFSET_MS)
+  return Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate()) - IST_OFFSET_MS
+}
+function istMonthStart(ms) {
+  const s = new Date(ms + IST_OFFSET_MS)
+  return Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), 1) - IST_OFFSET_MS
+}
+// Parses a bare "YYYY-MM-DD" (from an <input type="date">) as IST midnight of that day,
+// rather than letting `new Date(str)` treat it as UTC midnight and then silently drifting
+// under browser-local re-interpretation.
+function istDateInputToMs(dateStr) {
+  return new Date(`${dateStr}T00:00:00+05:30`).getTime()
+}
 function formatDateLabel(ms) {
-  const d = new Date(ms)
-  const today = new Date(); today.setHours(0,0,0,0)
-  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1)
-  d.setHours(0,0,0,0)
-  if (d.getTime() === today.getTime()) return 'Today'
-  if (d.getTime() === yesterday.getTime()) return 'Yesterday'
-  return new Date(ms).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+  const key = istDateKey(ms)
+  if (key === istDateKey(Date.now())) return 'Today'
+  if (key === istDateKey(Date.now() - 86400000)) return 'Yesterday'
+  return new Date(ms).toLocaleDateString('en-IN', { timeZone: IST_TZ, day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 function groupByDate(txns) {
@@ -88,15 +124,10 @@ function rangeStart(key) {
   // the "This month" hero card could show two different totals for what looked like the
   // same period (e.g. Milk spend Aug 1–17 vs. spend across the last 30 days), which read
   // as the filter being broken rather than two different windows quietly disagreeing.
-  if (key === 'month') {
-    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0)
-    return d.getTime()
-  }
+  if (key === 'month') return istMonthStart(Date.now())
   const opt = ANALYTICS_RANGES.find(o => o.key === key)
-  const d = new Date(); d.setHours(0, 0, 0, 0)
   if (!opt.days) return 0
-  d.setDate(d.getDate() - (opt.days - 1))
-  return d.getTime()
+  return istMidnight(Date.now()) - (opt.days - 1) * 86400000
 }
 
 const EMPTY_FORM = { id: null, amount: '', type: 'debit', category: 'manual', merchant: '', note: '', date: '', bank: '', fromBank: '', toBank: '' }
@@ -171,6 +202,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [tab, setTab]         = useState('all')
   const [sheetMode, setSheetMode] = useState(null) // null | 'add' | 'edit'
   const [form, setForm]       = useState(EMPTY_FORM)
+  const [bulkKeyword, setBulkKeyword] = useState('')
   // Server-synced budgets: { [category]: monthlyLimit }, overall budget keyed by the
   // reserved OVERALL_BUDGET_CATEGORY. Both this user and their parent can set entries.
   const [budgets, setBudgets] = useState({})
@@ -181,6 +213,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [banks, setBanks] = useState(() => loadBanks(session.userId, []))
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [showFilters, setShowFilters] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const [showStats, setShowStats] = useState(false)
   const [showCharts, setShowCharts] = useState(false)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
@@ -233,6 +266,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
 
   function openAdd() {
     setForm(EMPTY_FORM)
+    setBulkKeyword('')
     setSheetMode('add')
   }
 
@@ -244,11 +278,16 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
       category: txn.category || 'manual',
       merchant: txn.merchant || '',
       note: txn.description || '',
-      date: new Date(txn.date).toISOString().slice(0, 10),
+      // IST calendar day, not UTC — toISOString() is always UTC and would show the wrong
+      // date in this picker for anything parsed at IST midnight (see istDateKey above).
+      date: istDateKey(txn.date),
       bank: txn.type === 'transfer' ? '' : (txn.bank || ''),
       fromBank: txn.type === 'transfer' ? (txn.fromBank || '') : '',
       toBank: txn.type === 'transfer' ? (txn.toBank || '') : '',
     })
+    // Left blank by default — bulk-recategorizing is opt-in, not something that fires
+    // just because a keyword happens to be guessable from this transaction's narration.
+    setBulkKeyword('')
     setSheetMode('edit')
   }
 
@@ -276,6 +315,14 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     setForm(f => ({ ...f, [field]: value }))
   }
 
+  // Other transactions the bulk-recategorize keyword (edit sheet) would also move —
+  // matched against description + merchant, same haystack applyCategoryOverrides checks.
+  const bulkMatches = useMemo(() => {
+    const kw = bulkKeyword.trim().toLowerCase()
+    if (!kw || sheetMode !== 'edit') return []
+    return txns.filter(t => t.id !== form.id && `${t.description || ''} ${t.merchant || ''}`.toLowerCase().includes(kw))
+  }, [bulkKeyword, txns, form.id, sheetMode])
+
   const submitTxn = useCallback(() => {
     const amount = parseFloat(form.amount)
     if (!amount || amount <= 0) return
@@ -289,7 +336,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
         category: 'transfer',
         merchant: `${form.fromBank} → ${form.toBank}`,
         description: form.note.trim(),
-        date: form.date ? new Date(form.date).getTime() : Date.now(),
+        date: form.date ? istDateInputToMs(form.date) : Date.now(),
         fromBank: form.fromBank,
         toBank: form.toBank,
         bank: form.fromBank,
@@ -305,7 +352,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           : {}),
         merchant: form.merchant.trim() || (meta ? meta.label : form.category),
         description: form.note.trim(),
-        date: form.date ? new Date(form.date).getTime() : Date.now(),
+        date: form.date ? istDateInputToMs(form.date) : Date.now(),
         bank: form.bank || 'Manual',
       }
     }
@@ -314,14 +361,32 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
       const updated = { id: form.id, ...base }
       sendMsg({ type: 'transaction_update', transaction: updated })
       setTxns(prev => prev.map(t => t.id === form.id ? { ...t, ...updated } : t))
+
+      // Bulk-recategorize every other transaction matching the same keyword, and persist
+      // the correction so future statement imports auto-apply it too.
+      const kw = bulkKeyword.trim()
+      if (kw && form.type !== 'transfer' && bulkMatches.length > 0) {
+        const catPatch = {
+          category: form.category,
+          ...(base.categoryLabel ? { categoryLabel: base.categoryLabel, categoryIcon: base.categoryIcon, categoryColor: base.categoryColor } : {}),
+        }
+        bulkMatches.forEach(t => {
+          sendMsg({ type: 'transaction_update', transaction: { id: t.id, ...catPatch } })
+        })
+        const matchIds = new Set(bulkMatches.map(t => t.id))
+        setTxns(prev => prev.map(t => matchIds.has(t.id) ? { ...t, ...catPatch } : t))
+        const meta = [...CATEGORIES, ...customCategories].find(c => c.id === form.category)
+        addCategoryOverride(session.userId, kw, meta || { id: form.category })
+      }
     } else {
       const txn = { id: Math.random().toString(36).slice(2), userId: session.userId, userName: session.name, source: 'manual', balance: null, ...base }
       sendMsg({ type: 'transaction_add', transaction: txn })
       setTxns(prev => [txn, ...prev])
     }
     setForm(EMPTY_FORM)
+    setBulkKeyword('')
     setSheetMode(null)
-  }, [form, sheetMode, session, sendMsg, customCategories])
+  }, [form, sheetMode, session, sendMsg, customCategories, bulkKeyword, bulkMatches])
 
   function deleteTxn(id) {
     if (!window.confirm('Delete this transaction?')) return
@@ -354,6 +419,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     setFilters(EMPTY_FILTERS)
     setDateFrom('')
     setDateTo('')
+    setSearchQuery('')
   }
 
   // Opens the shared add-txn-sheet-style modal, pre-filled with the current limit for
@@ -397,11 +463,16 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
         window.alert('Couldn\'t recognize this statement format — supported: PhonePe, HDFC Bank')
         return
       }
-      const parsed = format.parse(text)
-      if (parsed.length === 0) {
+      const rawParsed = format.parse(text)
+      if (rawParsed.length === 0) {
         window.alert(`No transactions found in that ${format.name} statement.`)
         return
       }
+      // Apply any corrections the account holder has made before (edit sheet's "Also
+      // recategorize matching transactions") so a fix made once keeps applying to every
+      // future re-import, not just the transactions that existed at the time.
+      const overrides = loadCategoryOverrides(session.userId)
+      const parsed = overrides.length ? rawParsed.map(t => applyCategoryOverrides(t, overrides)) : rawParsed
       parsed.forEach(txn => sendMsg({ type: 'transaction_add', transaction: txn }))
       // Optimistic local update — server-side exact-id dedup means re-uploading an
       // overlapping statement won't create visible duplicates once transactions_list refreshes.
@@ -426,20 +497,25 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   // kept showing months of history. Folded in here as an additional lower bound (combined
   // with the custom date range via the later of the two starts) so the range dropdown now
   // consistently scopes everything on the page, not just the charts.
-  const dateFromMs = dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null
-  const dateToMs   = dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : null
+  const dateFromMs = dateFrom ? istDateInputToMs(dateFrom) : null
+  const dateToMs   = dateTo ? istDateInputToMs(dateTo) + 86400000 - 1 : null
   const rangeStartMs = rangeStart(analyticsRange)
   const effectiveFromMs = rangeStartMs > 0 ? Math.max(dateFromMs ?? 0, rangeStartMs) : dateFromMs
-  // The All/Spent/Received/Transfer tab now feeds this same pipeline (see EMPTY_FILTERS
-  // note above) so the hero card and charts stay in sync with it too, not just the list.
-  const filteredTxns = useMemo(
-    () => applyTxnFilters(txns, filters, effectiveFromMs, dateToMs).filter(t => tab === 'all' || t.type === tab),
-    [txns, filters, effectiveFromMs, dateToMs, tab]
-  )
+  // The All/Spent/Received/Transfer tab and the narration search both feed this same
+  // pipeline (see EMPTY_FILTERS note above) so the hero card and charts stay in sync with
+  // them too, not just the list.
+  const filteredTxns = useMemo(() => {
+    let result = applyTxnFilters(txns, filters, effectiveFromMs, dateToMs).filter(t => tab === 'all' || t.type === tab)
+    const q = searchQuery.trim().toLowerCase()
+    if (q) {
+      result = result.filter(t => `${t.description || ''} ${t.merchant || ''}`.toLowerCase().includes(q))
+    }
+    return result
+  }, [txns, filters, effectiveFromMs, dateToMs, tab, searchQuery])
   const activeFilterCount =
     (filters.categories.length ? 1 : 0) +
     (filters.sources.length ? 1 : 0) + (filters.banks.length ? 1 : 0) +
-    (dateFrom || dateTo ? 1 : 0)
+    (dateFrom || dateTo ? 1 : 0) + (searchQuery.trim() ? 1 : 0)
 
   const visibleTxns = filteredTxns.slice(0, visibleCount)
   const groups      = groupByDate(visibleTxns)
@@ -472,8 +548,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
 
   // Current calendar month spend/income, for the budget card + category donut + this-month tiles
   const monthStats = useMemo(() => {
-    const now = new Date()
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
+    const monthStart = istMonthStart(Date.now())
     const monthTxns = filteredTxns.filter(t => t.date >= monthStart)
     const debitTxns = monthTxns.filter(t => t.type === 'debit')
     const spent = debitTxns.reduce((s, t) => s + t.amount, 0)
@@ -487,14 +562,13 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     const categories = Object.values(byCategory)
       .map(c => ({ ...c, pct: spent ? Math.round((c.amount / spent) * 100) : 0 }))
       .sort((a, b) => b.amount - a.amount)
-    return { spent, income, net: income - spent, categories, label: now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) }
+    return { spent, income, net: income - spent, categories, label: new Date(monthStart).toLocaleDateString('en-IN', { timeZone: IST_TZ, month: 'long', year: 'numeric' }) }
   }, [filteredTxns])
 
   // Month-over-month spend change — always compares full calendar months, independent of the analytics range filter
   const momChange = useMemo(() => {
-    const now = new Date()
-    const thisStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
-    const lastStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime()
+    const thisStart = istMonthStart(Date.now())
+    const lastStart = istMonthStart(thisStart - 1)
     const thisSpend = txns.filter(t => t.type === 'debit' && t.date >= thisStart).reduce((s, t) => s + t.amount, 0)
     const lastSpend = txns.filter(t => t.type === 'debit' && t.date >= lastStart && t.date < thisStart).reduce((s, t) => s + t.amount, 0)
     if (lastSpend === 0) return null
@@ -509,7 +583,9 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     const dayMap = {}
     inRange.forEach(t => {
       if (t.type === 'transfer') return
-      const key = new Date(t.date).toISOString().slice(0, 10)
+      // IST calendar day — toISOString() is UTC and would bucket an IST-midnight
+      // transaction onto the previous day, silently shifting the whole trend chart.
+      const key = istDateKey(t.date)
       if (!dayMap[key]) dayMap[key] = { debit: 0, credit: 0 }
       dayMap[key][t.type] += t.amount
     })
@@ -675,24 +751,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           </div>
           <div className="txn-budget-bar">
             <span className={`txn-budget-bar-fill${budgetOver ? ' over' : ''}`} style={{ width: `${budgetPct}%` }} />
-          </div>
-
-          {/* Spent/Received/Net used to also live in a separate "Summary bar" card right
-              below this one, showing near-identical numbers — folded into one card here
-              instead of two that said the same thing twice. */}
-          <div className="txn-budget-stats">
-            <div className="txn-budget-stat debit">
-              <span className="txn-budget-stat-label">Spent</span>
-              <span className="txn-budget-stat-val">{formatINRCompact(monthStats.spent)}</span>
-            </div>
-            <div className="txn-budget-stat credit">
-              <span className="txn-budget-stat-label">Received</span>
-              <span className="txn-budget-stat-val">{formatINRCompact(monthStats.income)}</span>
-            </div>
-            <div className={`txn-budget-stat ${monthStats.net >= 0 ? 'credit' : 'debit'}`}>
-              <span className="txn-budget-stat-label">Net</span>
-              <span className="txn-budget-stat-val">{formatINRCompact(Math.abs(monthStats.net))}</span>
-            </div>
           </div>
         </div>
 
@@ -937,6 +995,14 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
         <div>
           {showFilters && (
             <div className="txn-filter-panel">
+              <div className="txn-filter-group">
+                <div className="txn-filter-group-head">
+                  <span className="txn-filter-group-label">Search narration</span>
+                </div>
+                <input className="add-input" type="text" placeholder="e.g. FOOD CHOTU"
+                  value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+              </div>
+
               <FilterGroup label="Category" options={filterCategoryOptions}
                 selected={filters.categories} exclude={filters.categoriesExclude}
                 onToggleOption={v => toggleFilterOption('categories', v)}
@@ -972,34 +1038,31 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           )}
         </div>
 
-        {/* Hero card — live totals reflecting BOTH the Filters panel AND the analytics range
-            dropdown above the charts carousel (previously only tracked the Filters panel,
-            which read as "broken" since changing the range dropdown visibly changes the
-            charts but silently did nothing here). Shown whenever either one departs from
-            its default, and uses the exact same analyticsData the charts above already use
-            so the numbers always agree. */}
-        {(activeFilterCount > 0 || analyticsRange !== 'month') && (
-          <div className="txn-hero-card">
-            <div className="txn-hero-top">
-              <span className="txn-hero-label">{ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label} Results</span>
-              <span className="txn-hero-count">{analyticsData.count} transaction{analyticsData.count !== 1 ? 's' : ''}</span>
+        {/* Hero card — the single place Spent/Received/Net live now (the Monthly Budget
+            card above used to have its own copy of these three numbers too, which was
+            just the same figures shown twice). Always visible, reflecting BOTH the Filters
+            panel AND the header's analytics range — uses the exact same analyticsData the
+            charts below already use so the numbers always agree with everything else. */}
+        <div className="txn-hero-card">
+          <div className="txn-hero-top">
+            <span className="txn-hero-label">{ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label} Results</span>
+            <span className="txn-hero-count">{analyticsData.count} transaction{analyticsData.count !== 1 ? 's' : ''}</span>
+          </div>
+          <div className="txn-hero-stats">
+            <div className="txn-hero-stat debit">
+              <span className="txn-hero-stat-label">Spent</span>
+              <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalDebitInRange)}</span>
             </div>
-            <div className="txn-hero-stats">
-              <div className="txn-hero-stat debit">
-                <span className="txn-hero-stat-label">Spent</span>
-                <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalDebitInRange)}</span>
-              </div>
-              <div className="txn-hero-stat credit">
-                <span className="txn-hero-stat-label">Received</span>
-                <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalCreditInRange)}</span>
-              </div>
-              <div className={`txn-hero-stat ${analyticsData.totalCreditInRange - analyticsData.totalDebitInRange >= 0 ? 'credit' : 'debit'}`}>
-                <span className="txn-hero-stat-label">Net</span>
-                <span className="txn-hero-stat-val">{formatINRCompact(Math.abs(analyticsData.totalCreditInRange - analyticsData.totalDebitInRange))}</span>
-              </div>
+            <div className="txn-hero-stat credit">
+              <span className="txn-hero-stat-label">Received</span>
+              <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalCreditInRange)}</span>
+            </div>
+            <div className={`txn-hero-stat ${analyticsData.totalCreditInRange - analyticsData.totalDebitInRange >= 0 ? 'credit' : 'debit'}`}>
+              <span className="txn-hero-stat-label">Net</span>
+              <span className="txn-hero-stat-val">{formatINRCompact(Math.abs(analyticsData.totalCreditInRange - analyticsData.totalDebitInRange))}</span>
             </div>
           </div>
-        )}
+        </div>
 
         {/* Transaction list */}
         <div className="txn-list-card">
@@ -1152,6 +1215,32 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                   </div>
                 </div>
 
+                {/* Bulk-recategorize — for when the auto-categorization guessed wrong for
+                    a whole tag/merchant, not just this one row (e.g. a personal "FOOD
+                    RAPIDO" remark that's actually a Rapido ride, not food). Opt-in: blank
+                    by default, only acts once a keyword is typed or suggested. */}
+                {sheetMode === 'edit' && form.type !== 'transfer' && (
+                  <div className="add-field">
+                    <label className="add-label">Also recategorize matching transactions</label>
+                    <div className="bulk-recat-row">
+                      <input className="add-input" type="text" placeholder="e.g. RAPIDO"
+                        value={bulkKeyword} onChange={e => setBulkKeyword(e.target.value)} />
+                      {!bulkKeyword.trim() && guessKeyword(form.note) && (
+                        <button type="button" className="bulk-recat-suggest" onClick={() => setBulkKeyword(guessKeyword(form.note))}>
+                          Suggest "{guessKeyword(form.note)}"
+                        </button>
+                      )}
+                    </div>
+                    {bulkKeyword.trim() && (
+                      <p className="bulk-recat-hint">
+                        {bulkMatches.length === 0
+                          ? `No other transactions contain "${bulkKeyword.trim()}".`
+                          : `${bulkMatches.length} other transaction${bulkMatches.length !== 1 ? 's' : ''} will move to this category too — and future statement imports mentioning "${bulkKeyword.trim()}" will auto-categorize the same way.`}
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="add-field">
                   <label className="add-label">Merchant / Paid to</label>
                   <input className="add-input" type="text" placeholder="e.g. Swiggy, Amazon"
@@ -1178,7 +1267,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
             <div className="add-field">
               <label className="add-label">Date</label>
               <input className="add-input" type="date"
-                value={form.date || new Date().toISOString().slice(0,10)}
+                value={form.date || istDateKey(Date.now())}
                 onChange={e => setForm(f => ({...f, date: e.target.value}))} />
             </div>
 

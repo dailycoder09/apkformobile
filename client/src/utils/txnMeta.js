@@ -92,3 +92,49 @@ export function addBank(userId, name) {
   }
   return trimmed
 }
+
+// User-defined "if the narration contains this word, it's really category X" overrides —
+// the auto-categorization keyword rules are a best guess, and this is how the account
+// holder corrects the ones it gets wrong (e.g. their own "FOOD RAPIDO" tag turning out to
+// mean the Rapido ride-hailing app, not food). Applied both retroactively (bulk-recategorize
+// existing matches) and prospectively (checked on every future statement import).
+export function loadCategoryOverrides(userId) {
+  try {
+    return JSON.parse(localStorage.getItem(storageKey('cat-overrides', userId)) || '[]')
+  } catch {
+    return []
+  }
+}
+
+// categoryMeta carries the full {id, label, icon, color} — not just the id — so an
+// override pointing at a custom category still renders correctly (custom categories need
+// their label/icon/color embedded on the transaction itself; see getCategoryMeta).
+export function addCategoryOverride(userId, keyword, categoryMeta) {
+  const trimmed = keyword.trim()
+  if (!trimmed || !categoryMeta) return
+  const existing = loadCategoryOverrides(userId).filter(o => o.keyword.toLowerCase() !== trimmed.toLowerCase())
+  existing.push({
+    keyword: trimmed,
+    category: categoryMeta.id,
+    ...(String(categoryMeta.id).startsWith('custom:')
+      ? { categoryLabel: categoryMeta.label, categoryIcon: categoryMeta.icon, categoryColor: categoryMeta.color }
+      : {}),
+  })
+  localStorage.setItem(storageKey('cat-overrides', userId), JSON.stringify(existing))
+}
+
+// Applied to freshly-parsed statement rows before they're sent to the server, so a
+// correction made once keeps applying to every future re-import — checked in the order
+// the overrides were added, first match wins (matches the "most recent correction" if the
+// same keyword was ever redefined, since addCategoryOverride replaces same-keyword entries).
+export function applyCategoryOverrides(txn, overrides) {
+  if (!overrides.length) return txn
+  const haystack = `${txn.description || ''} ${txn.merchant || ''}`.toLowerCase()
+  const hit = overrides.find(o => haystack.includes(o.keyword.toLowerCase()))
+  if (!hit) return txn
+  return {
+    ...txn,
+    category: hit.category,
+    ...(hit.categoryLabel ? { categoryLabel: hit.categoryLabel, categoryIcon: hit.categoryIcon, categoryColor: hit.categoryColor } : {}),
+  }
+}
