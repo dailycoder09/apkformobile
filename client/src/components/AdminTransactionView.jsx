@@ -160,6 +160,8 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo]     = useState('')
   const [showFilters, setShowFilters] = useState(false)
+  const [showStats, setShowStats] = useState(false)
+  const [showCharts, setShowCharts] = useState(false)
   const [filters, setFilters]       = useState(EMPTY_FILTERS)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   // Server-synced budgets per family member: { [userId]: { [category]: monthlyLimit } }
@@ -617,14 +619,38 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
 
         {/* Analytics — always visible now (no expand step needed to see charts) */}
         <div className="txn-charts-section">
-          {/* Quick-glance stat tiles */}
+          {/* Quick Stats + Charts toggles share one row to save the vertical space of two
+              stacked full-width buttons. */}
+          <div className="txn-controls-row">
+            <button className="txn-filters-toggle txn-section-toggle" onClick={() => setShowStats(v => !v)}>
+              <span className="material-symbols-outlined">bar_chart</span>
+              Quick Stats
+              <span className={`material-symbols-outlined txn-analytics-chevron${showStats ? ' open' : ''}`}>expand_more</span>
+            </button>
+            <button className="txn-filters-toggle txn-section-toggle" onClick={() => setShowCharts(v => !v)}>
+              <span className="material-symbols-outlined">insights</span>
+              Charts
+              <span className={`material-symbols-outlined txn-analytics-chevron${showCharts ? ' open' : ''}`}>expand_more</span>
+            </button>
+          </div>
+          {showStats && (
           <div className="txn-stat-grid">
             <div className="txn-stat-card">
-              <span className="txn-stat-label">Avg Daily Spend</span>
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-rose-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-rose-dark)' }}>calendar_today</span>
+                </span>
+                <span className="txn-stat-label">Avg Daily Spend</span>
+              </div>
               <span className="txn-stat-value">{formatINRShort(trendData.avgDailySpend)}</span>
             </div>
             <div className="txn-stat-card">
-              <span className="txn-stat-label">Biggest Expense</span>
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-rose-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-rose-dark)' }}>receipt_long</span>
+                </span>
+                <span className="txn-stat-label">Biggest Expense</span>
+              </div>
               {trendData.biggestExpense ? (
                 <>
                   <span className="txn-stat-value">{formatINRShort(trendData.biggestExpense.amount)}</span>
@@ -634,23 +660,40 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
             </div>
             {recurringSummary.groups.length > 0 && (
               <div className="txn-stat-card">
-                <span className="txn-stat-label">Recurring</span>
+                <div className="txn-stat-top">
+                  <span className="txn-stat-icon" style={{ background: 'var(--txn-gold-pastel)' }}>
+                    <span className="material-symbols-outlined" style={{ color: '#8a6d00' }}>autorenew</span>
+                  </span>
+                  <span className="txn-stat-label">Recurring</span>
+                </div>
                 <span className="txn-stat-value">{formatINRShort(recurringSummary.totalMonthly)}/mo</span>
                 <span className="txn-stat-sub">{recurringSummary.groups.length} payment{recurringSummary.groups.length !== 1 ? 's' : ''}</span>
               </div>
             )}
             <div className="txn-stat-card">
-              <span className="txn-stat-label">Savings Rate</span>
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-green-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-green-dark)' }}>savings</span>
+                </span>
+                <span className="txn-stat-label">Savings Rate</span>
+              </div>
               <span className={`txn-stat-value${trendData.savingsRate == null ? '' : trendData.savingsRate >= 0 ? ' good' : ' bad'}`}>
                 {trendData.savingsRate == null ? '—' : `${trendData.savingsRate}%`}
               </span>
             </div>
             <div className="txn-stat-card">
-              <span className="txn-stat-label">Transactions</span>
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-rose-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-rose-dark)' }}>list_alt</span>
+                </span>
+                <span className="txn-stat-label">Transactions</span>
+              </div>
               <span className="txn-stat-value">{displayed.length}</span>
             </div>
           </div>
+          )}
 
+          {showCharts && (
           <div className="txn-charts-grid">
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending Categories</h3>
@@ -743,6 +786,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
               </div>
             )}
           </div>
+          )}
         </div>
 
         {/* Transaction list */}

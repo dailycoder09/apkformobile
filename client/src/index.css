@@ -3482,15 +3482,27 @@ button { font-family: inherit; cursor: pointer; }
 .txn-breakdown-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--txn-rose), var(--txn-rose-dark)); }
 .txn-breakdown-val { width: 60px; text-align: right; font-size: 12px; font-weight: 700; color: var(--txn-ink); }
 
-/* Quick-glance analytics stat tiles */
-.txn-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+/* Quick-glance analytics stat tiles — a small icon badge names each metric at a glance,
+   and the card itself gets the same soft-shadow "premium card" treatment as the budget/
+   hero cards above instead of a flatter, plainer translucent block. */
+.txn-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .txn-stat-card {
-  display: flex; flex-direction: column; gap: 2px; min-width: 0;
-  background: rgba(255,255,255,0.6); border: 1px solid rgba(255,255,255,0.8);
-  border-radius: 14px; padding: 12px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  background: var(--txn-card); border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 18px; padding: 14px;
+  box-shadow: var(--shadow-soft);
 }
-.txn-stat-label { font-size: 10.5px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.4px; }
-.txn-stat-value { font-size: 17px; font-weight: 800; color: var(--txn-ink); overflow-wrap: anywhere; }
+.txn-stat-top { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.txn-stat-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 9px; flex-shrink: 0;
+}
+.txn-stat-icon .material-symbols-outlined { font-size: 15px; }
+.txn-stat-label {
+  font-size: 10px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase;
+  letter-spacing: 0.4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.txn-stat-value { font-size: 18px; font-weight: 800; color: var(--txn-ink); overflow-wrap: anywhere; }
 .txn-stat-value.good { color: var(--txn-green-dark); }
 .txn-stat-value.bad  { color: var(--txn-rose-dark); }
 .txn-stat-sub { font-size: 11px; color: var(--txn-muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3622,6 +3634,11 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 11.5px; font-weight: 700; color: var(--txn-ink); cursor: pointer;
 }
 .txn-filters-toggle .material-symbols-outlined:first-child { font-size: 16px; color: var(--txn-rose-dark); }
+/* Full-width variant — collapsible section header (Quick Stats) rather than the compact
+   tab-row Filters button this class was originally built for. */
+/* Sits inside .txn-controls-row alongside its sibling toggle, so it shares the row rather
+   than each trying to claim the full width. */
+.txn-section-toggle { flex: 1; min-width: 0; font-size: 12.5px; padding: 10px 14px; }
 
 /* List */
 .txn-list-card { background: var(--txn-card); border-radius: 20px; padding: 4px 0 10px; box-shadow: var(--shadow-soft); }

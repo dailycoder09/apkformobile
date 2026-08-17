@@ -181,6 +181,8 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [banks, setBanks] = useState(() => loadBanks(session.userId, []))
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [showFilters, setShowFilters] = useState(false)
+  const [showStats, setShowStats] = useState(false)
+  const [showCharts, setShowCharts] = useState(false)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -698,14 +700,38 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
             picker now lives in the header (see txn-header-range) instead of a full-width
             row here, since it's the same analyticsRange state either way. */}
         <div className="txn-charts-section">
-          {/* Quick-glance stat tiles */}
+          {/* Quick Stats + Charts toggles share one row to save the vertical space of two
+              stacked full-width buttons. */}
+          <div className="txn-controls-row">
+            <button className="txn-filters-toggle txn-section-toggle" onClick={() => setShowStats(v => !v)}>
+              <span className="material-symbols-outlined">bar_chart</span>
+              Quick Stats
+              <span className={`material-symbols-outlined txn-analytics-chevron${showStats ? ' open' : ''}`}>expand_more</span>
+            </button>
+            <button className="txn-filters-toggle txn-section-toggle" onClick={() => setShowCharts(v => !v)}>
+              <span className="material-symbols-outlined">insights</span>
+              Charts
+              <span className={`material-symbols-outlined txn-analytics-chevron${showCharts ? ' open' : ''}`}>expand_more</span>
+            </button>
+          </div>
+          {showStats && (
           <div className="txn-stat-grid">
             <div className="txn-stat-card">
-              <span className="txn-stat-label">Avg Daily Spend</span>
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-rose-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-rose-dark)' }}>calendar_today</span>
+                </span>
+                <span className="txn-stat-label">Avg Daily Spend</span>
+              </div>
               <span className="txn-stat-value">{formatINRShort(analyticsData.avgDailySpend)}</span>
             </div>
             <div className="txn-stat-card">
-              <span className="txn-stat-label">Biggest Expense</span>
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-rose-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-rose-dark)' }}>receipt_long</span>
+                </span>
+                <span className="txn-stat-label">Biggest Expense</span>
+              </div>
               {analyticsData.biggestExpense ? (
                 <>
                   <span className="txn-stat-value">{formatINRShort(analyticsData.biggestExpense.amount)}</span>
@@ -714,20 +740,35 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               ) : <span className="txn-stat-value">—</span>}
             </div>
             <div className="txn-stat-card">
-              <span className="txn-stat-label">Vs Last Month</span>
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-rose-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-rose-dark)' }}>show_chart</span>
+                </span>
+                <span className="txn-stat-label">Vs Last Month</span>
+              </div>
               <span className={`txn-stat-value${momChange == null ? '' : momChange > 0 ? ' bad' : ' good'}`}>
                 {momChange == null ? '—' : `${momChange > 0 ? '+' : ''}${momChange}%`}
               </span>
             </div>
             {recurring.groups.length > 0 && (
               <div className="txn-stat-card">
-                <span className="txn-stat-label">Recurring</span>
+                <div className="txn-stat-top">
+                  <span className="txn-stat-icon" style={{ background: 'var(--txn-gold-pastel)' }}>
+                    <span className="material-symbols-outlined" style={{ color: '#8a6d00' }}>autorenew</span>
+                  </span>
+                  <span className="txn-stat-label">Recurring</span>
+                </div>
                 <span className="txn-stat-value">{formatINRShort(recurring.totalMonthly)}/mo</span>
                 <span className="txn-stat-sub">{recurring.groups.length} payment{recurring.groups.length !== 1 ? 's' : ''}</span>
               </div>
             )}
             <div className="txn-stat-card">
-              <span className="txn-stat-label">Savings Rate</span>
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-green-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-green-dark)' }}>savings</span>
+                </span>
+                <span className="txn-stat-label">Savings Rate</span>
+              </div>
               <span className={`txn-stat-value${analyticsData.savingsRate == null ? '' : analyticsData.savingsRate >= 0 ? ' good' : ' bad'}`}>
                 {analyticsData.savingsRate == null ? '—' : `${analyticsData.savingsRate}%`}
               </span>
@@ -736,13 +777,35 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                 by us, so it matches your banking app exactly (as of your last upload). */}
             {accountBalances.map(b => (
               <div key={b.bank} className="txn-stat-card">
-                <span className="txn-stat-label">{b.bank}</span>
+                <div className="txn-stat-top">
+                  <span className="txn-stat-icon" style={{ background: 'var(--txn-rose-pastel)' }}>
+                    <span className="material-symbols-outlined" style={{ color: 'var(--txn-rose-dark)' }}>account_balance</span>
+                  </span>
+                  <span className="txn-stat-label">{b.bank}</span>
+                </div>
                 <span className="txn-stat-value">{formatINR(b.balance)}</span>
               </div>
             ))}
+            {/* Net cash flow for whatever range is currently selected in the header —
+                placed right after the bank balance tile so "real balance" and "period
+                net" sit side by side. */}
+            <div className="txn-stat-card">
+              <div className="txn-stat-top">
+                <span className="txn-stat-icon" style={{ background: 'var(--txn-green-pastel)' }}>
+                  <span className="material-symbols-outlined" style={{ color: 'var(--txn-green-dark)' }}>account_balance_wallet</span>
+                </span>
+                <span className="txn-stat-label">{ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label} Net</span>
+              </div>
+              <span className={`txn-stat-value${analyticsData.totalCreditInRange - analyticsData.totalDebitInRange >= 0 ? ' good' : ' bad'}`}>
+                {formatINRCompact(Math.abs(analyticsData.totalCreditInRange - analyticsData.totalDebitInRange))}
+              </span>
+              <span className="txn-stat-sub">{analyticsData.count} transaction{analyticsData.count !== 1 ? 's' : ''}</span>
+            </div>
           </div>
+          )}
 
-          {/* Multiple chart cards, side by side on wider screens */}
+          {/* Multiple chart cards, side by side on wider screens — collapsed by default */}
+          {showCharts && (
           <div className="txn-charts-grid">
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending Categories — {ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label}</h3>
@@ -850,6 +913,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               </div>
             )}
           </div>
+          )}
         </div>
 
         {/* Type tabs (compact, inline with the Filters toggle) + filters — type/category/
