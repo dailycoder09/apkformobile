@@ -3286,6 +3286,7 @@ button { font-family: inherit; cursor: pointer; }
 
 .txn-body { padding: 8px 20px 100px; display: flex; flex-direction: column; gap: 16px; }
 
+
 /* Budget overview card */
 .txn-budget-card {
   position: relative;
@@ -3316,20 +3317,25 @@ button { font-family: inherit; cursor: pointer; }
 .txn-budget-bar { width: 100%; height: 10px; border-radius: 999px; background: rgba(0,0,0,0.06); overflow: hidden; }
 .txn-budget-bar-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--txn-rose), var(--txn-rose-dark)); transition: width 0.6s ease; }
 .txn-budget-bar-fill.over { background: linear-gradient(90deg, #b91c1c, #7f1d1d); }
-.txn-budget-row--secondary { margin-top: 10px; margin-bottom: 0; }
-.txn-budget-income { color: var(--txn-green-dark); }
-.txn-budget-net.good { color: var(--txn-green-dark); }
-.txn-budget-net.bad  { color: var(--txn-rose-dark); }
-
-/* Per-category budgets card — a compact list of mini progress bars, one per category,
-   each independently editable via the same budget sheet as the overall budget above */
-.txn-cat-budgets-card {
-  background: var(--txn-card);
-  border-radius: 20px;
-  padding: 18px;
-  box-shadow: var(--shadow-soft);
-  display: flex; flex-direction: column; gap: 14px;
+/* Spent/Received/Net — one clean strip inside the budget card itself, instead of a
+   second card underneath repeating the same three numbers. */
+.txn-budget-stats {
+  display: flex; margin-top: 14px; padding-top: 14px;
+  border-top: 1px solid rgba(58, 42, 46, 0.08);
 }
+.txn-budget-stat { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.txn-budget-stat-label { font-size: 10.5px; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+/* min-width:0 above lets these flex items actually shrink instead of overflowing past their
+   1/3 share — without it, large unbreakable amounts (no spaces to wrap on) ran into each
+   other on narrow phones. overflow-wrap lets a long figure break rather than spill over. */
+.txn-budget-stat-val   { font-size: 14.5px; font-weight: 800; text-align: center; overflow-wrap: anywhere; }
+.txn-budget-stat.debit  .txn-budget-stat-val { color: var(--txn-rose); }
+.txn-budget-stat.credit .txn-budget-stat-val { color: var(--txn-green); }
+
+/* Per-category budgets — a compact list of mini progress bars, one per category, each
+   independently editable via the same budget sheet as the overall budget above. Now
+   lives inside a .txn-chart-card slide in the charts carousel (see .txn-charts-grid). */
+.txn-cat-budgets-list { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; }
 .txn-cat-budget-row { display: flex; align-items: center; gap: 10px; }
 .txn-cat-budget-icon {
   display: flex; align-items: center; justify-content: center;
@@ -3350,22 +3356,6 @@ button { font-family: inherit; cursor: pointer; }
 }
 .txn-cat-budget-edit .material-symbols-outlined { font-size: 13px; }
 
-/* Recurring-payments summary card */
-.txn-recurring-card {
-  display: flex; align-items: center; gap: 12px;
-  background: var(--txn-card); border-radius: 18px; padding: 14px 16px;
-  box-shadow: var(--shadow-soft);
-}
-.txn-recurring-icon {
-  display: flex; align-items: center; justify-content: center;
-  width: 36px; height: 36px; border-radius: 12px; flex-shrink: 0;
-  background: var(--txn-gold-pastel); color: #7a5c0a;
-}
-.txn-recurring-icon .material-symbols-outlined { font-size: 18px; }
-.txn-recurring-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.txn-recurring-label { font-size: 13px; font-weight: 700; color: var(--txn-ink); }
-.txn-recurring-sub { font-size: 11px; color: var(--txn-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.txn-recurring-amt { font-size: 14px; font-weight: 800; color: var(--txn-rose-dark); flex-shrink: 0; white-space: nowrap; }
 
 /* Recurring badge chip on a transaction card — same visual family as the other
    .txn-*-tag chips (bank/sms/user tags) in .txn-meta */
@@ -3394,6 +3384,37 @@ button { font-family: inherit; cursor: pointer; }
 .txn-summary-item.debit  .txn-summary-val { color: var(--txn-rose); }
 .txn-summary-item.credit .txn-summary-val { color: var(--txn-green); }
 .txn-summary-divider { width: 1px; background: rgba(0,0,0,0.08); margin: 4px 0; }
+
+/* Charts section — always visible now, no expand step to see analytics */
+.txn-charts-section { display: flex; flex-direction: column; gap: 14px; }
+/* Horizontal swipeable carousel — each card mostly fills the viewport with the next
+   one peeking at the edge, signalling there's more to slide to. */
+.txn-charts-grid {
+  display: flex; gap: 14px;
+  overflow-x: auto; scroll-snap-type: x mandatory;
+  padding: 2px 2px 6px;
+  scrollbar-width: none;
+}
+.txn-charts-grid::-webkit-scrollbar { display: none; }
+.txn-chart-card {
+  background: var(--txn-card);
+  border-radius: 20px;
+  padding: 16px;
+  box-shadow: var(--shadow-soft);
+  flex: 0 0 85%;
+  scroll-snap-align: start;
+  min-width: 0;
+}
+@media (min-width: 640px) { .txn-chart-card { flex-basis: 320px; } }
+
+/* Spending-vs-income line chart — hand-rolled SVG polylines, no charting library */
+.txn-line-chart { width: 100%; height: 90px; display: block; }
+.txn-line-chart-line {
+  fill: none; stroke-width: 2.4; vector-effect: non-scaling-stroke;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.txn-line-chart-line--debit  { stroke: var(--txn-rose); }
+.txn-line-chart-line--credit { stroke: var(--txn-green); }
 
 /* Spending categories donut card */
 .txn-donut-card {
@@ -3436,14 +3457,6 @@ button { font-family: inherit; cursor: pointer; }
 .txn-analytics-toggle-icon .material-symbols-outlined { font-size: 16px; }
 .txn-analytics-chevron { margin-left: auto; color: var(--txn-muted); transition: transform 0.2s; }
 .txn-analytics-chevron.open { transform: rotate(180deg); }
-.txn-analytics {
-  display: flex; flex-direction: column; gap: 16px;
-  background: linear-gradient(165deg, rgba(255,255,255,0.92), rgba(255,255,255,0.68));
-  backdrop-filter: blur(20px);
-  border: 1px solid rgba(255,255,255,0.75);
-  border-radius: 20px; padding: 16px;
-  box-shadow: 0 16px 40px rgba(160,20,60,0.1);
-}
 .txn-analytics-filter {
   display: flex; align-items: center; gap: 8px; width: 100%;
   background: linear-gradient(135deg, #fff, var(--txn-rose-pastel));
@@ -3453,11 +3466,13 @@ button { font-family: inherit; cursor: pointer; }
 .txn-analytics-filter select { flex: 1; background: transparent; border: none; font-size: 13.5px; font-weight: 700; color: var(--txn-ink); outline: none; }
 .txn-analytics-filter .material-symbols-outlined { font-size: 15px; color: var(--txn-rose-dark); }
 .txn-analytics-title { font-size: 11px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px; }
-.txn-trend-chart { display: flex; align-items: flex-end; gap: 4px; height: 90px; overflow-x: auto; }
-.txn-trend-bar-wrap { flex: 1; min-width: 6px; height: 100%; display: flex; align-items: flex-end; }
-.txn-trend-bar { width: 100%; height: 100%; display: flex; flex-direction: column-reverse; border-radius: 3px 3px 0 0; overflow: hidden; background: rgba(0,0,0,0.05); }
-.txn-trend-seg--credit { background: var(--txn-green); }
-.txn-trend-seg--debit { background: var(--txn-rose); }
+/* Collapsible chart-card header — a plain full-width button blending into the card itself
+   (no separate background/shadow, unlike .txn-filters-toggle) since it lives inside one. */
+.txn-chart-card-toggle {
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  background: none; border: none; padding: 0; cursor: pointer; text-align: left;
+}
+.txn-chart-card-toggle .txn-analytics-title { margin-bottom: 0; }
 .txn-trend-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--txn-muted); font-weight: 600; }
 .txn-trend-legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
 .txn-breakdown-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -3470,35 +3485,41 @@ button { font-family: inherit; cursor: pointer; }
 /* Quick-glance analytics stat tiles */
 .txn-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .txn-stat-card {
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
   background: rgba(255,255,255,0.6); border: 1px solid rgba(255,255,255,0.8);
   border-radius: 14px; padding: 12px;
 }
 .txn-stat-label { font-size: 10.5px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.4px; }
-.txn-stat-value { font-size: 17px; font-weight: 800; color: var(--txn-ink); }
+.txn-stat-value { font-size: 17px; font-weight: 800; color: var(--txn-ink); overflow-wrap: anywhere; }
 .txn-stat-value.good { color: var(--txn-green-dark); }
 .txn-stat-value.bad  { color: var(--txn-rose-dark); }
 .txn-stat-sub { font-size: 11px; color: var(--txn-muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* Filters panel (type/category/source/bank multi-select + include-vs-exclude toggle) */
+/* Filters panel (type/category/source/bank multi-select + include-vs-exclude toggle) —
+   compact chip rows that scroll horizontally instead of wrapping onto multiple lines,
+   so a dimension with many options (banks, categories) doesn't eat vertical space. */
 .txn-filter-panel {
-  background: var(--txn-card); border-radius: 16px; box-shadow: var(--shadow-soft);
-  padding: 14px 16px; margin-top: 12px; display: flex; flex-direction: column; gap: 14px;
+  background: var(--txn-card); border-radius: 14px; box-shadow: var(--shadow-soft);
+  padding: 12px 14px; margin-top: 8px; display: flex; flex-direction: column; gap: 10px;
 }
-.txn-filter-group { display: flex; flex-direction: column; gap: 8px; }
+.txn-filter-group { display: flex; flex-direction: column; gap: 6px; }
 .txn-filter-group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.txn-filter-group-label { font-size: 11px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.txn-filter-group-label { font-size: 10px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 .txn-filter-mode-btn {
-  font-size: 10.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  font-size: 9.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
   border: 1px solid rgba(0,0,0,0.08); background: rgba(0,0,0,0.03); color: var(--txn-muted);
   cursor: pointer;
 }
 .txn-filter-mode-btn.exclude { border-color: var(--txn-rose); background: var(--txn-rose-pastel); color: var(--txn-rose-dark); }
-.txn-filter-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.txn-filter-chips {
+  display: flex; flex-wrap: nowrap; gap: 5px; overflow-x: auto;
+  padding-bottom: 2px; scrollbar-width: none;
+}
+.txn-filter-chips::-webkit-scrollbar { display: none; }
 .txn-filter-chip {
-  font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px;
+  flex-shrink: 0; font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 999px;
   border: 1.5px solid rgba(0,0,0,0.08); background: rgba(255,255,255,0.7); color: var(--txn-ink);
-  cursor: pointer;
+  cursor: pointer; white-space: nowrap;
 }
 .txn-filter-chip.active { border-color: var(--txn-rose); color: var(--txn-rose-dark); background: var(--txn-rose-pastel); }
 .txn-filter-daterange { display: flex; align-items: center; gap: 8px; }
@@ -3508,6 +3529,32 @@ button { font-family: inherit; cursor: pointer; }
   align-self: flex-start; background: none; border: none; color: var(--txn-rose-dark);
   font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 4px 0;
 }
+
+/* Hero card — live Spent/Received/Net for whatever the Filters panel currently matches,
+   only shown while a filter is active. Same premium-card treatment as .txn-budget-card so
+   it reads as an equally important, "hero" moment rather than a minor status line. */
+.txn-hero-card {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(160deg, rgba(255,255,255,0.92), rgba(255,255,255,0.7));
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 22px;
+  padding: 16px 18px;
+  box-shadow: 0 14px 34px rgba(160,20,60,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
+}
+.txn-hero-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.txn-hero-label { font-size: 11px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.6px; }
+.txn-hero-count { font-size: 11.5px; font-weight: 700; color: var(--txn-rose-dark); background: var(--txn-rose-pastel); padding: 3px 10px; border-radius: 999px; }
+.txn-hero-stats { display: flex; gap: 4px; border-top: 1px solid rgba(58, 42, 46, 0.08); padding-top: 12px; }
+.txn-hero-stat { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.txn-hero-stat-label { font-size: 10.5px; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
+/* min-width:0 lets these flex items shrink instead of overflowing past their 1/3 share —
+   without it, large unbreakable amounts (no spaces to wrap on) ran into each other on
+   narrow phones. overflow-wrap lets a long figure break rather than spill over. */
+.txn-hero-stat-val { font-size: 17px; font-weight: 800; text-align: center; overflow-wrap: anywhere; }
+.txn-hero-stat.debit  .txn-hero-stat-val { color: var(--txn-rose); }
+.txn-hero-stat.credit .txn-hero-stat-val { color: var(--txn-green); }
 
 /* Clear-all action (self, and admin scoped to the selected family member) */
 .txn-clear-all-btn {
@@ -3554,15 +3601,27 @@ button { font-family: inherit; cursor: pointer; }
 }
 .period-btn.active { background: linear-gradient(135deg, var(--txn-rose), var(--txn-rose-dark)); color: #fff; }
 
-/* Tab strip */
-.txn-tabs { display: flex; background: var(--txn-card); border-radius: 14px; box-shadow: var(--shadow-soft); padding: 4px; }
-.txn-tab {
-  flex: 1; background: none; border: none;
-  color: var(--txn-muted); font-size: 13px; font-weight: 700;
-  padding: 10px 8px; cursor: pointer; border-radius: 10px;
-  min-height: 40px;
+/* Type tabs + Filters toggle share one compact row — the tabs used to be a full-width
+   strip of their own; folding them in here saves a whole row of vertical space. */
+.txn-controls-row { display: flex; align-items: center; gap: 8px; }
+.txn-tabs-inline {
+  display: flex; flex: 1; min-width: 0; background: var(--txn-card);
+  border-radius: 12px; box-shadow: var(--shadow-soft); padding: 3px;
 }
-.txn-tab.active { color: #fff; background: linear-gradient(135deg, var(--txn-rose), var(--txn-rose-dark)); }
+.txn-tab-inline {
+  flex: 1; min-width: 0; background: none; border: none;
+  color: var(--txn-muted); font-size: 11.5px; font-weight: 700;
+  padding: 8px 3px; cursor: pointer; border-radius: 9px;
+  min-height: 32px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.txn-tab-inline.active { color: #fff; background: linear-gradient(135deg, var(--txn-rose), var(--txn-rose-dark)); }
+.txn-filters-toggle {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+  background: var(--txn-card); border: none; box-shadow: var(--shadow-soft);
+  border-radius: 12px; padding: 8px 10px; min-height: 38px;
+  font-size: 11.5px; font-weight: 700; color: var(--txn-ink); cursor: pointer;
+}
+.txn-filters-toggle .material-symbols-outlined:first-child { font-size: 16px; color: var(--txn-rose-dark); }
 
 /* List */
 .txn-list-card { background: var(--txn-card); border-radius: 20px; padding: 4px 0 10px; box-shadow: var(--shadow-soft); }
@@ -3597,19 +3656,19 @@ button { font-family: inherit; cursor: pointer; }
 .txn-group .txn-row:last-child { margin-bottom: 2px; }
 .txn-row:active { background: rgba(224, 52, 92, 0.04); }
 
-.txn-card-top { display: flex; align-items: flex-start; gap: 12px; }
+.txn-card-top { display: flex; align-items: flex-start; gap: 10px; }
 .txn-cat-icon {
   display: flex; align-items: center; justify-content: center;
-  width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
+  width: 28px; height: 28px; border-radius: 9px; flex-shrink: 0;
   background: var(--txn-rose-pastel);
 }
-.txn-cat-icon .material-symbols-outlined { font-size: 20px; color: var(--txn-rose-dark); }
+.txn-cat-icon .material-symbols-outlined { font-size: 15px; color: var(--txn-rose-dark); }
 
 /* Merchant/payee — the field HDFC narrations blow past PhonePe's short names on.
    No more nowrap+ellipsis single line: it now wraps onto as many lines as it needs. */
 .txn-row-info { flex: 1; min-width: 0; }
 .txn-merchant {
-  font-size: 15px; font-weight: 700; color: var(--txn-ink);
+  font-size: 13.5px; font-weight: 700; color: var(--txn-ink);
   white-space: normal; overflow-wrap: anywhere; word-break: break-word;
   line-height: 1.3;
 }
@@ -3624,11 +3683,13 @@ button { font-family: inherit; cursor: pointer; }
    rendered when it says something the merchant name alone doesn't. */
 .txn-desc {
   font-size: 11.5px; color: var(--txn-muted); line-height: 1.4; margin: 0;
-  overflow-wrap: anywhere; padding-left: 52px;
+  overflow-wrap: anywhere; padding-left: 38px;
 }
-.txn-desc.clamped { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
-.txn-card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-left: 52px; }
+/* Chips on the left, timestamp pinned to the bottom-right corner (.txn-corner) —
+   kept apart so a long chip row never pushes the time out of view or forces it
+   to wrap awkwardly among the tags. */
+.txn-card-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; padding-left: 38px; }
 .txn-meta       { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .txn-cat-chip   { font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
 .txn-bank-tag   {
@@ -3638,7 +3699,8 @@ button { font-family: inherit; cursor: pointer; }
 }
 .txn-sms-tag    { font-size: 10px; background: var(--txn-green-pastel); color: var(--txn-green-dark); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
 .txn-user-tag   { font-size: 10px; background: var(--txn-gold-pastel); color: #7a5c0a; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-.txn-time       { font-size: 10px; color: var(--txn-muted); font-weight: 600; }
+.txn-corner     { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
+.txn-time       { font-size: 10px; color: var(--txn-muted); font-weight: 600; white-space: nowrap; }
 /* Running balance from the HDFC statement parser — small and muted since it's
    supplementary, but genuinely useful data that was previously parsed and unused. */
 .txn-balance    { font-size: 10.5px; color: var(--txn-muted); font-weight: 700; white-space: nowrap; flex-shrink: 0; }

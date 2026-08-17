@@ -3,16 +3,28 @@
 // transaction created on one device renders correctly on another without any shared local storage.
 
 export const CATEGORIES = [
-  { id: 'upi',       label: 'UPI',       icon: 'account_balance_wallet', color: '#e0345c' },
-  { id: 'bank',      label: 'Bank',      icon: 'account_balance',        color: '#c9a227' },
-  { id: 'food',      label: 'Food',      icon: 'restaurant',             color: '#16a34a' },
-  { id: 'shopping',  label: 'Shopping',  icon: 'shopping_cart',          color: '#7c6ae8' },
-  { id: 'transport', label: 'Transport', icon: 'directions_car',         color: '#0284c7' },
-  { id: 'utilities', label: 'Utilities', icon: 'bolt',                   color: '#ea580c' },
-  { id: 'manual',    label: 'Other',     icon: 'edit_note',              color: '#8a7175' },
+  { id: 'upi',        label: 'UPI',         icon: 'account_balance_wallet', color: '#e0345c' },
+  { id: 'bank',       label: 'Bank',        icon: 'account_balance',        color: '#c9a227' },
+  { id: 'food',       label: 'Food',        icon: 'restaurant',             color: '#16a34a' },
+  { id: 'veg',        label: 'Veg & Fruits', icon: 'nutrition',             color: '#65a30d' },
+  { id: 'milk',       label: 'Milk',        icon: 'local_drink',            color: '#2563eb' },
+  { id: 'shopping',   label: 'Shopping',    icon: 'shopping_cart',          color: '#7c6ae8' },
+  { id: 'transport',  label: 'Transport',   icon: 'directions_car',         color: '#0284c7' },
+  { id: 'utilities',  label: 'Utilities',   icon: 'bolt',                   color: '#ea580c' },
+  { id: 'investment',   label: 'Investment',    icon: 'trending_up',   color: '#0e7490' },
+  { id: 'subscription', label: 'Subscriptions', icon: 'subscriptions', color: '#c026d3' },
+  { id: 'manual',       label: 'Other',         icon: 'edit_note',     color: '#8a7175' },
 ]
 
 export const TRANSFER_META = { id: 'transfer', label: 'Transfer', icon: 'swap_horiz', color: '#64748b' }
+
+// HDFC statement exports carry a date only (DD/MM/YY, no time-of-day), so every HDFC-
+// imported transaction lands on midnight by construction — showing that as "12:00 am" reads
+// as a real recorded time when it's actually just an artifact of the source data. PhonePe
+// statements and manual entries DO carry a genuine time, so only HDFC imports are hidden.
+export function hasRealTime(txn) {
+  return !(txn.source === 'statement' && txn.bank === 'HDFC Bank')
+}
 
 // Reserved "category" value used to store the overall (non-per-category) monthly budget
 // in the same server-side budgets table as real per-category limits — see budget_get/

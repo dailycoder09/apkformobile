@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank, OVERALL_BUDGET_CATEGORY } from '../utils/txnMeta'
+import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank, OVERALL_BUDGET_CATEGORY, hasRealTime } from '../utils/txnMeta'
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
 import { detectRecurring } from '../utils/recurringDetection'
@@ -67,7 +67,31 @@ function formatINRShort(n) {
   return '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })
 }
 
+// True abbreviation (K/L/Cr) rather than just dropping decimals — for the tight 3-column
+// Spent/Received/Net rows (hero card, budget stats), where an "All time" total across
+// hundreds of transactions can run into 7+ digits and formatINRShort's full digit-grouped
+// form (e.g. "₹11,49,258") is still too wide to fit a third of a phone-width card without
+// wrapping mid-number.
+function formatINRCompact(n) {
+  const abs = Math.abs(n)
+  const trim = (v) => v.toFixed(2).replace(/\.?0+$/, '')
+  if (abs >= 1e7) return '₹' + trim(n / 1e7) + 'Cr'
+  if (abs >= 1e5) return '₹' + trim(n / 1e5) + 'L'
+  if (abs >= 1e3) return '₹' + trim(n / 1e3) + 'K'
+  return '₹' + Math.round(n)
+}
+
 function rangeStart(key) {
+  // "This month" specifically means the calendar month (1st through today) — same
+  // definition monthStats/the Monthly Budget card already use. It used to be a rolling
+  // 30-day window instead, so with a category filter active the Monthly Budget card and
+  // the "This month" hero card could show two different totals for what looked like the
+  // same period (e.g. Milk spend Aug 1–17 vs. spend across the last 30 days), which read
+  // as the filter being broken rather than two different windows quietly disagreeing.
+  if (key === 'month') {
+    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0)
+    return d.getTime()
+  }
   const opt = ANALYTICS_RANGES.find(o => o.key === key)
   const d = new Date(); d.setHours(0, 0, 0, 0)
   if (!opt.days) return 0
@@ -77,19 +101,17 @@ function rangeStart(key) {
 
 const EMPTY_FORM = { id: null, amount: '', type: 'debit', category: 'manual', merchant: '', note: '', date: '', bank: '', fromBank: '', toBank: '' }
 
-const TYPE_OPTIONS = [
-  { value: 'debit', label: 'Spent' },
-  { value: 'credit', label: 'Received' },
-  { value: 'transfer', label: 'Transfer' },
-]
-
 const SOURCE_OPTIONS = [
   { value: 'manual', label: 'Manual' },
   { value: 'statement', label: 'Statement' },
 ]
 
+// Type (Spent/Received/Transfer) used to be BOTH a Tabs quick-toggle above the list AND its
+// own multi-select "Type" group inside the Filters panel — two independent controls doing
+// the same job, out of sync with each other (picking the "Spent" tab didn't touch
+// filters.types and vice versa). Consolidated into just the Tabs, extended to include
+// Transfer so nothing the old Type filter could do is lost.
 const EMPTY_FILTERS = {
-  types: [], typesExclude: false,
   categories: [], categoriesExclude: false,
   sources: [], sourcesExclude: false,
   banks: [], banksExclude: false,
@@ -100,10 +122,6 @@ const EMPTY_FILTERS = {
 // an empty selection means "no filter" regardless of the include/exclude toggle.
 function applyTxnFilters(list, filters, dateFromMs, dateToMs) {
   return list.filter(t => {
-    if (filters.types.length) {
-      const match = filters.types.includes(t.type)
-      if (filters.typesExclude ? match : !match) return false
-    }
     if (filters.categories.length) {
       const match = filters.categories.includes(getCategoryMeta(t).id)
       if (filters.categoriesExclude ? match : !match) return false
@@ -158,12 +176,12 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [budgets, setBudgets] = useState({})
   const [budgetSheet, setBudgetSheet] = useState(null) // null | { category, label }
   const [budgetInput, setBudgetInput] = useState('')
-  const [showAnalytics, setShowAnalytics] = useState(false)
   const [analyticsRange, setAnalyticsRange] = useState('month')
   const [customCategories, setCustomCategories] = useState(() => loadCustomCategories(session.userId))
   const [banks, setBanks] = useState(() => loadBanks(session.userId, []))
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [showFilters, setShowFilters] = useState(false)
+  const [showCatBudgets, setShowCatBudgets] = useState(false)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -360,7 +378,19 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     e.target.value = '' // allow re-selecting the same file later
     if (!file) return
     try {
-      const text = await file.text()
+      const isExcel = /\.xlsx?$/i.test(file.name) || /excel|spreadsheetml/i.test(file.type)
+      // Excel workbooks aren't plain text — convert the first sheet to the same CSV
+      // shape the format parsers below already expect, so PhonePe/HDFC detection and
+      // parsing logic stays identical regardless of which file type came in.
+      const text = isExcel
+        ? await (async () => {
+            const { read, utils } = await import('xlsx')
+            const buf = await file.arrayBuffer()
+            const workbook = read(buf, { type: 'array' })
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]]
+            return utils.sheet_to_csv(firstSheet)
+          })()
+        : await file.text()
       const format = STATEMENT_FORMATS.find(f => f.detect(text))
       if (!format) {
         window.alert('Couldn\'t recognize this statement format — supported: PhonePe, HDFC Bank')
@@ -380,7 +410,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
       })
       window.alert(`Imported ${parsed.length} transactions from the ${format.name} statement.`)
     } catch (err) {
-      window.alert('Could not read that file — make sure it\'s an unmodified statement CSV export.')
+      window.alert('Could not read that file — make sure it\'s an unmodified statement CSV or Excel export.')
     }
   }
 
@@ -388,23 +418,46 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   // custom date range) apply across the board — the list below AND every analytics/
   // summary calculation derive from this same filtered set, per the family's request
   // that e.g. excluding "Transfer" recompute spending totals without transfers.
+  //
+  // The "This week/month/3 months/year/all time" range dropdown above the charts used to
+  // ONLY scope the charts/hero card — the list below stayed unfiltered by it, so e.g.
+  // picking "This month" made the hero card show 3 transactions while the full list below
+  // kept showing months of history. Folded in here as an additional lower bound (combined
+  // with the custom date range via the later of the two starts) so the range dropdown now
+  // consistently scopes everything on the page, not just the charts.
   const dateFromMs = dateFrom ? new Date(dateFrom).setHours(0, 0, 0, 0) : null
   const dateToMs   = dateTo ? new Date(dateTo).setHours(23, 59, 59, 999) : null
+  const rangeStartMs = rangeStart(analyticsRange)
+  const effectiveFromMs = rangeStartMs > 0 ? Math.max(dateFromMs ?? 0, rangeStartMs) : dateFromMs
+  // The All/Spent/Received/Transfer tab now feeds this same pipeline (see EMPTY_FILTERS
+  // note above) so the hero card and charts stay in sync with it too, not just the list.
   const filteredTxns = useMemo(
-    () => applyTxnFilters(txns, filters, dateFromMs, dateToMs),
-    [txns, filters, dateFromMs, dateToMs]
+    () => applyTxnFilters(txns, filters, effectiveFromMs, dateToMs).filter(t => tab === 'all' || t.type === tab),
+    [txns, filters, effectiveFromMs, dateToMs, tab]
   )
   const activeFilterCount =
-    (filters.types.length ? 1 : 0) + (filters.categories.length ? 1 : 0) +
+    (filters.categories.length ? 1 : 0) +
     (filters.sources.length ? 1 : 0) + (filters.banks.length ? 1 : 0) +
     (dateFrom || dateTo ? 1 : 0)
 
-  const filtered    = filteredTxns.filter(t => tab === 'all' || t.type === tab)
-  const visibleTxns = filtered.slice(0, visibleCount)
+  const visibleTxns = filteredTxns.slice(0, visibleCount)
   const groups      = groupByDate(visibleTxns)
 
-  const totalDebit  = filteredTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)
-  const totalCredit = filteredTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0)
+  // Real account balance, straight from the bank — the latest "Closing Balance" seen per
+  // bank across ALL imported transactions (not the active filter, since your actual balance
+  // doesn't change just because you're looking at a filtered view). Only statement imports
+  // carry a balance (manual entries and PhonePe never do), so this is only as fresh as the
+  // last statement you uploaded — not a live figure.
+  const accountBalances = useMemo(() => {
+    const latestByBank = {}
+    txns.forEach(t => {
+      if (t.balance == null || !t.bank) return
+      if (!latestByBank[t.bank] || t.date > latestByBank[t.bank].date) {
+        latestByBank[t.bank] = { date: t.date, balance: t.balance }
+      }
+    })
+    return Object.entries(latestByBank).map(([bank, v]) => ({ bank, balance: v.balance, date: v.date }))
+  }, [txns])
 
   // Distinct bank/account names actually present, for the Bank filter chips
   const filterBankOptions = useMemo(
@@ -436,17 +489,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     return { spent, income, net: income - spent, categories, label: now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) }
   }, [filteredTxns])
 
-  const donutGradient = useMemo(() => {
-    if (!monthStats.categories.length) return null
-    let cumulative = 0
-    const stops = monthStats.categories.map(c => {
-      const from = cumulative
-      cumulative += c.pct
-      return `${c.color} ${from}% ${cumulative}%`
-    })
-    return `conic-gradient(${stops.join(', ')})`
-  }, [monthStats.categories])
-
   // Month-over-month spend change — always compares full calendar months, independent of the analytics range filter
   const momChange = useMemo(() => {
     const now = new Date()
@@ -459,10 +501,10 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   }, [txns])
 
   // Period-filtered analytics: trend, category/bank breakdowns, and quick-glance stats.
-  // Scoped by both the analyticsRange dropdown AND the deep filters above (AND-combined).
+  // filteredTxns already has the analyticsRange lower bound baked in (see above), so this
+  // is just an alias — kept for readability inside this block, not a second filter pass.
   const analyticsData = useMemo(() => {
-    const start = rangeStart(analyticsRange)
-    const inRange = filteredTxns.filter(t => t.date >= start)
+    const inRange = filteredTxns
     const dayMap = {}
     inRange.forEach(t => {
       if (t.type === 'transfer') return
@@ -489,6 +531,10 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     })
     const topCategories = Object.values(byCategory).sort((a, b) => b.amount - a.amount).slice(0, 6)
     const topMax = Math.max(1, ...topCategories.map(c => c.amount))
+    const rangeSpend = Object.values(byCategory).reduce((s, c) => s + c.amount, 0)
+    const categories = Object.values(byCategory)
+      .map(c => ({ ...c, pct: rangeSpend ? Math.round((c.amount / rangeSpend) * 100) : 0 }))
+      .sort((a, b) => b.amount - a.amount)
 
     const byBank = {}
     inRange.filter(t => t.type === 'debit').forEach(t => {
@@ -517,8 +563,34 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
       ? Math.round(((totalCreditInRange - totalDebitInRange) / totalCreditInRange) * 100)
       : null
 
-    return { buckets, bucketMax, topCategories, topMax, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate }
+    return { buckets, bucketMax, topCategories, topMax, categories, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate, totalDebitInRange, totalCreditInRange, count: inRange.length }
   }, [filteredTxns, analyticsRange])
+
+  // The donut used to be pinned to monthStats (always "this calendar month") even though
+  // it sits right next to range-scoped cards sharing the same range selector above —
+  // picking "All time" changed the trend/top-categories/bank cards but not this one,
+  // which read as the filter being broken. Now driven by the same analyticsData.categories.
+  const donutGradient = useMemo(() => {
+    if (!analyticsData.categories.length) return null
+    let cumulative = 0
+    const stops = analyticsData.categories.map(c => {
+      const from = cumulative
+      cumulative += c.pct
+      return `${c.color} ${from}% ${cumulative}%`
+    })
+    return `conic-gradient(${stops.join(', ')})`
+  }, [analyticsData.categories])
+
+  // SVG polyline points for the spending-trend line chart — a 0..100 x 4..36 y viewBox,
+  // padded off the top/bottom edges so the line's stroke never clips.
+  const trendLine = useMemo(() => {
+    const { buckets, bucketMax } = analyticsData
+    if (buckets.length < 2) return null
+    const stepX = 100 / (buckets.length - 1)
+    const toY = (v) => 36 - (v / bucketMax) * 32
+    const toPoints = (key) => buckets.map((b, i) => `${(i * stepX).toFixed(2)},${toY(b[key]).toFixed(2)}`).join(' ')
+    return { debit: toPoints('debit'), credit: toPoints('credit') }
+  }, [analyticsData])
 
   const overallBudget = budgets[OVERALL_BUDGET_CATEGORY] ?? DEFAULT_BUDGET
   const budgetPct = overallBudget ? Math.min(100, Math.round((monthStats.spent / overallBudget) * 100)) : 0
@@ -565,7 +637,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
         <input
           ref={statementInputRef}
           type="file"
-          accept=".csv,text/csv"
+          accept=".csv,text/csv,.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           style={{ display: 'none' }}
           onChange={handleStatementUpload}
         />
@@ -597,232 +669,215 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <div className="txn-budget-bar">
             <span className={`txn-budget-bar-fill${budgetOver ? ' over' : ''}`} style={{ width: `${budgetPct}%` }} />
           </div>
-          {/* This month's income/net — the only place these two figures live, now that
-              the separate "this month at a glance" tile row (which duplicated the
-              Spent/Net summary bar below) has been folded in here instead of removed
-              outright. */}
-          <div className="txn-budget-row txn-budget-row--secondary">
-            <span className="txn-budget-income">Income {formatINRShort(monthStats.income)}</span>
-            <span className={`txn-budget-net${monthStats.net >= 0 ? ' good' : ' bad'}`}>Net {formatINRShort(monthStats.net)}</span>
+
+          {/* Spent/Received/Net used to also live in a separate "Summary bar" card right
+              below this one, showing near-identical numbers — folded into one card here
+              instead of two that said the same thing twice. */}
+          <div className="txn-budget-stats">
+            <div className="txn-budget-stat debit">
+              <span className="txn-budget-stat-label">Spent</span>
+              <span className="txn-budget-stat-val">{formatINRCompact(monthStats.spent)}</span>
+            </div>
+            <div className="txn-budget-stat credit">
+              <span className="txn-budget-stat-label">Received</span>
+              <span className="txn-budget-stat-val">{formatINRCompact(monthStats.income)}</span>
+            </div>
+            <div className={`txn-budget-stat ${monthStats.net >= 0 ? 'credit' : 'debit'}`}>
+              <span className="txn-budget-stat-label">Net</span>
+              <span className="txn-budget-stat-val">{formatINRCompact(Math.abs(monthStats.net))}</span>
+            </div>
           </div>
         </div>
 
-        {/* Per-category budgets — same server-synced budgets map as the overall card
-            above, keyed by real category id instead of OVERALL_BUDGET_CATEGORY */}
-        {budgetCategories.length > 0 && (
-          <div className="txn-cat-budgets-card">
-            <div className="txn-donut-title">Category Budgets — {monthStats.label}</div>
-            {budgetCategories.map(c => {
-              const hasLimit = c.limit != null
-              const pct = hasLimit ? Math.min(100, Math.round((c.amount / c.limit) * 100)) : 0
-              const over = hasLimit && c.amount > c.limit
-              return (
-                <div key={c.id} className="txn-cat-budget-row">
-                  <div className="txn-cat-budget-icon" style={{ background: `${c.color}22` }}>
-                    <span className="material-symbols-outlined" style={{ color: c.color }}>{c.icon}</span>
-                  </div>
-                  <div className="txn-cat-budget-info">
-                    <div className="txn-cat-budget-top">
-                      <span className="txn-cat-budget-name">{c.label}</span>
-                      <span className="txn-cat-budget-amt">
-                        {hasLimit ? `${formatINRShort(c.amount)} / ${formatINRShort(c.limit)}` : 'No budget set'}
-                      </span>
-                    </div>
-                    <div className="txn-cat-budget-bar">
-                      <span className={`txn-cat-budget-fill${over ? ' over' : ''}`} style={{ width: `${hasLimit ? pct : 0}%` }} />
-                    </div>
-                  </div>
-                  <button className="txn-cat-budget-edit" onClick={() => openBudgetSheet(c.id, c.label)} aria-label={`Set ${c.label} budget`}>
-                    <span className="material-symbols-outlined">{hasLimit ? 'edit' : 'add'}</span>
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-        )}
+        {/* Analytics — always visible now (no expand step needed to see charts) */}
+        <div className="txn-charts-section">
+          <label className="txn-analytics-filter">
+            <span className="material-symbols-outlined">calendar_month</span>
+            <select value={analyticsRange} onChange={e => setAnalyticsRange(e.target.value)}>
+              {ANALYTICS_RANGES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+            </select>
+          </label>
 
-        {/* Recurring payments summary — detected purely client-side from the loaded
-            transaction history, no server round-trip */}
-        {recurring.groups.length > 0 && (
-          <div className="txn-recurring-card">
-            <div className="txn-recurring-icon"><span className="material-symbols-outlined">autorenew</span></div>
-            <div className="txn-recurring-info">
-              <span className="txn-recurring-label">
-                {recurring.groups.length} Recurring Payment{recurring.groups.length > 1 ? 's' : ''}
-              </span>
-              <span className="txn-recurring-sub">
-                {recurring.groups.map(g => g.merchant).slice(0, 3).join(', ')}{recurring.groups.length > 3 ? '…' : ''}
+          {/* Quick-glance stat tiles */}
+          <div className="txn-stat-grid">
+            <div className="txn-stat-card">
+              <span className="txn-stat-label">Avg Daily Spend</span>
+              <span className="txn-stat-value">{formatINRShort(analyticsData.avgDailySpend)}</span>
+            </div>
+            <div className="txn-stat-card">
+              <span className="txn-stat-label">Biggest Expense</span>
+              {analyticsData.biggestExpense ? (
+                <>
+                  <span className="txn-stat-value">{formatINRShort(analyticsData.biggestExpense.amount)}</span>
+                  <span className="txn-stat-sub">{analyticsData.biggestExpense.merchant}</span>
+                </>
+              ) : <span className="txn-stat-value">—</span>}
+            </div>
+            <div className="txn-stat-card">
+              <span className="txn-stat-label">Vs Last Month</span>
+              <span className={`txn-stat-value${momChange == null ? '' : momChange > 0 ? ' bad' : ' good'}`}>
+                {momChange == null ? '—' : `${momChange > 0 ? '+' : ''}${momChange}%`}
               </span>
             </div>
-            <span className="txn-recurring-amt">{formatINRShort(recurring.totalMonthly)}/mo</span>
-          </div>
-        )}
-
-        {/* Summary bar */}
-        <div className="txn-summary">
-          <div className="txn-summary-item debit">
-            <span className="txn-summary-label">Spent</span>
-            <span className="txn-summary-val">{formatINR(totalDebit)}</span>
-          </div>
-          <div className="txn-summary-divider" />
-          <div className="txn-summary-item credit">
-            <span className="txn-summary-label">Received</span>
-            <span className="txn-summary-val">{formatINR(totalCredit)}</span>
-          </div>
-          <div className="txn-summary-divider" />
-          <div className={`txn-summary-item ${totalCredit - totalDebit >= 0 ? 'credit' : 'debit'}`}>
-            <span className="txn-summary-label">Net</span>
-            <span className="txn-summary-val">{formatINR(Math.abs(totalCredit - totalDebit))}</span>
-          </div>
-        </div>
-
-        {/* Spending categories donut */}
-        <div className="txn-donut-card">
-          <div className="txn-donut-title">Spending Categories — {monthStats.label}</div>
-          {monthStats.categories.length === 0 ? (
-            <p className="txn-donut-empty">No spending recorded yet this month.</p>
-          ) : (
-            <div className="txn-donut-body">
-              <div className="txn-donut-ring" style={{ background: donutGradient }}>
-                <div className="txn-donut-hole">
-                  <span className="material-symbols-outlined">pie_chart</span>
-                </div>
+            {recurring.groups.length > 0 && (
+              <div className="txn-stat-card">
+                <span className="txn-stat-label">Recurring</span>
+                <span className="txn-stat-value">{formatINRShort(recurring.totalMonthly)}/mo</span>
+                <span className="txn-stat-sub">{recurring.groups.length} payment{recurring.groups.length !== 1 ? 's' : ''}</span>
               </div>
-              <div className="txn-donut-legend">
-                {monthStats.categories.slice(0, 5).map(c => (
-                  <div key={c.id} className="txn-donut-legend-item">
-                    <span className="txn-donut-dot" style={{ background: c.color }} />
-                    <span className="txn-donut-legend-name">{c.label}</span>
-                    <span className="txn-donut-legend-pct">{c.pct}%</span>
-                  </div>
-                ))}
-              </div>
+            )}
+            <div className="txn-stat-card">
+              <span className="txn-stat-label">Savings Rate</span>
+              <span className={`txn-stat-value${analyticsData.savingsRate == null ? '' : analyticsData.savingsRate >= 0 ? ' good' : ' bad'}`}>
+                {analyticsData.savingsRate == null ? '—' : `${analyticsData.savingsRate}%`}
+              </span>
             </div>
-          )}
-        </div>
-
-        {/* Detailed analytics */}
-        <div>
-          <button className="txn-analytics-toggle" onClick={() => setShowAnalytics(v => !v)}>
-            <span className="txn-analytics-toggle-icon"><span className="material-symbols-outlined">bar_chart</span></span>
-            Detailed Analytics
-            <span className={`material-symbols-outlined txn-analytics-chevron${showAnalytics ? ' open' : ''}`}>expand_more</span>
-          </button>
-
-          {showAnalytics && (
-            <div className="txn-analytics" style={{ marginTop: 12 }}>
-              <label className="txn-analytics-filter">
-                <span className="material-symbols-outlined">calendar_month</span>
-                <select value={analyticsRange} onChange={e => setAnalyticsRange(e.target.value)}>
-                  {ANALYTICS_RANGES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-                </select>
-              </label>
-
-              {/* Quick-glance stat tiles */}
-              <div className="txn-stat-grid">
-                <div className="txn-stat-card">
-                  <span className="txn-stat-label">Avg Daily Spend</span>
-                  <span className="txn-stat-value">{formatINRShort(analyticsData.avgDailySpend)}</span>
-                </div>
-                <div className="txn-stat-card">
-                  <span className="txn-stat-label">Biggest Expense</span>
-                  {analyticsData.biggestExpense ? (
-                    <>
-                      <span className="txn-stat-value">{formatINRShort(analyticsData.biggestExpense.amount)}</span>
-                      <span className="txn-stat-sub">{analyticsData.biggestExpense.merchant}</span>
-                    </>
-                  ) : <span className="txn-stat-value">—</span>}
-                </div>
-                <div className="txn-stat-card">
-                  <span className="txn-stat-label">Vs Last Month</span>
-                  <span className={`txn-stat-value${momChange == null ? '' : momChange > 0 ? ' bad' : ' good'}`}>
-                    {momChange == null ? '—' : `${momChange > 0 ? '+' : ''}${momChange}%`}
-                  </span>
-                </div>
-                <div className="txn-stat-card">
-                  <span className="txn-stat-label">Savings Rate</span>
-                  <span className={`txn-stat-value${analyticsData.savingsRate == null ? '' : analyticsData.savingsRate >= 0 ? ' good' : ' bad'}`}>
-                    {analyticsData.savingsRate == null ? '—' : `${analyticsData.savingsRate}%`}
-                  </span>
-                </div>
+            {/* Real account balance — straight from the bank's own statement, not computed
+                by us, so it matches your banking app exactly (as of your last upload). */}
+            {accountBalances.map(b => (
+              <div key={b.bank} className="txn-stat-card">
+                <span className="txn-stat-label">{b.bank}</span>
+                <span className="txn-stat-value">{formatINR(b.balance)}</span>
               </div>
+            ))}
+          </div>
 
-              <div>
-                <h3 className="txn-analytics-title">Spending vs Income trend</h3>
-                <div className="txn-trend-chart">
-                  {analyticsData.buckets.map(b => (
-                    <div key={b.key} className="txn-trend-bar-wrap" title={`Spent ${formatINR(b.debit)}, Received ${formatINR(b.credit)}`}>
-                      <div className="txn-trend-bar">
-                        <span className="txn-trend-seg--debit" style={{ height: `${(b.debit / analyticsData.bucketMax) * 100}%` }} />
-                        <span className="txn-trend-seg--credit" style={{ height: `${(b.credit / analyticsData.bucketMax) * 100}%` }} />
+          {/* Multiple chart cards, side by side on wider screens */}
+          <div className="txn-charts-grid">
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">Spending Categories — {ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label}</h3>
+              {analyticsData.categories.length === 0 ? (
+                <p className="txn-donut-empty">No spending recorded in this period.</p>
+              ) : (
+                <div className="txn-donut-body">
+                  <div className="txn-donut-ring" style={{ background: donutGradient }}>
+                    <div className="txn-donut-hole">
+                      <span className="material-symbols-outlined">pie_chart</span>
+                    </div>
+                  </div>
+                  <div className="txn-donut-legend">
+                    {analyticsData.categories.map(c => (
+                      <div key={c.id} className="txn-donut-legend-item">
+                        <span className="txn-donut-dot" style={{ background: c.color }} />
+                        <span className="txn-donut-legend-name">{c.label}</span>
+                        <span className="txn-donut-legend-pct">{c.pct}%</span>
                       </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="txn-trend-legend">
-                  <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-rose)' }} />Spent</span>
-                  <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-green)' }} />Received</span>
-                </div>
-              </div>
-
-              <div>
-                <h3 className="txn-analytics-title">Top categories</h3>
-                {analyticsData.topCategories.length === 0 ? (
-                  <p className="txn-donut-empty">Nothing in this period.</p>
-                ) : analyticsData.topCategories.map(c => (
-                  <div key={c.id} className="txn-breakdown-row">
-                    <span className="txn-breakdown-label">{c.label}</span>
-                    <div className="txn-breakdown-bar">
-                      <span className="txn-breakdown-fill" style={{ width: `${(c.amount / analyticsData.topMax) * 100}%`, background: c.color }} />
-                    </div>
-                    <span className="txn-breakdown-val">{formatINRShort(c.amount)}</span>
+                    ))}
                   </div>
-                ))}
-              </div>
-
-              <div>
-                <h3 className="txn-analytics-title">By bank / account</h3>
-                {analyticsData.bankBreakdown.length === 0 ? (
-                  <p className="txn-donut-empty">Nothing in this period.</p>
-                ) : analyticsData.bankBreakdown.map(b => (
-                  <div key={b.bank} className="txn-breakdown-row">
-                    <span className="txn-breakdown-label">{b.bank}</span>
-                    <div className="txn-breakdown-bar">
-                      <span className="txn-breakdown-fill" style={{ width: `${(b.amount / analyticsData.bankMax) * 100}%` }} />
-                    </div>
-                    <span className="txn-breakdown-val">{formatINRShort(b.amount)}</span>
-                  </div>
-                ))}
-              </div>
+                </div>
+              )}
             </div>
-          )}
+
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">Spending vs Income Trend</h3>
+              {!trendLine ? (
+                <p className="txn-donut-empty">Not enough data yet.</p>
+              ) : (
+                <>
+                  <svg className="txn-line-chart" viewBox="0 0 100 40" preserveAspectRatio="none">
+                    <polyline className="txn-line-chart-line txn-line-chart-line--credit" points={trendLine.credit} />
+                    <polyline className="txn-line-chart-line txn-line-chart-line--debit" points={trendLine.debit} />
+                  </svg>
+                  <div className="txn-trend-legend">
+                    <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-rose)' }} />Spent</span>
+                    <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-green)' }} />Received</span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">Top Categories</h3>
+              {analyticsData.topCategories.length === 0 ? (
+                <p className="txn-donut-empty">Nothing in this period.</p>
+              ) : analyticsData.topCategories.map(c => (
+                <div key={c.id} className="txn-breakdown-row">
+                  <span className="txn-breakdown-label">{c.label}</span>
+                  <div className="txn-breakdown-bar">
+                    <span className="txn-breakdown-fill" style={{ width: `${(c.amount / analyticsData.topMax) * 100}%`, background: c.color }} />
+                  </div>
+                  <span className="txn-breakdown-val">{formatINRShort(c.amount)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">By Bank / Account</h3>
+              {analyticsData.bankBreakdown.length === 0 ? (
+                <p className="txn-donut-empty">Nothing in this period.</p>
+              ) : analyticsData.bankBreakdown.map(b => (
+                <div key={b.bank} className="txn-breakdown-row">
+                  <span className="txn-breakdown-label">{b.bank}</span>
+                  <div className="txn-breakdown-bar">
+                    <span className="txn-breakdown-fill" style={{ width: `${(b.amount / analyticsData.bankMax) * 100}%` }} />
+                  </div>
+                  <span className="txn-breakdown-val">{formatINRShort(b.amount)}</span>
+                </div>
+              ))}
+            </div>
+
+            {budgetCategories.length > 0 && (
+              <div className="txn-chart-card">
+                <button className="txn-chart-card-toggle" onClick={() => setShowCatBudgets(v => !v)}>
+                  <h3 className="txn-analytics-title">Category Budgets — {monthStats.label}</h3>
+                  <span className={`material-symbols-outlined txn-analytics-chevron${showCatBudgets ? ' open' : ''}`}>expand_more</span>
+                </button>
+                {showCatBudgets && (
+                <div className="txn-cat-budgets-list">
+                  {budgetCategories.map(c => {
+                    const hasLimit = c.limit != null
+                    const pct = hasLimit ? Math.min(100, Math.round((c.amount / c.limit) * 100)) : 0
+                    const over = hasLimit && c.amount > c.limit
+                    return (
+                      <div key={c.id} className="txn-cat-budget-row">
+                        <div className="txn-cat-budget-icon" style={{ background: `${c.color}22` }}>
+                          <span className="material-symbols-outlined" style={{ color: c.color }}>{c.icon}</span>
+                        </div>
+                        <div className="txn-cat-budget-info">
+                          <div className="txn-cat-budget-top">
+                            <span className="txn-cat-budget-name">{c.label}</span>
+                            <span className="txn-cat-budget-amt">
+                              {hasLimit ? `${formatINRShort(c.amount)} / ${formatINRShort(c.limit)}` : 'No budget set'}
+                            </span>
+                          </div>
+                          <div className="txn-cat-budget-bar">
+                            <span className={`txn-cat-budget-fill${over ? ' over' : ''}`} style={{ width: `${hasLimit ? pct : 0}%` }} />
+                          </div>
+                        </div>
+                        <button className="txn-cat-budget-edit" onClick={() => openBudgetSheet(c.id, c.label)} aria-label={`Set ${c.label} budget`}>
+                          <span className="material-symbols-outlined">{hasLimit ? 'edit' : 'add'}</span>
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Tab strip */}
-        <div className="txn-tabs">
-          {['all','debit','credit'].map(t => (
-            <button key={t} className={`txn-tab${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>
-              {t === 'all' ? 'All' : t === 'debit' ? 'Spent' : 'Received'}
-            </button>
-          ))}
-        </div>
-
-        {/* Filters — type/category/source/bank multi-select + date range, all AND-combined
-            and feeding both the list below and every analytics/summary figure above */}
-        <div>
-          <button className="txn-analytics-toggle" onClick={() => setShowFilters(v => !v)}>
-            <span className="txn-analytics-toggle-icon"><span className="material-symbols-outlined">filter_list</span></span>
+        {/* Type tabs (compact, inline with the Filters toggle) + filters — type/category/
+            source/bank multi-select + date range, all AND-combined and feeding both the
+            list below and every analytics/summary figure above */}
+        <div className="txn-controls-row">
+          <div className="txn-tabs-inline">
+            {['all','debit','credit','transfer'].map(t => (
+              <button key={t} className={`txn-tab-inline${tab === t ? ' active' : ''}`} onClick={() => setTab(t)}>
+                {t === 'all' ? 'All' : t === 'debit' ? 'Spent' : t === 'credit' ? 'Received' : 'Transfer'}
+              </button>
+            ))}
+          </div>
+          <button className="txn-filters-toggle" onClick={() => setShowFilters(v => !v)}>
+            <span className="material-symbols-outlined">filter_list</span>
             Filters{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
             <span className={`material-symbols-outlined txn-analytics-chevron${showFilters ? ' open' : ''}`}>expand_more</span>
           </button>
+        </div>
 
+        <div>
           {showFilters && (
             <div className="txn-filter-panel">
-              <FilterGroup label="Type" options={TYPE_OPTIONS}
-                selected={filters.types} exclude={filters.typesExclude}
-                onToggleOption={v => toggleFilterOption('types', v)}
-                onToggleMode={() => toggleFilterMode('typesExclude')} />
-
               <FilterGroup label="Category" options={filterCategoryOptions}
                 selected={filters.categories} exclude={filters.categoriesExclude}
                 onToggleOption={v => toggleFilterOption('categories', v)}
@@ -858,6 +913,35 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           )}
         </div>
 
+        {/* Hero card — live totals reflecting BOTH the Filters panel AND the analytics range
+            dropdown above the charts carousel (previously only tracked the Filters panel,
+            which read as "broken" since changing the range dropdown visibly changes the
+            charts but silently did nothing here). Shown whenever either one departs from
+            its default, and uses the exact same analyticsData the charts above already use
+            so the numbers always agree. */}
+        {(activeFilterCount > 0 || analyticsRange !== 'month') && (
+          <div className="txn-hero-card">
+            <div className="txn-hero-top">
+              <span className="txn-hero-label">{ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label} Results</span>
+              <span className="txn-hero-count">{analyticsData.count} transaction{analyticsData.count !== 1 ? 's' : ''}</span>
+            </div>
+            <div className="txn-hero-stats">
+              <div className="txn-hero-stat debit">
+                <span className="txn-hero-stat-label">Spent</span>
+                <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalDebitInRange)}</span>
+              </div>
+              <div className="txn-hero-stat credit">
+                <span className="txn-hero-stat-label">Received</span>
+                <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalCreditInRange)}</span>
+              </div>
+              <div className={`txn-hero-stat ${analyticsData.totalCreditInRange - analyticsData.totalDebitInRange >= 0 ? 'credit' : 'debit'}`}>
+                <span className="txn-hero-stat-label">Net</span>
+                <span className="txn-hero-stat-val">{formatINRCompact(Math.abs(analyticsData.totalCreditInRange - analyticsData.totalDebitInRange))}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Transaction list */}
         <div className="txn-list-card">
           {txns.length === 0 && (
@@ -867,7 +951,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               <p className="txn-empty-sub">Tap + to add a transaction</p>
             </div>
           )}
-          {txns.length > 0 && filtered.length === 0 && (
+          {txns.length > 0 && filteredTxns.length === 0 && (
             <div className="txn-empty">
               <span className="material-symbols-outlined txn-empty-icon">filter_alt_off</span>
               <p>No transactions match your filters</p>
@@ -906,9 +990,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                       </div>
                     </div>
 
-                    {/* Truncated to 2 lines here — tapping the card (openEdit) already
-                        surfaces the full text in the Note field, so nothing is lost. */}
-                    {hasDesc && <p className="txn-desc clamped">{t.description}</p>}
+                    {hasDesc && <p className="txn-desc">{t.description}</p>}
 
                     <div className="txn-card-bottom">
                       <span className="txn-meta">
@@ -922,18 +1004,20 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                             <span className="material-symbols-outlined">autorenew</span>Recurring
                           </span>
                         )}
-                        <span className="txn-time">{formatTime(t.date)}</span>
                       </span>
-                      {t.balance != null && <span className="txn-balance">Bal {formatINRShort(t.balance)}</span>}
+                      <span className="txn-corner">
+                        {t.balance != null && <span className="txn-balance">Bal {formatINRShort(t.balance)}</span>}
+                        {hasRealTime(t) && <span className="txn-time">{formatTime(t.date)}</span>}
+                      </span>
                     </div>
                   </div>
                 )
               })}
             </div>
           ))}
-          {filtered.length > visibleCount && (
+          {filteredTxns.length > visibleCount && (
             <button className="txn-load-more" onClick={() => setVisibleCount(v => v + PAGE_SIZE)}>
-              Load 15 more ({filtered.length - visibleCount} remaining)
+              Load 15 more ({filteredTxns.length - visibleCount} remaining)
             </button>
           )}
         </div>

@@ -78,10 +78,14 @@ function extractMerchant(narration) {
 }
 
 // Most UPI-/IMPS- narrations end with a free-text remark the account holder typed in at
-// payment time (the last hyphen-separated segment). Verified against a real 87-row sample:
-// the account holder has been using this field as an informal category tag for months —
-// e.g. "FOOD MILK", "FOOD VEGETABLE", "FOOD CHICKEN" all show up repeatedly for genuine
-// grocery/food payments, matching the app's existing 'food' category (see txnMeta.js).
+// payment time — checked via the last one or two hyphen-separated segments (see
+// extractCategory below; the account holder's own "FOOD-CHOTU" style tags split the word
+// "FOOD" and the sub-tag across two segments, so a single last-segment check missed them).
+// Verified against a real 87-row sample: the account holder has been using this field as an
+// informal category tag for months — e.g. "FOOD MILK", "FOOD VEGETABLE", "FOOD CHICKEN" all
+// show up repeatedly for genuine grocery/food payments. Originally these all mapped to one
+// generic 'food' category; split further per explicit request into 'milk' and 'veg'
+// (vegetables/fruit) sub-categories, with any other "FOOD <tag>" still falling back to 'food'.
 //
 // Everything else in the remark field is either generic bank/UPI boilerplate ("PAYMENT FROM
 // PHONE", "IMPS TRANSACTION", "PAY TO BHARATPE ME", bare "UPI"/"UPIINTENT") or, in a cluster
@@ -95,7 +99,6 @@ function extractMerchant(narration) {
 // education/school-fees bucket, so there is nothing correct to map it onto. Leaving it
 // 'manual' here is a deliberate "no fit yet" rather than a missed case — force-fitting it
 // into e.g. 'shopping' or 'utilities' would just be a different kind of wrong guess.
-const FOOD_REMARK_RE = /^FOOD\b/i
 
 // Fallback signals checked only when the trailing remark above doesn't already resolve a
 // category — these look at the *whole* narration (merchant name + VPA), because the giveaway
@@ -115,16 +118,38 @@ const FOOD_REMARK_RE = /^FOOD\b/i
 //   prepaid mobile/DTH recharge — a utility-style bill payment.
 const UTILITY_KEYWORD_RE = /ATRIA CONVERGENCE|ACTCORP|FIBERNET|BROADBAND|ELECTRICITY|\bRECHARGE\b/i
 
-// - "BLINKIT": real row "UPI-BLINKIT-BLINKIT.RZP@HDFCBANK-...", a well-known Indian
-//   quick-commerce grocery delivery app.
+// - "GROWW": a well-known Indian investing app (stocks/mutual funds) — money moving there
+//   is an investment, not spending.
+// - "ZERODHA": another major Indian stock-broking platform, same reasoning as Groww (real
+//   rows: "...-ZERODHA BROKING LIMI...").
+const INVESTMENT_KEYWORD_RE = /\bGROWW\b|ZERODHA/i
+
 // - "SPAR"/"HYPERMARKET": real row "UPI-SPAR HYPERMARKETS-LANDMARKSPAR@YBL-...". SPAR is a
 //   well-known supermarket/hypermarket chain; "HYPERMARKET" kept as a generic fragment too.
-const FOOD_KEYWORD_RE = /\bBLINKIT\b|\bSPAR\b|HYPERMARKET/i
+const FOOD_KEYWORD_RE = /\bSPAR\b|HYPERMARKET/i
 
-// - "RETAIL": real row (x2) "UPI-LMD RETAIL SPECTRUM-...-PAY TO LMD RETAIL". No food-specific
-//   context (unlike a "hypermarket"), so a generic retail merchant is treated as shopping
-//   rather than food.
-const SHOPPING_KEYWORD_RE = /\bRETAIL\b/i
+// - "RETAIL": real row (x2) "UPI-LMD RETAIL SPECTRUM-...-PAY TO LMD RETAIL".
+// - "LULU": a well-known Indian shopping-mall chain — matched as a bare fragment (not just
+//   "LULU MALL") since real rows show up as "LULU HYDERABAD" too, keyed to the city rather
+//   than literally saying "MALL".
+// - "BLINKIT"/"ZEPTO": quick-commerce delivery apps — categorized as shopping rather than
+//   food per explicit correction (real row: "UPI-BLINKIT-BLINKIT.RZP@HDFCBANK-...").
+const SHOPPING_KEYWORD_RE = /\bRETAIL\b|\bLULU\b|\bBLINKIT\b|\bZEPTO\b/i
+
+// - "SHOES": real row "POS ... CENTRO SHOES" — footwear/clothing retail, an unambiguous
+//   shopping signal regardless of the specific store name.
+const POS_SHOPPING_KEYWORD_RE = /\bSHOES\b/i
+
+// - "GOOGLEPLAY"/"AMAZON PRIME": real rows "ME DC SI ... GOOGLEPLAY" and remark "AMAZON PRIME
+//   RECUR" — recurring digital-subscription payments.
+// - "SUBSCRIPTION"/"RECURRINGTXN": generic remarks the bank itself uses for standing-instruction
+//   recurring debits (real rows: "SUBSCRIPTION DEBIT", "RECURRINGTXN"), not brand-specific but
+//   an unambiguous signal of what kind of payment it is.
+const SUBSCRIPTION_KEYWORD_RE = /GOOGLEPLAY|AMAZON PRIME|\bSUBSCRIPTION\b|RECURRINGTXN/i
+
+// - "ICICI": the account holder has a second account at ICICI Bank — any UPI/IMPS narration
+//   naming it is money moving between their own accounts, not real spend/income.
+const ICICI_SELF_TRANSFER_RE = /ICICI/i
 
 // POS narrations have no free-text remark field at all, so they're otherwise left 'manual'
 // entirely (see below). A literal "FOOD" in the merchant name itself is still an unambiguous
@@ -138,33 +163,50 @@ const POS_FOOD_KEYWORD_RE = /\bFOOD\b/i
 // - POS "... RANGA REDDY AJMAL": "AJMAL" could be a perfume/attar brand or a person's name —
 //   not confident enough either way.
 // - POS "... AMB CINEMAS L L P": clearly a cinema, but there's no entertainment category in
-//   txnMeta.js's CATEGORIES to map it onto.
+//   txnMeta.js's CATEGORIES to map it onto (considered, explicitly declined).
 // - POS "... BEIJING BITES": likely a food outlet by name, but "BITES" is too generic a
 //   fragment to add as a rule (would risk matching unrelated merchants), and it's not a
 //   nationally-unambiguous brand the way Blinkit/SPAR are.
 // - UPI "CHINTAN COLLECTION": "COLLECTION" is too generic/ambiguous a business-name fragment
 //   (could be all sorts of businesses) to map to shopping.
-// - "ME DC SI ... GOOGLEPLAY": Google Play purchases could be apps, games, or subscriptions —
-//   no confident single-category fit, and ME DC SI rows are intentionally out of scope here.
 // - "SCHOOLFEES" remark: a genuine self-applied category, but there's no education/school-fees
 //   bucket in CATEGORIES to map it onto (already noted above for the remark-based rule).
+// - "PAYMENT FROM PHONE"/"PAY TO BHARATPE ME"/"UPIINTENT": generic bank/UPI/payment-gateway
+//   boilerplate that appears on payments to all kinds of different merchants (BharatPe in
+//   particular is a gateway used by many unrelated small vendors) — the remark itself carries
+//   no category signal no matter how often it repeats.
 
 function extractCategory(narration) {
   const n = narration.trim()
 
   if (/^UPI-/i.test(n) || /^IMPS-/i.test(n)) {
-    const parts = n.split('-')
-    const remark = parts[parts.length - 1].trim()
-    if (FOOD_REMARK_RE.test(remark)) return 'food'
+    // The account holder's personal "FOOD <tag>" convention shows up with inconsistent
+    // separators and segment counts ("FOOD MILK", "FOOD-CHOTU", "FOOD-RAPIDO", ...) — rather
+    // than keep chasing exactly how many trailing hyphen-segments to join, just search the
+    // whole narration for the word "FOOD". Safe to do narration-wide here (not just the
+    // remark) because this account's real merchant/VPA names never contain "FOOD" as a
+    // standalone word outside this personal-tag convention.
+    if (/\bFOOD\b/i.test(n) && /\bMILK\b/i.test(n)) return 'milk'
+    if (/\bFOOD\b/i.test(n) && /\b(VEGETABLE|VEGETABLES|FRUIT|FRUITS)\b/i.test(n)) return 'veg'
+    if (/\bFOOD\b/i.test(n)) return 'food'
 
+    if (INVESTMENT_KEYWORD_RE.test(n)) return 'investment'
     if (UTILITY_KEYWORD_RE.test(n)) return 'utilities'
+    if (SUBSCRIPTION_KEYWORD_RE.test(n)) return 'subscription'
     if (FOOD_KEYWORD_RE.test(n)) return 'food'
     if (SHOPPING_KEYWORD_RE.test(n)) return 'shopping'
 
     return 'manual'
   }
 
-  if (/^POS\s/i.test(n) && POS_FOOD_KEYWORD_RE.test(n)) return 'food'
+  // ME DC SI <card> <merchant> — debit-card standing instructions, mostly recurring digital
+  // subscriptions (real row: "ME DC SI 541919XXXXXX2292 GOOGLEPLAY").
+  if (/^ME DC SI\s/i.test(n) && SUBSCRIPTION_KEYWORD_RE.test(n)) return 'subscription'
+
+  if (/^POS\s/i.test(n)) {
+    if (POS_FOOD_KEYWORD_RE.test(n)) return 'food'
+    if (POS_SHOPPING_KEYWORD_RE.test(n)) return 'shopping'
+  }
 
   return 'manual'
 }
@@ -173,14 +215,27 @@ export function parseHdfcStatementCsv(text) {
   const lines = text.split(/\r?\n/)
   const transactions = []
 
+  // HDFC statement dates have no time component, so a busy day (this format easily runs
+  // into hundreds of rows across a statement) produces many transactions sharing the exact
+  // same `date` value. The statement's own row order IS chronological though, so each
+  // subsequent row on the same calendar day gets nudged forward by 1ms — enough to make
+  // "latest transaction" comparisons (e.g. the real account-balance card) resolve to the
+  // true last row of the day instead of an arbitrary tie, without affecting anything that
+  // only cares about the calendar day itself (bucketing, display formatting, etc.).
+  const sameDayCount = {}
+
   for (const line of lines) {
     if (!line.trim()) continue
     const fields = line.split(',')
     if (fields.length !== 7) continue
 
     const [dateStr, narration, refNo, , withdrawalStr, depositStr, balanceStr] = fields
-    const date = parseDate(dateStr)
-    if (date === null) continue
+    const parsedDate = parseDate(dateStr)
+    if (parsedDate === null) continue
+    const dayKey = dateStr.trim()
+    const occurrence = sameDayCount[dayKey] || 0
+    sameDayCount[dayKey] = occurrence + 1
+    const date = parsedDate + occurrence
 
     const withdrawal = parseFloat(withdrawalStr)
     const deposit = parseFloat(depositStr)
@@ -189,7 +244,10 @@ export function parseHdfcStatementCsv(text) {
     if (!hasWithdrawal && !hasDeposit) continue
 
     const amount = hasWithdrawal ? withdrawal : deposit
-    const type = hasWithdrawal ? 'debit' : 'credit'
+    // Money moving to/from the account holder's own ICICI account is a self-transfer, not
+    // real spend/income — overrides the debit/credit read off the withdrawal/deposit column.
+    const isSelfTransfer = ICICI_SELF_TRANSFER_RE.test(narration)
+    const type = isSelfTransfer ? 'transfer' : (hasWithdrawal ? 'debit' : 'credit')
     const balance = parseFloat(balanceStr)
 
     transactions.push({
@@ -203,6 +261,10 @@ export function parseHdfcStatementCsv(text) {
       source: 'statement',
       bank: 'HDFC Bank',
       balance: isNaN(balance) ? null : balance,
+      // fromBank/toBank drive the Bank filter for type==='transfer' rows (see
+      // TransactionPanel's applyTxnFilters) — direction follows which side of this
+      // statement the money left from.
+      ...(isSelfTransfer ? { fromBank: hasWithdrawal ? 'HDFC Bank' : 'ICICI Bank', toBank: hasWithdrawal ? 'ICICI Bank' : 'HDFC Bank' } : {}),
     })
   }
 

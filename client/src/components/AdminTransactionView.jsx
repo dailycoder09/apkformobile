@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { getCategoryMeta, OVERALL_BUDGET_CATEGORY } from '../utils/txnMeta'
+import { getCategoryMeta, OVERALL_BUDGET_CATEGORY, hasRealTime } from '../utils/txnMeta'
 import { detectRecurring } from '../utils/recurringDetection'
 
 const PAGE_SIZE = 15
@@ -90,6 +90,19 @@ function formatINRShort(n) {
   return '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })
 }
 
+// True abbreviation (K/L/Cr) for the tight 3-column Spent/Received/Net hero row — an
+// "All time" total across many transactions can run into 7+ digits, and formatINRShort's
+// full digit-grouped form is still too wide to fit a third of a phone-width card without
+// wrapping mid-number.
+function formatINRCompact(n) {
+  const abs = Math.abs(n)
+  const trim = (v) => v.toFixed(2).replace(/\.?0+$/, '')
+  if (abs >= 1e7) return '₹' + trim(n / 1e7) + 'Cr'
+  if (abs >= 1e5) return '₹' + trim(n / 1e5) + 'L'
+  if (abs >= 1e3) return '₹' + trim(n / 1e3) + 'K'
+  return '₹' + Math.round(n)
+}
+
 function formatTime(ms) {
   return new Date(ms).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })
 }
@@ -116,11 +129,21 @@ function groupByDate(txns) {
 
 // Resolves the [start, end] bound for a period preset, or for the "Custom range"
 // option using the user-picked from/to dates (open-ended on either side if unset).
+//
+// "This month" specifically means the calendar month (1st through today) — same
+// definition adminMonthStats/the Budget card already use. It used to be a rolling 30-day
+// window instead, so with a category filter active the Budget card and the "This month"
+// hero card could show two different totals for what looked like the same period, which
+// read as the filter being broken rather than two different windows quietly disagreeing.
 function periodBounds(period, customFrom, customTo) {
   if (period === 'custom') {
     const start = customFrom ? new Date(customFrom).setHours(0, 0, 0, 0) : 0
     const end = customTo ? new Date(customTo).setHours(23, 59, 59, 999) : Date.now()
     return { start, end }
+  }
+  if (period === 'month') {
+    const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0)
+    return { start: d.getTime(), end: Date.now() }
   }
   const opt = ANALYTICS_RANGES.find(o => o.key === period)
   const d = new Date(); d.setHours(0, 0, 0, 0)
@@ -136,8 +159,8 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
   const [period, setPeriod]         = useState('week')
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo]     = useState('')
-  const [showAnalytics, setShowAnalytics] = useState(false)
   const [showFilters, setShowFilters] = useState(false)
+  const [showCatBudgets, setShowCatBudgets] = useState(false)
   const [filters, setFilters]       = useState(EMPTY_FILTERS)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   // Server-synced budgets per family member: { [userId]: { [category]: monthlyLimit } }
@@ -414,6 +437,17 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
     return { buckets, bucketMax, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate }
   }, [displayed, period, start, end, totalDebit, totalCredit])
 
+  // SVG polyline points for the spending-trend line chart — same viewBox convention as
+  // TransactionPanel's version, kept separate since the two screens' bucket data differ.
+  const trendLine = useMemo(() => {
+    const { buckets, bucketMax } = trendData
+    if (buckets.length < 2) return null
+    const stepX = 100 / (buckets.length - 1)
+    const toY = (v) => 36 - (v / bucketMax) * 32
+    const toPoints = (key) => buckets.map((b, i) => `${(i * stepX).toFixed(2)},${toY(b[key]).toFixed(2)}`).join(' ')
+    return { debit: toPoints('debit'), credit: toPoints('credit') }
+  }, [trendData])
+
   return (
     <div className="txn-screen">
       <div className="txn-header">
@@ -496,55 +530,6 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
           </div>
         )}
 
-        {activeUser !== 'all' && budgetCategories.length > 0 && (
-          <div className="txn-cat-budgets-card">
-            <div className="txn-donut-title">Category Budgets — {adminMonthStats.label}</div>
-            {budgetCategories.map(c => {
-              const hasLimit = c.limit != null
-              const pct = hasLimit ? Math.min(100, Math.round((c.amount / c.limit) * 100)) : 0
-              const over = hasLimit && c.amount > c.limit
-              return (
-                <div key={c.id} className="txn-cat-budget-row">
-                  <div className="txn-cat-budget-icon" style={{ background: `${c.color}22` }}>
-                    <span className="material-symbols-outlined" style={{ color: c.color }}>{c.icon}</span>
-                  </div>
-                  <div className="txn-cat-budget-info">
-                    <div className="txn-cat-budget-top">
-                      <span className="txn-cat-budget-name">{c.label}</span>
-                      <span className="txn-cat-budget-amt">
-                        {hasLimit ? `${formatINRShort(c.amount)} / ${formatINRShort(c.limit)}` : 'No budget set'}
-                      </span>
-                    </div>
-                    <div className="txn-cat-budget-bar">
-                      <span className={`txn-cat-budget-fill${over ? ' over' : ''}`} style={{ width: `${hasLimit ? pct : 0}%` }} />
-                    </div>
-                  </div>
-                  <button className="txn-cat-budget-edit" onClick={() => openBudgetSheet(c.id, c.label)} aria-label={`Set ${c.label} budget`}>
-                    <span className="material-symbols-outlined">{hasLimit ? 'edit' : 'add'}</span>
-                  </button>
-                </div>
-              )
-            })}
-          </div>
-        )}
-
-        {/* Recurring payments — detected client-side; shows a combined total across the
-            family when "All" is selected, or just that member's when one is picked */}
-        {recurringSummary.groups.length > 0 && (
-          <div className="txn-recurring-card">
-            <div className="txn-recurring-icon"><span className="material-symbols-outlined">autorenew</span></div>
-            <div className="txn-recurring-info">
-              <span className="txn-recurring-label">
-                {recurringSummary.groups.length} Recurring Payment{recurringSummary.groups.length > 1 ? 's' : ''}
-              </span>
-              <span className="txn-recurring-sub">
-                {recurringSummary.groups.map(g => g.merchant).slice(0, 3).join(', ')}{recurringSummary.groups.length > 3 ? '…' : ''}
-              </span>
-            </div>
-            <span className="txn-recurring-amt">{formatINRShort(recurringSummary.totalMonthly)}/mo</span>
-          </div>
-        )}
-
         {/* Filters — type/category/source/bank multi-select, AND-combined with the
             period/user scoping above, feeding both the list and the analytics below */}
         <div>
@@ -587,6 +572,32 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
           )}
         </div>
 
+        {/* Hero card — live totals for whatever's currently selected (period buttons AND
+            the Filters panel — `displayed` already incorporates both), shown whenever
+            either departs from its default (mirrors TransactionPanel's version) */}
+        {(activeFilterCount > 0 || period !== 'week') && (
+          <div className="txn-hero-card">
+            <div className="txn-hero-top">
+              <span className="txn-hero-label">Filtered Results</span>
+              <span className="txn-hero-count">{displayed.length} transaction{displayed.length !== 1 ? 's' : ''}</span>
+            </div>
+            <div className="txn-hero-stats">
+              <div className="txn-hero-stat debit">
+                <span className="txn-hero-stat-label">Spent</span>
+                <span className="txn-hero-stat-val">{formatINRCompact(totalDebit)}</span>
+              </div>
+              <div className="txn-hero-stat credit">
+                <span className="txn-hero-stat-label">Received</span>
+                <span className="txn-hero-stat-val">{formatINRCompact(totalCredit)}</span>
+              </div>
+              <div className={`txn-hero-stat ${totalCredit - totalDebit >= 0 ? 'credit' : 'debit'}`}>
+                <span className="txn-hero-stat-label">Net</span>
+                <span className="txn-hero-stat-val">{formatINRCompact(Math.abs(totalCredit - totalDebit))}</span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Summary bar */}
         <div className="txn-summary">
           <div className="txn-summary-item debit">
@@ -605,85 +616,87 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
           </div>
         </div>
 
-        {/* Spending categories donut */}
-        <div className="txn-donut-card">
-          <div className="txn-donut-title">Spending Categories</div>
-          {categoryStats.categories.length === 0 ? (
-            <p className="txn-donut-empty">No spending recorded for this period.</p>
-          ) : (
-            <div className="txn-donut-body">
-              <div className="txn-donut-ring" style={{ background: donutGradient }}>
-                <div className="txn-donut-hole">
-                  <span className="material-symbols-outlined">pie_chart</span>
-                </div>
-              </div>
-              <div className="txn-donut-legend">
-                {categoryStats.categories.slice(0, 5).map(c => (
-                  <div key={c.id} className="txn-donut-legend-item">
-                    <span className="txn-donut-dot" style={{ background: c.color }} />
-                    <span className="txn-donut-legend-name">{c.label}</span>
-                    <span className="txn-donut-legend-pct">{c.pct}%</span>
-                  </div>
-                ))}
-              </div>
+        {/* Analytics — always visible now (no expand step needed to see charts) */}
+        <div className="txn-charts-section">
+          {/* Quick-glance stat tiles */}
+          <div className="txn-stat-grid">
+            <div className="txn-stat-card">
+              <span className="txn-stat-label">Avg Daily Spend</span>
+              <span className="txn-stat-value">{formatINRShort(trendData.avgDailySpend)}</span>
             </div>
-          )}
-        </div>
-
-        {/* Detailed analytics */}
-        <div>
-          <button className="txn-analytics-toggle" onClick={() => setShowAnalytics(v => !v)}>
-            <span className="txn-analytics-toggle-icon"><span className="material-symbols-outlined">bar_chart</span></span>
-            Detailed Analytics
-            <span className={`material-symbols-outlined txn-analytics-chevron${showAnalytics ? ' open' : ''}`}>expand_more</span>
-          </button>
-
-          {showAnalytics && (
-            <div className="txn-analytics" style={{ marginTop: 12 }}>
-              {/* Quick-glance stat tiles */}
-              <div className="txn-stat-grid">
-                <div className="txn-stat-card">
-                  <span className="txn-stat-label">Avg Daily Spend</span>
-                  <span className="txn-stat-value">{formatINRShort(trendData.avgDailySpend)}</span>
-                </div>
-                <div className="txn-stat-card">
-                  <span className="txn-stat-label">Biggest Expense</span>
-                  {trendData.biggestExpense ? (
-                    <>
-                      <span className="txn-stat-value">{formatINRShort(trendData.biggestExpense.amount)}</span>
-                      <span className="txn-stat-sub">{trendData.biggestExpense.merchant}</span>
-                    </>
-                  ) : <span className="txn-stat-value">—</span>}
-                </div>
-                <div className="txn-stat-card">
-                  <span className="txn-stat-label">Savings Rate</span>
-                  <span className={`txn-stat-value${trendData.savingsRate == null ? '' : trendData.savingsRate >= 0 ? ' good' : ' bad'}`}>
-                    {trendData.savingsRate == null ? '—' : `${trendData.savingsRate}%`}
-                  </span>
-                </div>
-                <div className="txn-stat-card">
-                  <span className="txn-stat-label">Transactions</span>
-                  <span className="txn-stat-value">{displayed.length}</span>
-                </div>
+            <div className="txn-stat-card">
+              <span className="txn-stat-label">Biggest Expense</span>
+              {trendData.biggestExpense ? (
+                <>
+                  <span className="txn-stat-value">{formatINRShort(trendData.biggestExpense.amount)}</span>
+                  <span className="txn-stat-sub">{trendData.biggestExpense.merchant}</span>
+                </>
+              ) : <span className="txn-stat-value">—</span>}
+            </div>
+            {recurringSummary.groups.length > 0 && (
+              <div className="txn-stat-card">
+                <span className="txn-stat-label">Recurring</span>
+                <span className="txn-stat-value">{formatINRShort(recurringSummary.totalMonthly)}/mo</span>
+                <span className="txn-stat-sub">{recurringSummary.groups.length} payment{recurringSummary.groups.length !== 1 ? 's' : ''}</span>
               </div>
+            )}
+            <div className="txn-stat-card">
+              <span className="txn-stat-label">Savings Rate</span>
+              <span className={`txn-stat-value${trendData.savingsRate == null ? '' : trendData.savingsRate >= 0 ? ' good' : ' bad'}`}>
+                {trendData.savingsRate == null ? '—' : `${trendData.savingsRate}%`}
+              </span>
+            </div>
+            <div className="txn-stat-card">
+              <span className="txn-stat-label">Transactions</span>
+              <span className="txn-stat-value">{displayed.length}</span>
+            </div>
+          </div>
 
-              <h3 className="txn-analytics-title">Spending vs Income trend</h3>
-              <div className="txn-trend-chart">
-                {trendData.buckets.map(b => (
-                  <div key={b.key} className="txn-trend-bar-wrap" title={`Spent ${formatINR(b.debit)}, Received ${formatINR(b.credit)}`}>
-                    <div className="txn-trend-bar">
-                      <span className="txn-trend-seg--debit" style={{ height: `${(b.debit / trendData.bucketMax) * 100}%` }} />
-                      <span className="txn-trend-seg--credit" style={{ height: `${(b.credit / trendData.bucketMax) * 100}%` }} />
+          <div className="txn-charts-grid">
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">Spending Categories</h3>
+              {categoryStats.categories.length === 0 ? (
+                <p className="txn-donut-empty">No spending recorded for this period.</p>
+              ) : (
+                <div className="txn-donut-body">
+                  <div className="txn-donut-ring" style={{ background: donutGradient }}>
+                    <div className="txn-donut-hole">
+                      <span className="material-symbols-outlined">pie_chart</span>
                     </div>
                   </div>
-                ))}
-              </div>
-              <div className="txn-trend-legend">
-                <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-rose)' }} />Spent</span>
-                <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-green)' }} />Received</span>
-              </div>
+                  <div className="txn-donut-legend">
+                    {categoryStats.categories.map(c => (
+                      <div key={c.id} className="txn-donut-legend-item">
+                        <span className="txn-donut-dot" style={{ background: c.color }} />
+                        <span className="txn-donut-legend-name">{c.label}</span>
+                        <span className="txn-donut-legend-pct">{c.pct}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
 
-              <h3 className="txn-analytics-title">By bank / account</h3>
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">Spending vs Income Trend</h3>
+              {!trendLine ? (
+                <p className="txn-donut-empty">Not enough data yet.</p>
+              ) : (
+                <>
+                  <svg className="txn-line-chart" viewBox="0 0 100 40" preserveAspectRatio="none">
+                    <polyline className="txn-line-chart-line txn-line-chart-line--credit" points={trendLine.credit} />
+                    <polyline className="txn-line-chart-line txn-line-chart-line--debit" points={trendLine.debit} />
+                  </svg>
+                  <div className="txn-trend-legend">
+                    <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-rose)' }} />Spent</span>
+                    <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-green)' }} />Received</span>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">By Bank / Account</h3>
               {trendData.bankBreakdown.length === 0 ? (
                 <p className="txn-donut-empty">Nothing in this period.</p>
               ) : trendData.bankBreakdown.map(b => (
@@ -696,7 +709,46 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
                 </div>
               ))}
             </div>
-          )}
+
+            {activeUser !== 'all' && budgetCategories.length > 0 && (
+              <div className="txn-chart-card">
+                <button className="txn-chart-card-toggle" onClick={() => setShowCatBudgets(v => !v)}>
+                  <h3 className="txn-analytics-title">Category Budgets — {adminMonthStats.label}</h3>
+                  <span className={`material-symbols-outlined txn-analytics-chevron${showCatBudgets ? ' open' : ''}`}>expand_more</span>
+                </button>
+                {showCatBudgets && (
+                <div className="txn-cat-budgets-list">
+                  {budgetCategories.map(c => {
+                    const hasLimit = c.limit != null
+                    const pct = hasLimit ? Math.min(100, Math.round((c.amount / c.limit) * 100)) : 0
+                    const over = hasLimit && c.amount > c.limit
+                    return (
+                      <div key={c.id} className="txn-cat-budget-row">
+                        <div className="txn-cat-budget-icon" style={{ background: `${c.color}22` }}>
+                          <span className="material-symbols-outlined" style={{ color: c.color }}>{c.icon}</span>
+                        </div>
+                        <div className="txn-cat-budget-info">
+                          <div className="txn-cat-budget-top">
+                            <span className="txn-cat-budget-name">{c.label}</span>
+                            <span className="txn-cat-budget-amt">
+                              {hasLimit ? `${formatINRShort(c.amount)} / ${formatINRShort(c.limit)}` : 'No budget set'}
+                            </span>
+                          </div>
+                          <div className="txn-cat-budget-bar">
+                            <span className={`txn-cat-budget-fill${over ? ' over' : ''}`} style={{ width: `${hasLimit ? pct : 0}%` }} />
+                          </div>
+                        </div>
+                        <button className="txn-cat-budget-edit" onClick={() => openBudgetSheet(c.id, c.label)} aria-label={`Set ${c.label} budget`}>
+                          <span className="material-symbols-outlined">{hasLimit ? 'edit' : 'add'}</span>
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Transaction list */}
@@ -751,9 +803,11 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
                             <span className="material-symbols-outlined">autorenew</span>Recurring
                           </span>
                         )}
-                        <span className="txn-time">{formatTime(t.date)}</span>
                       </span>
-                      {t.balance != null && <span className="txn-balance">Bal {formatINRShort(t.balance)}</span>}
+                      <span className="txn-corner">
+                        {t.balance != null && <span className="txn-balance">Bal {formatINRShort(t.balance)}</span>}
+                        {hasRealTime(t) && <span className="txn-time">{formatTime(t.date)}</span>}
+                      </span>
                     </div>
                   </div>
                 )
