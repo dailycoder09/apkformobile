@@ -752,6 +752,31 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <div className="txn-budget-bar">
             <span className={`txn-budget-bar-fill${budgetOver ? ' over' : ''}`} style={{ width: `${budgetPct}%` }} />
           </div>
+
+          {/* Hero section — the single place Spent/Received/Net live now, folded into the
+              same card as the budget above instead of its own separate card (the two used
+              to duplicate the same "period summary" idea as two stacked cards). Reflects
+              BOTH the Filters panel AND the header's analytics range — uses the exact same
+              analyticsData the charts below already use so the numbers always agree. */}
+          <div className="txn-card-divider" />
+          <div className="txn-hero-top">
+            <span className="txn-hero-label">{ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label} Results</span>
+            <span className="txn-hero-count">{analyticsData.count} transaction{analyticsData.count !== 1 ? 's' : ''}</span>
+          </div>
+          <div className="txn-hero-stats">
+            <div className="txn-hero-stat debit">
+              <span className="txn-hero-stat-label">Spent</span>
+              <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalDebitInRange)}</span>
+            </div>
+            <div className="txn-hero-stat credit">
+              <span className="txn-hero-stat-label">Received</span>
+              <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalCreditInRange)}</span>
+            </div>
+            <div className={`txn-hero-stat ${analyticsData.totalCreditInRange - analyticsData.totalDebitInRange >= 0 ? 'credit' : 'debit'}`}>
+              <span className="txn-hero-stat-label">Net</span>
+              <span className="txn-hero-stat-val">{formatINRCompact(Math.abs(analyticsData.totalCreditInRange - analyticsData.totalDebitInRange))}</span>
+            </div>
+          </div>
         </div>
 
         {/* Analytics — always visible now (no expand step needed to see charts). The range
@@ -1036,32 +1061,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               )}
             </div>
           )}
-        </div>
-
-        {/* Hero card — the single place Spent/Received/Net live now (the Monthly Budget
-            card above used to have its own copy of these three numbers too, which was
-            just the same figures shown twice). Always visible, reflecting BOTH the Filters
-            panel AND the header's analytics range — uses the exact same analyticsData the
-            charts below already use so the numbers always agree with everything else. */}
-        <div className="txn-hero-card">
-          <div className="txn-hero-top">
-            <span className="txn-hero-label">{ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label} Results</span>
-            <span className="txn-hero-count">{analyticsData.count} transaction{analyticsData.count !== 1 ? 's' : ''}</span>
-          </div>
-          <div className="txn-hero-stats">
-            <div className="txn-hero-stat debit">
-              <span className="txn-hero-stat-label">Spent</span>
-              <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalDebitInRange)}</span>
-            </div>
-            <div className="txn-hero-stat credit">
-              <span className="txn-hero-stat-label">Received</span>
-              <span className="txn-hero-stat-val">{formatINRCompact(analyticsData.totalCreditInRange)}</span>
-            </div>
-            <div className={`txn-hero-stat ${analyticsData.totalCreditInRange - analyticsData.totalDebitInRange >= 0 ? 'credit' : 'debit'}`}>
-              <span className="txn-hero-stat-label">Net</span>
-              <span className="txn-hero-stat-val">{formatINRCompact(Math.abs(analyticsData.totalCreditInRange - analyticsData.totalDebitInRange))}</span>
-            </div>
-          </div>
         </div>
 
         {/* Transaction list */}
