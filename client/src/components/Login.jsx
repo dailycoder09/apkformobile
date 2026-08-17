@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react'
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication'
 
-// Server URL baked in at build time — child just enters their name
-const SERVER_URL = 'https://familywatch.duckdns.org'
+// Server URL baked in at build time — child just enters their name. Falls back to
+// the current origin when served from localhost, so local dev/testing talks to the
+// local server instead of production.
+const SERVER_URL = window.location.hostname === 'localhost'
+  ? window.location.origin
+  : 'https://familywatch.duckdns.org'
 
 const PHONE_RE = /^\+[1-9]\d{6,14}$/ // E.164: + country code + number
 
@@ -12,8 +16,12 @@ const PHONE_RE = /^\+[1-9]\d{6,14}$/ // E.164: + country code + number
 //   3. name   — cosmetic display name (same field as before, just moved after verification)
 // The admin PIN path never touches this component — it's handled entirely via the
 // `?pin=` URL param in App.jsx.
+// On localhost, skip straight to the name step — no real phone/OTP round-trip, paired
+// with the matching DEV_AUTH_BYPASS=true server-side flag for local testing only.
+const isLocalDev = window.location.hostname === 'localhost'
+
 export default function Login({ onLogin, status, error: connectError }) {
-  const [step, setStep] = useState('phone')
+  const [step, setStep] = useState(isLocalDev ? 'name' : 'phone')
   const [phone, setPhone] = useState('')
   const [code, setCode] = useState('')
   const [name, setName] = useState('')

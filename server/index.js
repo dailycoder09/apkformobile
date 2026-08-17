@@ -22,6 +22,17 @@ const ADMIN_PIN   = process.env.ADMIN_PIN || '1234'
 const CLIENT_DIR  = path.join(__dirname, '../client/dist')
 const MAX_FILE_MB = 200
 
+// Skips real Firebase phone verification entirely when set — lets local dev log in
+// with any name, no SMS round-trip. Only ever set locally; production's systemd unit
+// has no DEV_AUTH_BYPASS entry, so this branch is dead code there.
+const DEV_AUTH_BYPASS = process.env.DEV_AUTH_BYPASS === 'true'
+if (DEV_AUTH_BYPASS) {
+  console.warn('⚠️  DEV_AUTH_BYPASS=true — phone/OTP verification is DISABLED. Local dev only, never set this in production.')
+}
+const verifyIdentity = DEV_AUTH_BYPASS
+  ? (idToken, name) => Promise.resolve(`dev:${(name || 'anon').trim().toLowerCase() || 'anon'}`)
+  : (idToken) => firebaseAdmin.verifyPhoneToken(idToken)
+
 // Profile photos — persistent (no TTL, unlike the screenshot/file-transfer stores
 // above), stored as plain files on the VM's disk. Small scale, no need for a DB
 // blob or cloud storage.
@@ -738,7 +749,7 @@ wss.on('connection', (ws, req) => {
           const isBg = msg.isBg === true
           authPending = true
 
-          firebaseAdmin.verifyPhoneToken(msg.idToken).then((phoneNumber) => {
+          verifyIdentity(msg.idToken, msg.name).then((phoneNumber) => {
             authPending = false
             if (meta) return // connection already authenticated by another message
 
