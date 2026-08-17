@@ -3283,6 +3283,15 @@ button { font-family: inherit; cursor: pointer; }
 }
 .txn-header-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .txn-title  { font-size: 20px; font-weight: 800; color: var(--txn-ink); flex: 1; }
+/* Compact range picker living in the header itself, in place of a separate full-width row
+   (or a search icon) — same analyticsRange state the charts below read from. */
+.txn-header-range {
+  display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0;
+  background: var(--txn-card); border-radius: 999px;
+  padding: 7px 10px; box-shadow: var(--shadow-soft);
+}
+.txn-header-range .material-symbols-outlined { font-size: 15px; color: var(--txn-rose-dark); }
+.txn-header-range select { background: transparent; border: none; font-size: 12px; font-weight: 700; color: var(--txn-ink); outline: none; max-width: 90px; }
 
 .txn-body { padding: 8px 20px 100px; display: flex; flex-direction: column; gap: 16px; }
 
@@ -3301,16 +3310,15 @@ button { font-family: inherit; cursor: pointer; }
 .txn-budget-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
 .txn-budget-label { font-size: 13px; font-weight: 700; color: var(--txn-muted); }
 .txn-budget-period { font-size: 11px; color: var(--txn-muted); margin-top: 2px; }
-.txn-budget-amounts { text-align: right; }
+/* Now the tap target itself (the amount reads "tap to edit") — no separate pencil button
+   needed, freeing up the row's width for the numbers instead. */
+.txn-budget-amounts {
+  text-align: right; background: none; border: none; padding: 0; cursor: pointer;
+  border-radius: 10px;
+}
+.txn-budget-amounts:active { background: var(--txn-rose-pastel); }
 .txn-budget-spent { font-size: 26px; font-weight: 800; color: var(--txn-rose); }
 .txn-budget-of { font-size: 13px; color: var(--txn-muted); }
-.txn-budget-edit {
-  display: flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: 50%;
-  background: var(--txn-rose-pastel); border: none; color: var(--txn-rose-dark);
-  margin-top: 4px;
-}
-.txn-budget-edit .material-symbols-outlined { font-size: 14px; }
 .txn-budget-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 12px; font-weight: 700; }
 .txn-budget-pct { color: var(--txn-rose); }
 .txn-budget-remaining { color: var(--txn-muted); font-weight: 600; }
@@ -3335,8 +3343,15 @@ button { font-family: inherit; cursor: pointer; }
 /* Per-category budgets — a compact list of mini progress bars, one per category, each
    independently editable via the same budget sheet as the overall budget above. Now
    lives inside a .txn-chart-card slide in the charts carousel (see .txn-charts-grid). */
-.txn-cat-budgets-list { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; }
-.txn-cat-budget-row { display: flex; align-items: center; gap: 10px; }
+/* Caps the visible list to exactly 4 rows — beyond that, scroll inside the card rather
+   than growing it indefinitely (this card lives in a horizontal carousel with several
+   siblings, so its height affects the whole row). Rows get a fixed min-height so this
+   4-row math is exact instead of an eyeballed guess at text-driven row height. */
+.txn-cat-budgets-list {
+  display: flex; flex-direction: column; gap: 14px;
+  max-height: calc(4 * 34px + 3 * 14px); overflow-y: auto; padding-right: 2px;
+}
+.txn-cat-budget-row { display: flex; align-items: center; gap: 10px; min-height: 34px; }
 .txn-cat-budget-icon {
   display: flex; align-items: center; justify-content: center;
   width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
@@ -3457,22 +3472,7 @@ button { font-family: inherit; cursor: pointer; }
 .txn-analytics-toggle-icon .material-symbols-outlined { font-size: 16px; }
 .txn-analytics-chevron { margin-left: auto; color: var(--txn-muted); transition: transform 0.2s; }
 .txn-analytics-chevron.open { transform: rotate(180deg); }
-.txn-analytics-filter {
-  display: flex; align-items: center; gap: 8px; width: 100%;
-  background: linear-gradient(135deg, #fff, var(--txn-rose-pastel));
-  border: 1px solid rgba(255,255,255,0.8);
-  border-radius: 999px; padding: 10px 16px;
-}
-.txn-analytics-filter select { flex: 1; background: transparent; border: none; font-size: 13.5px; font-weight: 700; color: var(--txn-ink); outline: none; }
-.txn-analytics-filter .material-symbols-outlined { font-size: 15px; color: var(--txn-rose-dark); }
 .txn-analytics-title { font-size: 11px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px; }
-/* Collapsible chart-card header — a plain full-width button blending into the card itself
-   (no separate background/shadow, unlike .txn-filters-toggle) since it lives inside one. */
-.txn-chart-card-toggle {
-  display: flex; align-items: center; justify-content: space-between; width: 100%;
-  background: none; border: none; padding: 0; cursor: pointer; text-align: left;
-}
-.txn-chart-card-toggle .txn-analytics-title { margin-bottom: 0; }
 .txn-trend-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--txn-muted); font-weight: 600; }
 .txn-trend-legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
 .txn-breakdown-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }

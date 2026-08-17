@@ -181,7 +181,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [banks, setBanks] = useState(() => loadBanks(session.userId, []))
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [showFilters, setShowFilters] = useState(false)
-  const [showCatBudgets, setShowCatBudgets] = useState(false)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -628,6 +627,12 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <span className="material-symbols-outlined">arrow_back</span>
         </button>
         <span className="txn-title">Finance</span>
+        <label className="txn-header-range">
+          <span className="material-symbols-outlined">calendar_month</span>
+          <select value={analyticsRange} onChange={e => setAnalyticsRange(e.target.value)}>
+            {ANALYTICS_RANGES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+          </select>
+        </label>
         <button className="txn-header-icon-btn" onClick={() => statementInputRef.current?.click()} aria-label="Upload bank statement">
           <span className="material-symbols-outlined">upload_file</span>
         </button>
@@ -652,15 +657,15 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               <div className="txn-budget-label">Monthly Budget</div>
               <div className="txn-budget-period">{monthStats.label}</div>
             </div>
-            <div className="txn-budget-amounts">
-              <div>
-                <span className="txn-budget-spent">{formatINRShort(monthStats.spent)}</span>
-                <span className="txn-budget-of"> / {formatINRShort(overallBudget)}</span>
-              </div>
-              <button className="txn-budget-edit" onClick={() => openBudgetSheet(OVERALL_BUDGET_CATEGORY, 'Overall Monthly Budget')} aria-label="Edit budget">
-                <span className="material-symbols-outlined">edit</span>
-              </button>
-            </div>
+            <button
+              type="button"
+              className="txn-budget-amounts"
+              onClick={() => openBudgetSheet(OVERALL_BUDGET_CATEGORY, 'Overall Monthly Budget')}
+              aria-label="Edit monthly budget"
+            >
+              <span className="txn-budget-spent">{formatINRShort(monthStats.spent)}</span>
+              <span className="txn-budget-of"> / {formatINRShort(overallBudget)}</span>
+            </button>
           </div>
           <div className="txn-budget-row">
             <span className="txn-budget-pct">{budgetPct}% Spent</span>
@@ -689,15 +694,10 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           </div>
         </div>
 
-        {/* Analytics — always visible now (no expand step needed to see charts) */}
+        {/* Analytics — always visible now (no expand step needed to see charts). The range
+            picker now lives in the header (see txn-header-range) instead of a full-width
+            row here, since it's the same analyticsRange state either way. */}
         <div className="txn-charts-section">
-          <label className="txn-analytics-filter">
-            <span className="material-symbols-outlined">calendar_month</span>
-            <select value={analyticsRange} onChange={e => setAnalyticsRange(e.target.value)}>
-              {ANALYTICS_RANGES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
-            </select>
-          </label>
-
           {/* Quick-glance stat tiles */}
           <div className="txn-stat-grid">
             <div className="txn-stat-card">
@@ -818,11 +818,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
 
             {budgetCategories.length > 0 && (
               <div className="txn-chart-card">
-                <button className="txn-chart-card-toggle" onClick={() => setShowCatBudgets(v => !v)}>
-                  <h3 className="txn-analytics-title">Category Budgets — {monthStats.label}</h3>
-                  <span className={`material-symbols-outlined txn-analytics-chevron${showCatBudgets ? ' open' : ''}`}>expand_more</span>
-                </button>
-                {showCatBudgets && (
+                <h3 className="txn-analytics-title">Category Budgets — {monthStats.label}</h3>
                 <div className="txn-cat-budgets-list">
                   {budgetCategories.map(c => {
                     const hasLimit = c.limit != null
@@ -851,7 +847,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                     )
                   })}
                 </div>
-                )}
               </div>
             )}
           </div>

@@ -160,7 +160,6 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
   const [customFrom, setCustomFrom] = useState('')
   const [customTo, setCustomTo]     = useState('')
   const [showFilters, setShowFilters] = useState(false)
-  const [showCatBudgets, setShowCatBudgets] = useState(false)
   const [filters, setFilters]       = useState(EMPTY_FILTERS)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   // Server-synced budgets per family member: { [userId]: { [category]: monthlyLimit } }
@@ -712,11 +711,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
 
             {activeUser !== 'all' && budgetCategories.length > 0 && (
               <div className="txn-chart-card">
-                <button className="txn-chart-card-toggle" onClick={() => setShowCatBudgets(v => !v)}>
-                  <h3 className="txn-analytics-title">Category Budgets — {adminMonthStats.label}</h3>
-                  <span className={`material-symbols-outlined txn-analytics-chevron${showCatBudgets ? ' open' : ''}`}>expand_more</span>
-                </button>
-                {showCatBudgets && (
+                <h3 className="txn-analytics-title">Category Budgets — {adminMonthStats.label}</h3>
                 <div className="txn-cat-budgets-list">
                   {budgetCategories.map(c => {
                     const hasLimit = c.limit != null
@@ -745,7 +740,6 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
                     )
                   })}
                 </div>
-                )}
               </div>
             )}
           </div>
