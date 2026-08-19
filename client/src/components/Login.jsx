@@ -1,10 +1,19 @@
 import { useEffect, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication'
+
+// Capacitor's Android WebView serves the bundled app from https://localhost by
+// default (no custom server.hostname is set in capacitor.config.json), so
+// `location.hostname === 'localhost'` is true on every native install too — not just
+// an actual local browser dev session. Must check isNativePlatform() first, or the
+// APK always falls into the local-dev branch below and tries to reach a server that
+// doesn't exist instead of production.
+const IS_NATIVE = Capacitor.isNativePlatform()
 
 // Server URL baked in at build time — child just enters their name. Falls back to
 // the current origin when served from localhost, so local dev/testing talks to the
 // local server instead of production.
-const SERVER_URL = window.location.hostname === 'localhost'
+const SERVER_URL = !IS_NATIVE && window.location.hostname === 'localhost'
   ? window.location.origin
   : 'https://familywatch.duckdns.org'
 
@@ -18,7 +27,8 @@ const PHONE_RE = /^\+[1-9]\d{6,14}$/ // E.164: + country code + number
 // `?pin=` URL param in App.jsx.
 // On localhost, skip straight to the name step — no real phone/OTP round-trip, paired
 // with the matching DEV_AUTH_BYPASS=true server-side flag for local testing only.
-const isLocalDev = window.location.hostname === 'localhost'
+// See the IS_NATIVE note above — never true for a native install.
+const isLocalDev = !IS_NATIVE && window.location.hostname === 'localhost'
 
 export default function Login({ onLogin, status, error: connectError }) {
   const [step, setStep] = useState(isLocalDev ? 'name' : 'phone')
