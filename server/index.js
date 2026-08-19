@@ -512,23 +512,30 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
-    // LiveKit token — child publishes, admin subscribes, room = child's userId
+    // LiveKit token. Default mode: monitoring — child publishes, admin subscribes,
+    // room = child's userId. mode=call: two-way peer calling — both sides can publish,
+    // room must be a call-scoped "call-{id}" name so a call token can never be pointed
+    // at someone else's monitoring room.
     if (urlPath === '/api/lk-token' && req.method === 'GET') {
       const params   = new URL(req.url, 'http://x').searchParams
       const room     = params.get('room')     || ''
       const identity = params.get('identity') || 'anon'
+      const mode     = params.get('mode')     || ''
       const lkUrl    = process.env.LIVEKIT_URL        || ''
       const apiKey   = process.env.LIVEKIT_API_KEY    || ''
       const apiSecret = process.env.LIVEKIT_API_SECRET || ''
       if (!apiKey || !apiSecret || !lkUrl) {
         res.writeHead(503, CORS); res.end(JSON.stringify({ error: 'LiveKit not configured' })); return
       }
+      if (mode === 'call' && !/^call-/.test(room)) {
+        res.writeHead(400, CORS); res.end(JSON.stringify({ error: 'Invalid call room' })); return
+      }
       try {
         const at = new AccessToken(apiKey, apiSecret, { identity, ttl: '10m' })
         at.addGrant({
           roomJoin:      true,
           room,
-          canPublish:    identity !== 'admin',
+          canPublish:    mode === 'call' ? true : identity !== 'admin',
           canSubscribe:  true,
           canPublishData: false,
         })
@@ -631,8 +638,28 @@ const admins = new Map()   // userId → { ws, userId, name }
 const users  = new Map()   // userId → { ws, userId, name }
 const byWs   = new Map()   // ws → meta
 
+// In-memory only, never persisted — a call is a live signaling session, not app data.
+// callId → { callerId, calleeId, video, ringTimeout }
+const activeCalls = new Map()
+
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
+
+// The call a userId is currently party to (as caller or callee), if any.
+function findActiveCallFor(userId) {
+  for (const [callId, call] of activeCalls) {
+    if (call.callerId === userId || call.calleeId === userId) return { callId, call }
+  }
+  return null
+}
+
+function endCall(callId) {
+  const call = activeCalls.get(callId)
+  if (!call) return null
+  clearTimeout(call.ringTimeout)
+  activeCalls.delete(callId)
+  return call
+}
 
 // Builds the WS-facing profile payload (see profile_get/profile_update) — photoUrl
 // is a server-relative path the client fetches separately over plain HTTP, never
@@ -662,6 +689,28 @@ function getUserList() {
   return [...users.values()]
     .filter(u => !u.isBg)
     .map(u => ({ id: u.userId, name: u.name }))
+}
+
+function formatCallDuration(ms) {
+  const totalSec = Math.max(0, Math.round(ms / 1000))
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+// A neutral note about how a call went, delivered to both participants as a
+// `call_summary` message — the client renders it like a `type: 'system'` chat entry,
+// filed into that peer's DM thread. Never persisted server-side, same as a live `dm`.
+function sendCallSummary(call, reason) {
+  const kind = call.video ? 'Video call' : 'Voice call'
+  const text = call.acceptedAt
+    ? `📞 ${kind} · ${formatCallDuration(Date.now() - call.acceptedAt)}`
+    : `📞 Missed ${kind.toLowerCase()}`
+  const ts = Date.now()
+  const caller = [...byWs.values()].find(m => m.userId === call.callerId)
+  const callee = [...byWs.values()].find(m => m.userId === call.calleeId)
+  if (caller) send(caller.ws, { type: 'call_summary', text, fromId: call.calleeId, toId: call.callerId, ts })
+  if (callee) send(callee.ws, { type: 'call_summary', text, fromId: call.callerId, toId: call.calleeId, ts })
 }
 
 // Mints a fresh per-connection upload token, tied to this one WS session via a random
@@ -1219,6 +1268,47 @@ wss.on('connection', (ws, req) => {
             send(ws, { ...out, own: true })
           }
         }
+
+        // Two-way call signaling — media itself flows peer-to-peer via LiveKit, this WS
+        // only carries ring/accept/decline/end. activeCalls guards against a user being
+        // rung twice at once or ringing someone who's already on a call.
+        if (msg.type === 'call_invite') {
+          const target = [...byWs.values()].find(m => m.userId === msg.toId)
+          if (!target) { send(ws, { type: 'call_end', callId: msg.callId, reason: 'offline' }); return }
+          if (findActiveCallFor(meta.userId) || findActiveCallFor(msg.toId)) {
+            send(ws, { type: 'call_busy', callId: msg.callId })
+            return
+          }
+          const callId = msg.callId
+          const ringTimeout = setTimeout(() => {
+            const call = endCall(callId)
+            const out = { type: 'call_cancel', callId, reason: 'timeout' }
+            send(ws, out)
+            send(target.ws, out)
+            if (call) sendCallSummary(call, 'timeout')
+          }, 45000)
+          activeCalls.set(callId, { callerId: meta.userId, calleeId: msg.toId, video: !!msg.video, ringTimeout, acceptedAt: null })
+          send(target.ws, { type: 'call_invite', callId, fromId: meta.userId, fromName: meta.name, video: !!msg.video })
+          return
+        }
+        if (msg.type === 'call_accept') {
+          const call = activeCalls.get(msg.callId)
+          if (!call || call.calleeId !== meta.userId) return
+          clearTimeout(call.ringTimeout)
+          call.acceptedAt = Date.now()
+          const caller = [...byWs.values()].find(m => m.userId === call.callerId)
+          if (caller) send(caller.ws, { type: 'call_accept', callId: msg.callId })
+          return
+        }
+        if (msg.type === 'call_decline' || msg.type === 'call_cancel' || msg.type === 'call_end') {
+          const call = endCall(msg.callId)
+          if (!call) return
+          const otherId = call.callerId === meta.userId ? call.calleeId : call.callerId
+          const other = [...byWs.values()].find(m => m.userId === otherId)
+          if (other) send(other.ws, { type: msg.type, callId: msg.callId, reason: msg.reason })
+          sendCallSummary(call, msg.reason)
+          return
+        }
       }
 
     } catch (e) {
@@ -1231,6 +1321,19 @@ wss.on('connection', (ws, req) => {
     // If this WS was superseded by a reconnect (meta.ws updated to new socket), ignore its close
     if (meta.ws !== ws && meta.role !== 'admin') return
     byWs.delete(ws)
+
+    // If this user was mid-call, let the other party know rather than leaving them
+    // ringing/connected to a peer who's just silently gone.
+    const activeCall = findActiveCallFor(meta.userId)
+    if (activeCall) {
+      const { callId, call } = activeCall
+      endCall(callId)
+      const otherId = call.callerId === meta.userId ? call.calleeId : call.callerId
+      const other = [...byWs.values()].find(m => m.userId === otherId)
+      if (other) send(other.ws, { type: 'call_end', callId, reason: 'disconnect' })
+      sendCallSummary(call, 'disconnect')
+    }
+
     if (meta.role === 'admin') {
       admins.delete(meta.userId)
     } else if (meta.isBg) {

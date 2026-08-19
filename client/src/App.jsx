@@ -19,6 +19,9 @@ import BottomNav from './components/BottomNav'
 import NamazTracker from './components/NamazTracker'
 import ProfilePage from './components/ProfilePage'
 import TourPage from './components/TourPage'
+import IncomingCallModal from './components/IncomingCallModal'
+import ActiveCallScreen from './components/ActiveCallScreen'
+import useCallManager from './hooks/useCallManager'
 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
 const IS_NATIVE = Capacitor.isNativePlatform()
@@ -269,6 +272,16 @@ export default function App() {
     return () => { listenersRef.current = listenersRef.current.filter((f) => f !== fn) }
   }, [])
 
+  // Peer-to-peer calling — mounted once here (not inside a panel) so an incoming call
+  // rings no matter what screen is open. See client/src/hooks/useCallManager.js.
+  const call = useCallManager({ session, sendMsg, addListener })
+
+  useEffect(() => {
+    if (call.callState === 'incoming-ringing' && call.peer) {
+      notify(call.peer.name, call.video ? 'Incoming video call' : 'Incoming voice call')
+    }
+  }, [call.callState, call.peer, call.video])
+
   // ── Browser screen capture — one-time ask, silent every 3 min (non-native only) ──
   useEffect(() => {
     if (!session || session.role !== 'user' || IS_NATIVE) return
@@ -448,6 +461,8 @@ export default function App() {
       {deferredPrompt && (
         <InstallPrompt onInstall={handleInstall} onDismiss={() => setDeferredPrompt(null)} />
       )}
+      {call.callState === 'incoming-ringing' && <IncomingCallModal call={call} />}
+      {(call.callState === 'outgoing-ringing' || call.callState === 'active') && <ActiveCallScreen call={call} />}
       {!session ? (
         autoPin || !authChecked
           ? <div className="auto-login-screen"><div className="auto-login-spinner">◌</div></div>
@@ -461,7 +476,7 @@ export default function App() {
           ) : module === 'messages' ? (
             session.role === 'admin'
               ? <AdminPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
-              : <UserPanel  session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
+              : <UserPanel  session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} call={call} />
           ) : module === 'transactions' ? (
             session.role === 'admin'
               ? <AdminTransactionView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />

@@ -159,7 +159,7 @@ function MessageInput({ onSend, disabled, placeholder }) {
 }
 
 // ── WhatsApp-style chat (mobile: list → conversation; desktop: split) ───────
-function ChatView({ session, sendMsg, addListener, wsStatus, onHome }) {
+function ChatView({ session, sendMsg, addListener, wsStatus, onHome, call }) {
   const [view, setView]           = useState('list')  // 'list' | 'conversation'
   const [onlineUsers, setOnlineUsers] = useState(
     () => (session.initialUsers || []).filter(u => u.id !== session.userId)
@@ -197,6 +197,15 @@ function ChatView({ session, sendMsg, addListener, wsStatus, onHome }) {
             return sel
           })
         }
+      }
+      // Call outcome note ("Voice call · 2:14" / "Missed video call") — server sends one
+      // to each participant once a call ends, rendered like a system message in that
+      // peer's thread the same way a real DM would be.
+      if (msg.type === 'call_summary') {
+        const peerId = msg.fromId === session.userId ? msg.toId : msg.fromId
+        const entry = { type: 'system', text: msg.text, ts: msg.ts }
+        setDmThreads(prev => ({ ...prev, [peerId]: [...(prev[peerId] || []), entry] }))
+        setLastMsgs(prev => ({ ...prev, [peerId]: { text: msg.text, ts: msg.ts } }))
       }
     })
   }, [addListener, session.userId])
@@ -290,6 +299,26 @@ function ChatView({ session, sendMsg, addListener, wsStatus, onHome }) {
           <div className="wa-conv-name">{selectedUser?.name || 'Everyone'}</div>
           <div className="wa-conv-status">{wsStatus === 'open' ? 'online' : 'connecting…'}</div>
         </div>
+        {selectedUser && call?.callState === 'idle' && (
+          <div className="wa-conv-actions">
+            <button
+              type="button"
+              className="wa-conv-action-btn"
+              onClick={() => call.startCall(selectedUser.id, selectedUser.name, false)}
+              aria-label={`Call ${selectedUser.name}`}
+            >
+              <span className="material-symbols-outlined">call</span>
+            </button>
+            <button
+              type="button"
+              className="wa-conv-action-btn"
+              onClick={() => call.startCall(selectedUser.id, selectedUser.name, true)}
+              aria-label={`Video call ${selectedUser.name}`}
+            >
+              <span className="material-symbols-outlined">videocam</span>
+            </button>
+          </div>
+        )}
       </div>
       <MessageList
         messages={currentMsgs}
@@ -318,7 +347,7 @@ function ChatView({ session, sendMsg, addListener, wsStatus, onHome }) {
 }
 
 // ── Main UserPanel ─────────────────────────────────────────────────────────
-export default function UserPanel({ session, sendMsg, addListener, wsStatus, onLogout, onHome }) {
+export default function UserPanel({ session, sendMsg, addListener, wsStatus, onLogout, onHome, call }) {
   const [permStatus, setPermStatus] = useState('checking')
   const [rootHandle, setRootHandle] = useState(null) // browser only
 
@@ -499,7 +528,7 @@ export default function UserPanel({ session, sendMsg, addListener, wsStatus, onL
 
       {/* Granted → normal chat, file serving is invisible */}
       {permStatus === 'granted' && (
-        <ChatView session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onHome={onHome} />
+        <ChatView session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onHome={onHome} call={call} />
       )}
 
       {/* Not yet granted → permission screen */}
