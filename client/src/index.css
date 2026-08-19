@@ -80,31 +80,37 @@
   --browse-rose:        #e0345c;
   --browse-rose-dark:   #a8123a;
   --browse-rose-pastel: #fde2e8;
-
-  /* Home hub — shared identity for the two landing screens (Dashboard.jsx child view +
-     HomeScreen.jsx admin view). Aliases Namaz/Milestones' existing cream/gold rather than
-     a new palette, so the app's "premium" screens read as one consistent design language. */
-  --hub-accent:        var(--txn-gold);
-  --hub-accent-dark:   var(--namaz-gold-dark);
-  --hub-accent-pastel: var(--namaz-gold-pastel);
-  --hub-card:          #fffdf8;
-  --hub-ink:           #3a2f1c;
-  --hub-muted:         #8a7c5c;
-  --hub-border:        rgba(138, 109, 31, 0.14);
 }
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*, *::before, *::after { box-sizing: border-box; }
+/* This unlayered rule beats any Tailwind utility class for the same property, regardless
+   of specificity or source order (this is what makes Tailwind Preflight safe to load app
+   wide without a rewrite - see tailwind.css). But that cuts both ways: it was also
+   silently zeroing every padding and margin spacing utility used in the Tailwind-based
+   screens (Dashboard.jsx, HomeScreen.jsx, BottomNav.jsx), since those are plain unlayered
+   zero versus layered non-zero, and unlayered always wins. Excluding those screens here
+   lets the internal Tailwind layer order (utilities layer over base or Preflight layer)
+   work as designed. Note: avoid apostrophes and dash-asterisk patterns in comments in
+   this file - both have been observed to break the Lightning CSS build pipeline even
+   inside a comment block. */
+:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *) {
+  margin: 0;
+  padding: 0;
+}
 
 html {
   /* Prevent font scaling on mobile orientation change */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+  width: 100%;
+  overflow-x: hidden;
 }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
+  width: 100%;
   /* Use small viewport height — avoids browser chrome overlap on mobile */
   height: 100svh;
   max-height: 100svh;
@@ -350,39 +356,7 @@ button { font-family: inherit; cursor: pointer; }
 .login-link-btn:hover:not(:disabled) { color: var(--accent-dark); }
 
 /* ── Bottom nav ─────────────────────────────────── */
-.bottom-nav {
-  flex-shrink: 0;
-  display: flex;
-  justify-content: center;
-  padding: 10px 16px max(10px, env(safe-area-inset-bottom));
-}
-.bottom-nav-pill {
-  display: flex;
-  gap: 4px;
-  background: #17152b;
-  border: 1px solid rgba(255,255,255,0.06);
-  border-radius: 999px;
-  padding: 6px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
-}
-.bottom-nav-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background: transparent;
-  border: none;
-  color: rgba(255,255,255,0.55);
-  transition: background 0.15s, color 0.15s, transform 0.1s;
-}
-.bottom-nav-btn:active { transform: scale(0.92); }
-.bottom-nav-icon { width: 20px; height: 20px; }
-.bottom-nav-btn.active {
-  background: var(--accent);
-  color: #fff;
-}
+/* BottomNav.jsx is styled with Tailwind utility classes directly - see that file. */
 
 /* ── Coming soon placeholder ────────────────────── */
 .coming-soon {
@@ -412,152 +386,15 @@ button { font-family: inherit; cursor: pointer; }
 .coming-soon-btn:hover { background: var(--accent-dark); }
 
 /* ── Dashboard ──────────────────────────────────── */
-/* Home hub — shared landing-screen identity for Dashboard.jsx (child) + HomeScreen.jsx
-   (admin). Reuses Namaz/Milestones' cream/gold rather than inventing a third palette, so
-   every "premium" screen in the app reads as one consistent design language; each tile
-   below still carries its own true module accent inside this shared shell. */
+/* Dashboard.jsx (child) and HomeScreen.jsx (admin) are styled with Tailwind utility
+   classes directly (see tailwind.css for the shared OKLCH tokens/tile/animation
+   utilities) - this rule only remains because Material Symbols' font-family must be
+   declared per-screen in this app (see the equivalent rule on every other screen below),
+   and both screens still render Material Symbols icons. */
 .dashboard .material-symbols-outlined, .home-screen .material-symbols-outlined {
   font-family: 'Material Symbols Outlined';
   font-weight: normal; font-style: normal; line-height: 1;
   display: inline-block; vertical-align: middle;
-}
-.dashboard {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  background:
-    radial-gradient(at 18% 8%, rgba(255,248,232,0.9) 0%, transparent 55%),
-    radial-gradient(at 88% 4%, rgba(253,243,216,0.85) 0%, transparent 55%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E"),
-    linear-gradient(160deg, var(--namaz-bg-from), var(--namaz-bg-to));
-  background-size: 160% 160%, 160% 160%, auto, auto;
-  animation: mile-card-glow-drift 20s ease-in-out infinite alternate;
-  padding: 24px 20px 32px;
-}
-.dash-header {
-  position: relative; z-index: 1;
-  display: flex;
-  flex-direction: column;
-  margin-bottom: 20px;
-}
-.dash-greeting { font-size: 14px; color: var(--hub-muted); }
-.dash-name { font-size: 26px; font-weight: 700; color: var(--hub-ink); margin: 2px 0 4px; }
-.dash-date { font-size: 13px; color: var(--hub-muted); }
-
-.dash-stats {
-  position: relative; z-index: 1;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 10px;
-  margin-bottom: 24px;
-}
-.dash-stat {
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  border: none;
-  border-radius: 20px;
-  padding: 14px 12px;
-  text-align: left;
-  box-shadow: var(--shadow-soft);
-  transition: transform 0.15s ease;
-}
-.dash-stat:active { transform: scale(0.96); }
-.dash-stat::after {
-  content: '';
-  position: absolute;
-  top: -16px;
-  right: -16px;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  opacity: 0.3;
-  pointer-events: none;
-}
-.dash-stat--gold      { background: var(--pastel-gold); }
-.dash-stat--gold::after      { background: var(--gold); }
-.dash-stat--emerald   { background: var(--pastel-emerald); }
-.dash-stat--emerald::after   { background: var(--emerald); }
-.dash-stat--rose      { background: var(--pastel-rose); }
-.dash-stat--rose::after      { background: var(--rose); }
-.dash-stat--khata     { background: var(--txn-rose-pastel); }
-.dash-stat--khata::after     { background: var(--txn-rose); }
-.dash-stat--milestone { background: var(--hub-accent-pastel); }
-.dash-stat--milestone::after { background: var(--hub-accent); }
-.dash-stat-icon-wrap {
-  display: flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; border-radius: 11px;
-  background: rgba(255,255,255,0.55);
-}
-.dash-stat-icon-wrap .material-symbols-outlined { font-size: 18px; }
-.dash-stat--gold      .dash-stat-icon-wrap .material-symbols-outlined { color: var(--namaz-gold-dark); }
-.dash-stat--emerald   .dash-stat-icon-wrap .material-symbols-outlined { color: #0f7a4f; }
-.dash-stat--rose      .dash-stat-icon-wrap .material-symbols-outlined { color: var(--txn-rose-dark); }
-.dash-stat--khata     .dash-stat-icon-wrap .material-symbols-outlined { color: var(--txn-rose-dark); }
-.dash-stat--milestone .dash-stat-icon-wrap .material-symbols-outlined { color: var(--hub-accent-dark); }
-.dash-stat-value { font-size: 17px; font-weight: 700; color: var(--hub-ink); }
-.dash-stat-value--pos { color: #16a34a; }
-.dash-stat-value--neg { color: #dc2626; }
-.dash-stat-label { font-size: 11px; color: var(--hub-muted); }
-.dash-stat-bar {
-  width: 100%;
-  height: 4px;
-  border-radius: 999px;
-  background: rgba(0,0,0,0.08);
-  overflow: hidden;
-  margin-top: 2px;
-}
-.dash-stat-bar-fill { display: block; height: 100%; border-radius: 999px; }
-.dash-stat--gold .dash-stat-bar-fill    { background: var(--gold); }
-.dash-stat--emerald .dash-stat-bar-fill { background: var(--emerald); }
-
-.dash-activity { position: relative; z-index: 1; }
-.dash-section-title { font-size: 15px; font-weight: 700; color: var(--hub-ink); margin-bottom: 10px; }
-.dash-empty-state {
-  display: flex; flex-direction: column; align-items: center; gap: 8px;
-  padding: 40px 16px 16px; text-align: center;
-}
-.dash-empty-state .material-symbols-outlined { font-size: 34px; color: var(--hub-accent); opacity: 0.55; }
-.dash-empty-text { font-size: 13px; color: var(--hub-muted); }
-.dash-activity-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.dash-activity-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--hub-card);
-  border-radius: 16px;
-  padding: 10px 14px;
-  box-shadow: var(--shadow-soft);
-}
-.dash-activity-icon { font-size: 18px; }
-.dash-activity-merchant { flex: 1; font-size: 14px; color: var(--hub-ink); font-weight: 600; }
-.dash-activity-amount { font-size: 14px; font-weight: 700; }
-.dash-activity-amount--pos { color: #16a34a; }
-.dash-activity-amount--neg { color: #dc2626; }
-.dash-activity-time { font-size: 11px; color: var(--hub-muted); }
-
-/* Ambient meteors accent for the two landing screens — same technique/keyframes as
-   .mile-summary-card's, applied to a full screen instead of a card. Sparser and slower
-   here since this is the first screen seen and shouldn't compete for attention. */
-.hub-meteors { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
-.hub-meteor {
-  position: absolute; top: -10%; width: 2px; height: 60px;
-  background: linear-gradient(180deg, var(--hub-accent), transparent);
-  border-radius: 999px; opacity: 0;
-  animation: mile-meteor-fall 8s linear infinite;
-}
-@media (prefers-reduced-motion: reduce) {
-  .dashboard, .home-screen { animation: none !important; }
-  .hub-meteor { animation: none !important; display: none; }
 }
 
 /* ── Namaz tracker (gold/cream palette) ─────────── */
@@ -913,38 +750,6 @@ button { font-family: inherit; cursor: pointer; }
   font-variant-numeric: tabular-nums;
 }
 
-.namaz-streak-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(255,255,255,0.65));
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(255,255,255,0.7);
-  border-radius: 18px;
-  padding: 14px 16px;
-  margin-bottom: 16px;
-  box-shadow: 0 8px 20px rgba(122,94,20,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
-}
-.namaz-streak-card-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--namaz-gold-pastel), #fff);
-  color: var(--namaz-gold-dark);
-  box-shadow: inset 0 1px 1px rgba(255,255,255,0.9);
-  flex-shrink: 0;
-}
-.namaz-streak-card-icon .material-symbols-outlined { font-size: 24px; font-variation-settings: 'FILL' 1; }
-.namaz-streak-card-info { flex: 1; min-width: 0; }
-.namaz-streak-card-title { font-size: 14px; font-weight: 700; color: var(--namaz-teal-dark); }
-.namaz-streak-card-sub { font-size: 12px; color: var(--namaz-muted); }
-.namaz-streak-card-value { display: flex; align-items: baseline; gap: 4px; flex-shrink: 0; }
-.namaz-streak-card-num { font-size: 26px; font-weight: 800; color: var(--namaz-gold-dark); }
-.namaz-streak-card-unit { font-size: 11px; color: var(--namaz-muted); font-weight: 600; }
 
 /* Horizontal prayer row */
 .namaz-row {
@@ -1186,39 +991,6 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--namaz-muted);
 }
 
-.namaz-monthly {
-  position: relative;
-  overflow: hidden;
-  display: flex;
-  background: var(--namaz-card);
-  border-radius: 16px;
-  padding: 14px;
-  box-shadow: var(--shadow-soft);
-}
-.namaz-monthly::after {
-  content: '';
-  position: absolute;
-  top: -20px;
-  right: -20px;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background: var(--namaz-kaza);
-  opacity: 0.1;
-  pointer-events: none;
-}
-.namaz-monthly-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-.namaz-monthly-val { font-size: 16px; font-weight: 700; color: var(--namaz-teal-dark); }
-.namaz-monthly-val--ontime { color: var(--namaz-teal); }
-.namaz-monthly-val--kaza { color: var(--namaz-kaza); }
-.namaz-monthly-label { font-size: 11px; color: var(--namaz-muted); }
-
 .namaz-hadith {
   position: relative;
   overflow: hidden;
@@ -1241,6 +1013,12 @@ button { font-family: inherit; cursor: pointer; }
 }
 .namaz-hadith-text { font-size: 14px; color: var(--namaz-teal-dark); font-style: italic; margin-bottom: 6px; }
 .namaz-hadith-ref { font-size: 12px; color: var(--namaz-muted); font-weight: 600; }
+
+.namaz-toggle-row { display: flex; gap: 10px; margin-bottom: 24px; }
+.namaz-toggle-row .namaz-analytics-toggle { flex: 1; min-width: 0; padding: 12px 10px; font-size: 12.5px; }
+.namaz-toggle-row .namaz-analytics-toggle-label { gap: 6px; min-width: 0; }
+.namaz-toggle-row .namaz-analytics-toggle-icon { width: 24px; height: 24px; }
+.namaz-toggle-row .namaz-analytics-toggle-icon .material-symbols-outlined { font-size: 14px; }
 
 .namaz-analytics-toggle {
   position: relative;
@@ -1290,6 +1068,17 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: 22px;
   padding: 18px;
   box-shadow: 0 16px 40px rgba(31,77,67,0.14), inset 0 1px 0 rgba(255,255,255,0.9);
+}
+/* Detailed Analytics uses the carousel of its own individually-carded slides instead -
+   the shared card look above (still used by Qada Tracker) would otherwise show as a
+   card behind each slide card, i.e. a card inside a card. Layout/spacing stays
+   identical (same padding), only the visible card decoration is removed. */
+.namaz-analytics--flat {
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: none;
+  box-shadow: none;
 }
 .namaz-analytics-title {
   font-size: 11px;
@@ -1363,28 +1152,44 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-stat-card--ontime { background: linear-gradient(160deg, var(--namaz-teal-pastel), #fdfcf6); }
 .namaz-stat-card--ontime::after { background: var(--namaz-teal); }
 .namaz-stat-card--ontime .namaz-stat-val { color: var(--namaz-teal); }
-.namaz-stat-card--kaza { background: linear-gradient(160deg, var(--namaz-kaza-pastel), #fdfcf6); }
-.namaz-stat-card--kaza::after { background: var(--namaz-kaza); }
-.namaz-stat-card--kaza .namaz-stat-val { color: var(--namaz-kaza); }
 .namaz-stat-card--missed { background: linear-gradient(160deg, var(--namaz-missed-pastel), #fdfcf6); }
 .namaz-stat-card--missed::after { background: var(--namaz-missed); }
 .namaz-stat-card--missed .namaz-stat-val { color: var(--namaz-missed); }
-.namaz-stat-card--rate { background: linear-gradient(160deg, var(--namaz-bg-from), #fdfcf6); }
-.namaz-stat-card--rate::after { background: var(--namaz-muted); }
-.namaz-stat-card--rate .namaz-stat-val { color: var(--namaz-teal-dark); }
-.namaz-stat-card--streak { background: linear-gradient(160deg, var(--namaz-gold-pastel), #fdfcf6); }
-.namaz-stat-card--streak::after { background: var(--namaz-gold); }
-.namaz-stat-card--streak .namaz-stat-val { color: var(--namaz-gold-dark); }
-.namaz-stat-card--best { background: linear-gradient(160deg, var(--namaz-gold-pastel), #fdfcf6); }
-.namaz-stat-card--best::after { background: var(--namaz-gold); }
-.namaz-stat-card--best .namaz-stat-val { color: var(--namaz-gold-dark); }
 
 .namaz-stat-card--ontime .namaz-stat-icon { color: var(--namaz-teal); }
-.namaz-stat-card--kaza .namaz-stat-icon { color: var(--namaz-kaza); }
 .namaz-stat-card--missed .namaz-stat-icon { color: var(--namaz-missed); }
-.namaz-stat-card--rate .namaz-stat-icon { color: var(--namaz-teal-dark); }
-.namaz-stat-card--streak .namaz-stat-icon,
-.namaz-stat-card--best .namaz-stat-icon { color: var(--namaz-gold-dark); }
+
+/* Single horizontal strip for the top "This month" summary - one card, all six figures
+   in a row (scrolls internally if it does not fit, never the page), instead of six
+   separate cards taking two rows of vertical space. */
+.namaz-stat-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--namaz-card);
+  border-radius: 16px;
+  padding: 14px 8px;
+  box-shadow: var(--shadow-soft);
+}
+.namaz-stat-strip::-webkit-scrollbar { display: none; }
+.namaz-stat-chip {
+  flex: 1 0 0;
+  min-width: 54px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  text-align: center;
+}
+.namaz-stat-chip-icon { font-size: 15px; }
+.namaz-stat-chip-val { font-size: 16px; font-weight: 800; }
+.namaz-stat-chip-label { font-size: 9px; line-height: 1.2; color: var(--namaz-muted); }
+.namaz-stat-chip--ontime { color: var(--namaz-teal); }
+.namaz-stat-chip--kaza { color: var(--namaz-kaza); }
+.namaz-stat-chip--missed { color: var(--namaz-missed); }
+.namaz-stat-chip--rate { color: var(--namaz-teal-dark); }
+.namaz-stat-chip--streak { color: var(--namaz-gold-dark); }
 .namaz-stat-icon .material-symbols-outlined { font-size: 16px; }
 .namaz-stat-icon {
   position: relative;
@@ -1404,23 +1209,17 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-stat-label { position: relative; z-index: 1; font-size: 11px; font-weight: 600; color: var(--namaz-muted); }
 
 .namaz-heatmap-wrap {
-  overflow-x: auto;
-  padding: 12px;
-  background: rgba(255,255,255,0.5);
-  border-radius: 14px;
-  box-shadow: inset 0 1px 4px rgba(31,77,67,0.06);
+  padding: 4px 0 12px;
 }
 .namaz-heatmap-grid {
   display: grid;
-  grid-auto-flow: column;
-  grid-template-rows: repeat(7, 13px);
-  grid-auto-columns: 13px;
-  gap: 3px;
-  width: max-content;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  width: 100%;
 }
 .namaz-heat-cell {
-  width: 13px;
-  height: 13px;
+  width: 100%;
+  aspect-ratio: 1;
   border-radius: 4px;
   background: rgba(0,0,0,0.06);
   position: relative;
@@ -1457,12 +1256,12 @@ button { font-family: inherit; cursor: pointer; }
 }
 .namaz-heat-legend .namaz-heat-cell { width: 10px; height: 10px; }
 
-.namaz-breakdown-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.namaz-breakdown-row { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
 .namaz-breakdown-row:last-child { margin-bottom: 0; }
-.namaz-breakdown-label { width: 56px; font-size: 12px; font-weight: 700; color: var(--namaz-teal-dark); }
+.namaz-breakdown-label { width: 62px; font-size: 13px; font-weight: 700; color: var(--namaz-teal-dark); }
 .namaz-breakdown-bar {
   flex: 1;
-  height: 9px;
+  height: 14px;
   background: rgba(0,0,0,0.06);
   border-radius: 999px;
   overflow: hidden;
@@ -1471,10 +1270,11 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-breakdown-fill {
   display: block;
   height: 100%;
+  min-width: 14px;
   border-radius: 999px;
   background: linear-gradient(90deg, var(--namaz-gold), var(--namaz-gold-dark));
 }
-.namaz-breakdown-val { width: 38px; text-align: right; font-size: 12px; font-weight: 700; color: var(--namaz-teal-dark); }
+.namaz-breakdown-val { width: 42px; text-align: right; font-size: 13px; font-weight: 700; color: var(--namaz-teal-dark); }
 
 .namaz-qada-badge {
   display: inline-flex;
@@ -1557,23 +1357,36 @@ button { font-family: inherit; cursor: pointer; }
 }
 .namaz-qada-calc-apply:disabled { opacity: 0.4; }
 
-.namaz-comparative { display: flex; flex-direction: column; gap: 14px; }
-.namaz-analytics-block--boxed {
+.namaz-block-footnote { font-size: 12px; color: var(--namaz-muted); margin-top: 10px; text-align: center; }
+
+/* Detailed Analytics as a horizontal swipeable carousel - one card per analytics view
+   (heatmap, by-prayer, trend, comparison, weekday, missed reasons) instead of a long
+   vertical stack, same pattern already used for Finance's .txn-charts-grid and
+   Milestones' .mile-analytics-carousel. */
+.namaz-analytics-carousel {
+  display: flex; gap: 14px;
+  overflow-x: auto; scroll-snap-type: x mandatory;
+  margin: 0 -18px; padding: 2px 18px 6px;
+  scrollbar-width: none;
+}
+.namaz-analytics-carousel::-webkit-scrollbar { display: none; }
+.namaz-chart-slide {
+  flex: 0 0 85%; scroll-snap-align: start; min-width: 0;
+  display: flex; flex-direction: column; justify-content: center;
   background: linear-gradient(160deg, rgba(255,255,255,0.85), rgba(255,255,255,0.55));
   border: 1px solid rgba(255,255,255,0.7);
   border-radius: 16px;
-  padding: 14px;
+  padding: 16px;
   box-shadow: 0 4px 14px rgba(122,94,20,0.06);
 }
-.namaz-block-caption { font-size: 12px; font-weight: 700; color: var(--namaz-teal-dark); margin-bottom: 12px; }
-.namaz-block-footnote { font-size: 12px; color: var(--namaz-muted); margin-top: 10px; text-align: center; }
+@media (min-width: 640px) { .namaz-chart-slide { flex-basis: 320px; } }
 .namaz-block-footnote strong { color: var(--namaz-gold-dark); }
 
 .namaz-trend-chart {
   display: flex;
   align-items: flex-end;
   gap: 3px;
-  height: 72px;
+  height: 150px;
   overflow-x: auto;
   padding-bottom: 2px;
 }
@@ -1592,21 +1405,21 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-trend-seg--ontime { background: var(--namaz-teal); }
 .namaz-trend-footer { display: flex; justify-content: space-between; margin-top: 8px; font-size: 10px; color: var(--namaz-muted); }
 
-.namaz-compare-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.namaz-compare-row { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
 .namaz-compare-row:last-child { margin-bottom: 0; }
-.namaz-compare-label { width: 52px; font-size: 12px; color: var(--namaz-muted); font-weight: 600; }
-.namaz-compare-bar { flex: 1; height: 12px; background: rgba(0,0,0,0.06); border-radius: 999px; overflow: hidden; }
-.namaz-compare-fill { display: block; height: 100%; border-radius: 999px; }
+.namaz-compare-label { width: 58px; font-size: 13px; color: var(--namaz-muted); font-weight: 600; }
+.namaz-compare-bar { flex: 1; height: 18px; background: rgba(0,0,0,0.06); border-radius: 999px; overflow: hidden; }
+.namaz-compare-fill { display: block; height: 100%; min-width: 18px; border-radius: 999px; }
 .namaz-compare-fill--current { background: linear-gradient(90deg, var(--namaz-gold), var(--namaz-gold-dark)); }
 .namaz-compare-fill--previous { background: rgba(0,0,0,0.25); }
-.namaz-compare-val { width: 34px; text-align: right; font-size: 12px; font-weight: 700; color: var(--namaz-teal-dark); }
+.namaz-compare-val { width: 42px; text-align: right; font-size: 14px; font-weight: 700; color: var(--namaz-teal-dark); }
 
 .namaz-weekday-chart {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   align-items: end;
   gap: 5px;
-  height: 72px;
+  height: 150px;
 }
 .namaz-weekday-bar-wrap { height: 100%; display: flex; align-items: flex-end; }
 .namaz-weekday-bar {
@@ -1623,11 +1436,11 @@ button { font-family: inherit; cursor: pointer; }
   text-align: center;
 }
 
-.namaz-reasons-block { display: flex; align-items: center; gap: 16px; }
-.namaz-reasons-donut { width: 64px; height: 64px; flex-shrink: 0; }
-.namaz-reasons-legend { flex: 1; display: flex; flex-direction: column; gap: 6px; }
-.namaz-reasons-legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--namaz-teal-dark); }
-.namaz-reasons-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.namaz-reasons-block { display: flex; align-items: center; gap: 20px; }
+.namaz-reasons-donut { width: 100px; height: 100px; flex-shrink: 0; }
+.namaz-reasons-legend { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+.namaz-reasons-legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--namaz-teal-dark); }
+.namaz-reasons-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
 
 /* ── Duas page (reuses the Namaz gold/cream palette) ──────── */
 .duas-screen {
@@ -3231,93 +3044,9 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 /* ── Home Screen ──────────────────────────────────────────────────────────── */
-.home-screen {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  background:
-    radial-gradient(at 20% 6%, rgba(255,248,232,0.9) 0%, transparent 55%),
-    radial-gradient(at 85% 4%, rgba(253,243,216,0.85) 0%, transparent 55%),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%23c9a227' stroke-opacity='0.08' stroke-width='1'%3E%3Crect x='16' y='16' width='28' height='28'/%3E%3Crect x='16' y='16' width='28' height='28' transform='rotate(45 30 30)'/%3E%3C/g%3E%3C/svg%3E") repeat,
-    linear-gradient(160deg, var(--namaz-bg-from), var(--namaz-bg-to));
-  background-size: 160% 160%, 160% 160%, 60px 60px, cover;
-  animation: mile-card-glow-drift 20s ease-in-out infinite alternate;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 48px 24px 32px;
-}
-.home-header {
-  position: relative; z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 32px;
-  align-self: flex-start;
-  width: 100%;
-  max-width: 420px;
-}
-.home-avatar {
-  width: 52px; height: 52px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--namaz-gold), var(--namaz-gold-dark));
-  color: #fff;
-  font-size: 22px; font-weight: 700;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-  box-shadow: 0 6px 16px rgba(138,109,31,0.3);
-}
-.home-greeting {
-  display: flex;
-  flex-direction: column;
-}
-.home-hi   { font-size: 13px; color: var(--namaz-muted); }
-.home-name { font-size: 20px; font-weight: 800; color: var(--namaz-gold-dark); }
-.home-role-badge {
-  margin-left: auto;
-  background: linear-gradient(135deg, var(--namaz-gold), var(--namaz-gold-dark));
-  color: #fff;
-  font-size: 11px; font-weight: 700;
-  padding: 4px 12px;
-  border-radius: 999px;
-  box-shadow: 0 4px 10px rgba(138,109,31,0.25);
-}
-.home-tiles {
-  position: relative; z-index: 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  width: 100%;
-  max-width: 420px;
-}
-.home-tile {
-  background: linear-gradient(160deg, rgba(255,255,255,0.92), rgba(255,255,255,0.7));
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255,255,255,0.7);
-  border-radius: 20px;
-  padding: 28px 16px 22px;
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-  cursor: pointer;
-  transition: transform 0.1s;
-  min-height: 160px;
-  box-shadow: 0 14px 34px rgba(138,109,31,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
-}
-.home-tile:active { transform: scale(0.96); }
-/* Per-tile accent comes from an inline custom property (--tile-accent) set in
-   HomeScreen.jsx per module, so every tile reads its real module color at a glance
-   instead of one uniform gold icon-wrap regardless of what it links to. */
-.home-tile-icon-wrap {
-  display: flex; align-items: center; justify-content: center;
-  width: 52px; height: 52px; border-radius: 16px;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--tile-accent, var(--hub-accent)) 22%, #fff), #fff);
-}
-.home-tile-icon  { font-size: 26px; line-height: 1; color: var(--tile-accent, var(--hub-accent)); }
-.home-tile-label { font-size: 15px; font-weight: 800; color: var(--namaz-gold-dark); text-align: center; }
-.home-tile-desc  { font-size: 11.5px; color: var(--namaz-muted); text-align: center; }
+/* HomeScreen.jsx is styled with Tailwind utility classes directly - see tailwind.css.
+   The .dashboard/.home-screen combined Material Symbols font-family rule lives with the
+   Dashboard section above. */
 
 /* Home nav button (in chat + admin headers) */
 .home-nav-btn {

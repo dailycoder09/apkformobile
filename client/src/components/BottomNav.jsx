@@ -67,21 +67,23 @@ const NAV_ITEMS = [
 
 export default function BottomNav({ active, onNavigate }) {
   return (
-    <nav className="bottom-nav">
-      <div className="bottom-nav-pill">
+    <nav className="bottom-nav-shell flex shrink-0 justify-center px-4 py-2.5" style={{ paddingBottom: 'max(10px, env(safe-area-inset-bottom))' }}>
+      <div className="flex items-center gap-1 rounded-full border border-white/10 bg-[#17152b]/90 p-1.5 shadow-[var(--shadow-lift)] backdrop-blur-xl">
         {NAV_ITEMS.map((item) => {
           const isActive = item.value === active
           return (
             <button
               key={item.key}
               type="button"
-              className={`bottom-nav-btn${isActive ? ' active' : ''}`}
               onClick={() => onNavigate(item.value)}
               aria-label={item.label}
               title={item.label}
+              className={`flex size-[42px] items-center justify-center rounded-full transition-colors duration-150 active:scale-90 ${
+                isActive ? 'bg-[image:var(--gradient-gold)] text-white' : 'text-white/55 hover:text-white/80'
+              }`}
             >
               <svg
-                className="bottom-nav-icon"
+                className="size-5 shrink-0"
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"

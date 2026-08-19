@@ -1,15 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
-import { computeHomeStats } from '../utils/milestoneStats'
+import { Area, AreaChart, Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
+import { computeGoalStats, computeHomeStats } from '../utils/milestoneStats'
+import { getCategoryMeta } from '../utils/txnMeta'
 
 const WORKOUT_GOAL_MIN = 30
+const PRAYER_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha']
 
-function todayKey() {
-  const d = new Date()
+function todayKey(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function formatINR(n) {
   return '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+// Compact K/L/Cr abbreviation for the large bento numbers — the full digit-grouped form
+// (e.g. "₹3,01,562.00") is too wide for a headline number at 3xl+ and forces its grid item
+// wider than the viewport (a grid item won't shrink below an unbroken token's width).
+function formatINRCompact(n) {
+  const abs = Math.abs(n)
+  const trim = (v) => v.toFixed(2).replace(/\.?0+$/, '')
+  if (abs >= 1e7) return '₹' + trim(n / 1e7) + 'Cr'
+  if (abs >= 1e5) return '₹' + trim(n / 1e5) + 'L'
+  if (abs >= 1e3) return '₹' + trim(n / 1e3) + 'K'
+  return '₹' + Math.round(n)
 }
 
 function relativeTime(ms) {
@@ -21,14 +35,72 @@ function relativeTime(ms) {
   return new Date(ms).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
 }
 
-function readNamazCount() {
+function readNamazAll() {
   try {
-    const all = JSON.parse(localStorage.getItem('meeee_namaz') || '{}')
-    const today = all[todayKey()] || {}
-    return Object.values(today).filter(Boolean).length
+    return JSON.parse(localStorage.getItem('meeee_namaz') || '{}')
   } catch {
-    return 0
+    return {}
   }
+}
+
+function readNamazCount() {
+  const today = readNamazAll()[todayKey()] || {}
+  return Object.values(today).filter(Boolean).length
+}
+
+// Last 7 days' prayer count, for the weekday bar chart — real localStorage data, same
+// shape NamazTracker.jsx itself reads, not sample data.
+function readNamazWeekly() {
+  const all = readNamazAll()
+  const days = []
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date()
+    d.setDate(d.getDate() - i)
+    const dayData = all[todayKey(d)] || {}
+    days.push({ day: d.toLocaleDateString('en-US', { weekday: 'short' }), count: Object.values(dayData).filter(Boolean).length })
+  }
+  return days
+}
+
+function isFullPrayerDay(dayData) {
+  return !!dayData && PRAYER_KEYS.every(k => !!dayData[k])
+}
+
+// Same current/longest streak definition as NamazTracker.jsx's own `streak`/`longestStreak`
+// (a "full day" = all 5 prayers marked) — duplicated per this app's existing convention of
+// each screen keeping its own copy of small derivations (TransactionPanel/AdminTransactionView
+// do the same).
+function readNamazStreaks() {
+  const all = readNamazAll()
+  let current = 0
+  const cursor = new Date()
+  if (!isFullPrayerDay(all[todayKey(cursor)])) cursor.setDate(cursor.getDate() - 1)
+  while (isFullPrayerDay(all[todayKey(cursor)])) {
+    current++
+    cursor.setDate(cursor.getDate() - 1)
+  }
+  const fullDayKeys = Object.keys(all).filter(k => isFullPrayerDay(all[k])).sort()
+  let longest = 0, run = 0, prevDate = null
+  fullDayKeys.forEach(k => {
+    const d = new Date(`${k}T00:00:00`)
+    run = prevDate && Math.round((d - prevDate) / 86400000) === 1 ? run + 1 : 1
+    longest = Math.max(longest, run)
+    prevDate = d
+  })
+  return { current, longest: Math.max(longest, current) }
+}
+
+// Percentage of this-month days (so far) that were a full 5-prayer day - the same
+// "on-time this month" style stat the reference app shows for its Prayer module.
+function readNamazMonthRate() {
+  const all = readNamazAll()
+  const now = new Date()
+  const daysElapsed = now.getDate()
+  let fullDays = 0
+  for (let d = 1; d <= daysElapsed; d++) {
+    if (isFullPrayerDay(all[todayKey(new Date(now.getFullYear(), now.getMonth(), d))])) fullDays++
+  }
+  return daysElapsed > 0 ? Math.round((fullDays / daysElapsed) * 100) : 0
 }
 
 function readWorkoutMinutes() {
@@ -53,6 +125,9 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
   const [goals, setGoals] = useState([])
   const [tasks, setTasks] = useState([])
   const namazCount = readNamazCount()
+  const namazWeekly = readNamazWeekly()
+  const namazStreaks = readNamazStreaks()
+  const namazMonthRate = readNamazMonthRate()
   const workoutMinutes = readWorkoutMinutes()
 
   useEffect(() => {
@@ -87,16 +162,52 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
       .sort((a, b) => b.date - a.date)
   }, [txns])
 
-  const netToday = useMemo(() => {
-    const debit = todayTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)
-    const credit = todayTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0)
+  const monthTxns = useMemo(() => {
+    const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0)
+    return txns.filter(t => t.date >= monthStart.getTime())
+  }, [txns])
+
+  const netThisMonth = useMemo(() => {
+    const debit = monthTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)
+    const credit = monthTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0)
     return credit - debit
-  }, [todayTxns])
+  }, [monthTxns])
+
+  // Real last-7-day debit total per day, feeding the Finance tile's mini trend chart —
+  // not sample data, the same `txns` list the rest of this page already loads.
+  const spendTrend = useMemo(() => {
+    const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+    const days = []
+    const byDay = {}
+    for (let i = 6; i >= 0; i--) {
+      const key = new Date(todayStart.getTime() - i * 86400000).toDateString()
+      days.push(key)
+      byDay[key] = 0
+    }
+    txns.forEach(t => {
+      if (t.type !== 'debit') return
+      const key = new Date(t.date).toDateString()
+      if (key in byDay) byDay[key] += t.amount
+    })
+    return days.map(k => byDay[k])
+  }, [txns])
+
+  // Top spending categories this month, for the "Spend Mix" donut — same getCategoryMeta
+  // helper TransactionPanel.jsx uses, so colors/labels agree with the Finance screen.
+  const categoryBreakdown = useMemo(() => {
+    const byCategory = {}
+    monthTxns.filter(t => t.type === 'debit').forEach(t => {
+      const meta = getCategoryMeta(t)
+      if (!byCategory[meta.id]) byCategory[meta.id] = { ...meta, amount: 0 }
+      byCategory[meta.id].amount += t.amount
+    })
+    return Object.values(byCategory).sort((a, b) => b.amount - a.amount).slice(0, 6)
+  }, [monthTxns])
 
   // Same net-balance math as KhatabookPanel.jsx's own `totals` — a contact who owes the
   // user shouldn't cancel out against a different contact the user owes, so the two sides
-  // are summed separately before netting for this one-number tile.
-  const khataNet = useMemo(() => {
+  // are summed separately rather than netted.
+  const khataTotals = useMemo(() => {
     const balances = {}
     khataEntries.forEach(e => {
       const delta = e.type === 'gave' ? e.amount : -e.amount
@@ -108,97 +219,259 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
       if (bal > 0) youllGet += bal
       else youllPay += -bal
     })
-    return youllGet - youllPay
+    return { youllGet, youllPay }
   }, [khataContacts, khataEntries])
 
   const activeGoals = useMemo(() => goals.filter(g => g.status !== 'archived'), [goals])
   const milestoneStats = useMemo(() => computeHomeStats(activeGoals, tasks), [activeGoals, tasks])
+  const topGoal = useMemo(
+    () => [...activeGoals].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0] || null,
+    [activeGoals]
+  )
+  const topGoalStats = useMemo(() => (topGoal ? computeGoalStats(topGoal, tasks) : null), [topGoal, tasks])
 
   const dateLabel = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })
 
+  const modules = [
+    { key: 'namaz', icon: 'mosque', name: 'Prayer', blurb: 'Namaz log, qada tracker & streaks', metric: `${namazCount}/5`, sub: 'today' },
+    { key: 'transactions', icon: 'payments', name: 'Finance', blurb: 'Spending, budgets & cashflow', metric: formatINRCompact(monthTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)), sub: 'spent this month' },
+    { key: 'khatabook', icon: 'account_balance_wallet', name: 'Khata Book', blurb: 'Who owes what, settled cleanly', metric: formatINRCompact(khataTotals.youllGet), sub: 'receivable' },
+    { key: 'milestone', icon: 'flag', name: 'Milestones', blurb: 'Challenges, habits & focus tasks', metric: `${activeGoals.length}`, sub: 'active challenges' },
+    { key: 'workout', icon: 'fitness_center', name: 'Workout', blurb: 'Sessions logged today', metric: `${workoutMinutes}m`, sub: `of ${WORKOUT_GOAL_MIN}m goal` },
+  ]
+
   return (
-    <div className="dashboard">
-      <span className="hub-meteors" aria-hidden="true">
-        <i className="hub-meteor" style={{ left: '15%', animationDelay: '0s' }} />
-        <i className="hub-meteor" style={{ left: '55%', animationDelay: '2.6s' }} />
-        <i className="hub-meteor" style={{ left: '80%', animationDelay: '5.2s' }} />
-      </span>
+    <div className="dashboard relative h-full overflow-y-auto overflow-x-hidden surface-sand font-sans">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-48 left-1/2 size-[280px] -translate-x-1/2 rounded-full bg-[image:var(--gradient-gold)] opacity-25 blur-3xl animate-float sm:size-[440px] md:size-[640px]"
+      />
 
-      <div className="dash-header">
-        <span className="dash-greeting">Welcome back</span>
-        <h1 className="dash-name">{session.name}</h1>
-        <span className="dash-date">{dateLabel}</span>
-      </div>
-
-      <div className="dash-stats">
-        <button className="dash-stat dash-stat--gold" onClick={() => onSelect('namaz')}>
-          <span className="dash-stat-icon-wrap"><span className="material-symbols-outlined">mosque</span></span>
-          <span className="dash-stat-value">{namazCount}/5</span>
-          <span className="dash-stat-label">Namaz</span>
-          <span className="dash-stat-bar">
-            <span className="dash-stat-bar-fill" style={{ width: `${Math.min(namazCount / 5, 1) * 100}%` }} />
+      <main className="relative mx-auto w-full max-w-6xl px-4 pt-10 pb-28 sm:px-6 sm:pt-14 sm:pb-36">
+        {/* Hero */}
+        <section className="animate-fade-up text-center">
+          <span className="inline-flex items-center gap-2 rounded-full border border-border bg-card/70 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-gold backdrop-blur">
+            <span className="material-symbols-outlined text-sm">auto_awesome</span>
+            {dateLabel}
           </span>
-        </button>
+          <h1 className="mx-auto mt-6 max-w-3xl text-balance font-display text-4xl font-extrabold leading-[1.02] text-foreground sm:text-6xl">
+            Welcome back,
+            <span className="block text-gradient-gold">{session.name}.</span>
+          </h1>
+          <p className="mx-auto mt-5 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-base">
+            Prayers, money, ledgers and milestones — tracked together, charted clearly, and designed
+            to be opened every single morning.
+          </p>
+          <button
+            type="button"
+            onClick={() => onSelect('tour')}
+            className="mt-6 inline-flex items-center gap-2 rounded-2xl border border-border bg-card px-5 py-3 text-sm font-semibold text-foreground transition-transform hover:scale-[1.03]"
+          >
+            Take the tour
+          </button>
+        </section>
 
-        <button className="dash-stat dash-stat--emerald" onClick={() => onSelect('workout')}>
-          <span className="dash-stat-icon-wrap"><span className="material-symbols-outlined">fitness_center</span></span>
-          <span className="dash-stat-value">{workoutMinutes}m</span>
-          <span className="dash-stat-label">Workout</span>
-          <span className="dash-stat-bar">
-            <span className="dash-stat-bar-fill" style={{ width: `${Math.min(workoutMinutes / WORKOUT_GOAL_MIN, 1) * 100}%` }} />
-          </span>
-        </button>
+        {/* Bento grid */}
+        <div className="mt-12 grid grid-cols-1 gap-4 stagger md:grid-cols-6">
+            {/* Prayer big tile */}
+            <button
+              type="button"
+              onClick={() => onSelect('namaz')}
+              className="tile grain group col-span-1 flex min-w-0 flex-col justify-between p-6 text-left md:col-span-3 md:row-span-2"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Today &middot; Namaz</p>
+                  <p className="num mt-3 text-5xl font-extrabold text-foreground">{namazCount}/5</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {namazCount === 5 ? 'All five prayed today' : `${5 - namazCount} prayer${5 - namazCount === 1 ? '' : 's'} left today`}
+                  </p>
+                </div>
+                <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gold-soft text-gold transition-transform group-hover:rotate-12">
+                  <span className="material-symbols-outlined text-xl">mosque</span>
+                </span>
+              </div>
+              {namazWeekly.some(d => d.count > 0) && (
+                <div className="mt-6 h-[132px] min-w-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={namazWeekly} barCategoryGap={10}>
+                      <XAxis
+                        dataKey="day"
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fontSize: 11, fill: 'var(--muted-foreground)' }}
+                      />
+                      <Bar dataKey="count" radius={[6, 6, 6, 6]} fill="var(--chart-1)" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              <div className="mt-4 flex items-center gap-2 text-sm font-semibold text-gold">
+                Open prayer tracker
+                <span className="material-symbols-outlined text-base">arrow_outward</span>
+              </div>
+            </button>
 
-        <button className="dash-stat dash-stat--rose" onClick={() => onSelect('transactions')}>
-          <span className="dash-stat-icon-wrap"><span className="material-symbols-outlined">payments</span></span>
-          <span className={`dash-stat-value ${netToday >= 0 ? 'dash-stat-value--pos' : 'dash-stat-value--neg'}`}>
-            {formatINR(Math.abs(netToday))}
-          </span>
-          <span className="dash-stat-label">Finance</span>
-        </button>
+            {/* Streak + This month - two small cards side by side instead of one full-width
+                streak card with a lot of empty space. */}
+            <div className="col-span-1 grid grid-cols-2 gap-4 md:col-span-3">
+              <button type="button" onClick={() => onSelect('namaz')} className="tile grain flex min-w-0 flex-col gap-2 p-5 text-left">
+                <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-warning-soft text-warning">
+                  <span className="material-symbols-outlined text-xl">local_fire_department</span>
+                </span>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Streak</p>
+                <p className="num text-2xl font-extrabold text-foreground">{namazStreaks.current}d</p>
+                <p className="text-xs text-muted-foreground">Best {namazStreaks.longest}</p>
+              </button>
+              <button type="button" onClick={() => onSelect('namaz')} className="tile grain flex min-w-0 flex-col gap-2 p-5 text-left">
+                <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-gold-soft text-gold">
+                  <span className="material-symbols-outlined text-xl">calendar_month</span>
+                </span>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">This month</p>
+                <p className="num text-2xl font-extrabold text-foreground">{namazMonthRate}%</p>
+                <p className="text-xs text-muted-foreground">on-time rate</p>
+              </button>
+            </div>
 
-        <button className="dash-stat dash-stat--khata" onClick={() => onSelect('khatabook')}>
-          <span className="dash-stat-icon-wrap"><span className="material-symbols-outlined">account_balance_wallet</span></span>
-          <span className={`dash-stat-value ${khataNet >= 0 ? 'dash-stat-value--pos' : 'dash-stat-value--neg'}`}>
-            {formatINR(Math.abs(khataNet))}
-          </span>
-          <span className="dash-stat-label">{khataNet >= 0 ? "You'll Get" : "You'll Pay"}</span>
-        </button>
+            {/* Cashflow */}
+            <button type="button" onClick={() => onSelect('transactions')} className="tile col-span-1 min-w-0 p-6 text-left md:col-span-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Net this month</p>
+                  <p className={`num mt-2 truncate text-3xl font-extrabold ${netThisMonth >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    {netThisMonth >= 0 ? '+' : '−'}{formatINRCompact(Math.abs(netThisMonth))}
+                  </p>
+                </div>
+                <span className="shrink-0 text-xs text-muted-foreground">{monthTxns.length} txns</span>
+              </div>
+              {spendTrend.some(v => v > 0) && (
+                <div className="mt-4 h-[92px] min-w-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={spendTrend.map((v, i) => ({ i, spent: v }))}>
+                      <defs>
+                        <linearGradient id="dashboardSpend" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.55} />
+                          <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <Area type="monotone" dataKey="spent" stroke="var(--chart-1)" strokeWidth={2.5} fill="url(#dashboardSpend)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </button>
 
-        <button className="dash-stat dash-stat--milestone" onClick={() => onSelect('milestone')}>
-          <span className="dash-stat-icon-wrap"><span className="material-symbols-outlined">flag</span></span>
-          <span className="dash-stat-value">{milestoneStats ? `${milestoneStats.onTrack}/${milestoneStats.total}` : '—'}</span>
-          <span className="dash-stat-label">On Track</span>
-          {milestoneStats && (
-            <span className="dash-stat-bar">
-              <span className="dash-stat-bar-fill" style={{ width: `${(milestoneStats.onTrack / milestoneStats.total) * 100}%`, background: 'var(--hub-accent)' }} />
-            </span>
-          )}
-        </button>
-      </div>
+            {/* Category donut */}
+            {categoryBreakdown.length > 0 && (
+              <div className="tile col-span-1 min-w-0 p-6 md:col-span-2">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Spend mix</p>
+                <div className="mt-2 h-[150px] min-w-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={categoryBreakdown} dataKey="amount" innerRadius={40} outerRadius={62} paddingAngle={3} stroke="none">
+                        {categoryBreakdown.map((c, i) => (
+                          <Cell key={i} fill={c.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{ borderRadius: 12, border: '1px solid var(--chart-border)', background: 'var(--popover)', fontSize: 12 }}
+                        formatter={(v) => formatINR(v)}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            )}
 
-      <div className="dash-activity">
-        <h2 className="dash-section-title">Today's activity</h2>
+            {/* Khata */}
+            <button type="button" onClick={() => onSelect('khatabook')} className="tile grain col-span-1 flex min-w-0 flex-col justify-between p-6 text-left md:col-span-2">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Khata book</p>
+                <p className="num mt-3 truncate text-3xl font-extrabold text-success">{formatINRCompact(khataTotals.youllGet)}</p>
+                <p className="text-xs text-muted-foreground">they owe you</p>
+              </div>
+              <p className="num mt-4 truncate text-sm font-semibold text-destructive">
+                {formatINRCompact(khataTotals.youllPay)}
+                <span className="ml-1 text-xs font-normal text-muted-foreground">you owe</span>
+              </p>
+            </button>
+
+            {/* Milestone */}
+            {topGoal && topGoalStats && (
+              <button type="button" onClick={() => onSelect('milestone')} className="tile grain col-span-1 flex min-w-0 flex-col justify-between p-6 text-left md:col-span-2">
+                <div className="flex items-start justify-between">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Top milestone</p>
+                  <span className="material-symbols-outlined shrink-0 text-base text-gold">flag</span>
+                </div>
+                <div className="mt-4 min-w-0">
+                  <p className="truncate text-lg font-bold text-foreground">{topGoal.title}</p>
+                  <p className="num mt-1 text-xs text-muted-foreground">Day {topGoalStats.daysElapsed} of {topGoalStats.totalDays}</p>
+                  <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-secondary">
+                    <div
+                      className="h-full rounded-full bg-[image:var(--gradient-gold)]"
+                      style={{ width: `${topGoalStats.completionPct}%` }}
+                    />
+                  </div>
+                </div>
+              </button>
+            )}
+        </div>
+
+        {/* Module launcher */}
+        <h2 className="mb-5 mt-16 font-display text-xl font-bold text-foreground">Explore the modules</h2>
+        <div className="grid grid-cols-1 gap-4 stagger sm:grid-cols-2 lg:grid-cols-4">
+          {modules.map(m => (
+            <button
+              key={m.key}
+              type="button"
+              onClick={() => onSelect(m.key)}
+              className="tile group flex min-w-0 flex-col gap-4 p-6 text-left"
+            >
+              <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gold-soft text-gold transition-transform duration-300 group-hover:-translate-y-1">
+                <span className="material-symbols-outlined text-xl">{m.icon}</span>
+              </span>
+              <div className="min-w-0">
+                <p className="text-base font-bold text-foreground">{m.name}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{m.blurb}</p>
+              </div>
+              <p className="num mt-auto truncate text-2xl font-extrabold text-foreground">
+                {m.metric}
+                <span className="ml-2 text-[11px] font-normal text-muted-foreground">{m.sub}</span>
+              </p>
+            </button>
+          ))}
+        </div>
+
+        {/* Today's activity */}
+        <h2 className="mb-5 mt-16 font-display text-xl font-bold text-foreground">Today's activity</h2>
         {todayTxns.length === 0 ? (
-          <div className="dash-empty-state">
-            <span className="material-symbols-outlined">history_toggle_off</span>
-            <span className="dash-empty-text">No activity yet today — it'll show up here as it happens.</span>
+          <div className="tile flex flex-col items-center gap-2 p-10 text-center">
+            <span className="material-symbols-outlined text-3xl text-gold opacity-60">history_toggle_off</span>
+            <p className="text-sm text-muted-foreground">No activity yet today &mdash; it'll show up here as it happens.</p>
           </div>
         ) : (
-          <div className="dash-activity-list">
+          <div className="tile divide-y divide-border">
             {todayTxns.slice(0, 5).map(t => (
-              <div key={t.id} className="dash-activity-row">
-                <span className="material-symbols-outlined dash-activity-icon">{CATEGORY_ICON[t.category] || 'credit_card'}</span>
-                <span className="dash-activity-merchant">{t.merchant}</span>
-                <span className={`dash-activity-amount ${t.type === 'credit' ? 'dash-activity-amount--pos' : 'dash-activity-amount--neg'}`}>
-                  {t.type === 'credit' ? '+' : '-'}{formatINR(t.amount)}
+              <div key={t.id} className="flex min-w-0 items-center gap-3 p-4">
+                <span
+                  className={`grid size-9 shrink-0 place-items-center rounded-xl ${
+                    t.type === 'credit' ? 'bg-success-soft text-success' : 'bg-destructive-soft text-destructive'
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-lg">{CATEGORY_ICON[t.category] || 'credit_card'}</span>
                 </span>
-                <span className="dash-activity-time">{relativeTime(t.date)}</span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-foreground">{t.merchant}</p>
+                  <p className="text-xs text-muted-foreground">{relativeTime(t.date)}</p>
+                </div>
+                <p className={`num shrink-0 text-sm font-bold ${t.type === 'credit' ? 'text-success' : 'text-destructive'}`}>
+                  {t.type === 'credit' ? '+' : '−'}{formatINR(t.amount)}
+                </p>
               </div>
             ))}
           </div>
         )}
-      </div>
+      </main>
     </div>
   )
 }

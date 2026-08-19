@@ -18,6 +18,7 @@ import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
 import NamazTracker from './components/NamazTracker'
 import ProfilePage from './components/ProfilePage'
+import TourPage from './components/TourPage'
 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
 const IS_NATIVE = Capacitor.isNativePlatform()
@@ -487,6 +488,8 @@ export default function App() {
               : <ProfilePage session={session} sendMsg={sendMsg} addListener={addListener} />
           ) : module === 'workout' ? (
             <ComingSoon title="Workout" icon="💪" onHome={() => setModule(null)} />
+          ) : module === 'tour' ? (
+            <TourPage onHome={() => setModule(null)} onSelect={setModule} />
           ) : null}
 
           {session.role !== 'admin' && (

@@ -1,0 +1,152 @@
+@import "tailwindcss";
+
+/* OKLCH gold/sand tokens, ported 1:1 from the Lovable reference app
+   (chart-charming-chronicle/src/styles.css) as Tailwind theme tokens. Additive only:
+   does not touch or rename the existing hex tokens the rest of the app (Namaz, Finance,
+   Khatabook, Milestones, Chat) still reads. Scoped to components rewritten with
+   Tailwind, starting with the Home hub (Dashboard.jsx / HomeScreen.jsx / BottomNav.jsx).
+   Note: avoid writing literal CSS custom-property syntax inside comments in this file
+   (e.g. a bare token name followed by a wildcard) - the Tailwind/Lightning CSS build
+   pipeline can misparse it as real code even inside a comment block. */
+@theme {
+  --color-background: oklch(0.981 0.006 85);
+  --color-foreground: oklch(0.255 0.019 72);
+  --color-card: oklch(0.995 0.003 85);
+  --color-card-foreground: oklch(0.255 0.019 72);
+  --color-popover: oklch(0.995 0.003 85);
+  --color-popover-foreground: oklch(0.255 0.019 72);
+  --color-secondary: oklch(0.943 0.013 85);
+  --color-secondary-foreground: oklch(0.36 0.03 75);
+  --color-muted: oklch(0.947 0.011 85);
+  --color-muted-foreground: oklch(0.545 0.024 75);
+  --color-accent: oklch(0.925 0.03 88);
+  --color-accent-foreground: oklch(0.36 0.03 75);
+  --color-gold: oklch(0.72 0.125 86);
+  --color-gold-soft: oklch(0.945 0.05 92);
+  --color-sand: oklch(0.943 0.013 85);
+  --color-clay: oklch(0.783 0.038 85);
+  --color-success: oklch(0.55 0.115 158);
+  --color-success-soft: oklch(0.955 0.038 158);
+  --color-warning: oklch(0.68 0.13 62);
+  --color-warning-soft: oklch(0.955 0.045 76);
+  --color-destructive: oklch(0.556 0.185 25);
+  --color-destructive-soft: oklch(0.955 0.035 25);
+  --color-border: oklch(0.9 0.014 85);
+
+  --color-chart-1: oklch(0.72 0.125 86);
+  --color-chart-2: oklch(0.55 0.115 158);
+  --color-chart-3: oklch(0.62 0.09 45);
+  --color-chart-4: oklch(0.545 0.045 75);
+  --color-chart-5: oklch(0.783 0.038 85);
+
+  --radius-2xl: 1.75rem;
+
+  --font-display: "Urbanist", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: "Epilogue", -apple-system, BlinkMacSystemFont, sans-serif;
+
+  --animate-fade-up: fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-in: fade-in 0.5s ease-out both;
+  --animate-float: float 7s ease-in-out infinite;
+
+  /* Plain CSS variables (not a Tailwind "theme scale") - referenced via arbitrary-value
+     utilities like bg-[image:var(--gradient-gold)] or shadow-[var(--shadow-glow)]. */
+  --gradient-gold: linear-gradient(135deg, oklch(0.82 0.11 92), oklch(0.66 0.13 74));
+  --shadow-tile: 0 1px 2px oklch(0.4 0.03 75 / 0.05), 0 12px 30px -18px oklch(0.4 0.03 75 / 0.35);
+  --shadow-lift: 0 2px 6px oklch(0.4 0.03 75 / 0.07), 0 26px 50px -26px oklch(0.4 0.03 75 / 0.45);
+  --shadow-glow: 0 18px 44px -20px oklch(0.72 0.125 86 / 0.65);
+
+  /* Bare (non "--color-" prefixed) aliases of the tokens above, for direct var() use in
+     Recharts SVG props (fill/stroke/tick colors) - the reference app's own styles.css
+     declares both the Tailwind-facing --color-* form AND this bare form for exactly that
+     reason: SVG chart code reads CSS custom properties directly, not Tailwind classes. */
+  --chart-1: oklch(0.72 0.125 86);
+  --chart-2: oklch(0.55 0.115 158);
+  --chart-3: oklch(0.62 0.09 45);
+  --chart-4: oklch(0.545 0.045 75);
+  --chart-5: oklch(0.783 0.038 85);
+  --muted-foreground: oklch(0.545 0.024 75);
+  --popover: oklch(0.995 0.003 85);
+  /* Not aliased as bare --border: index.css's WhatsApp/Chat palette already defines a
+     --border (#2a3942) at :root scope for the rest of the app - reusing that exact name
+     here would let whichever stylesheet loads last silently win app-wide. Named distinctly
+     and referenced directly in Dashboard.jsx's chart code instead. */
+  --chart-border: oklch(0.9 0.014 85);
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes float {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  50%      { transform: translate3d(0, -14px, 0); }
+}
+
+/* Shared tile surface - one definition, every hub tile uses it via className="tile ...". */
+@utility tile {
+  border-radius: var(--radius-2xl);
+  background-color: var(--color-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 1px 2px oklch(0.4 0.03 75 / 0.05), 0 12px 30px -18px oklch(0.4 0.03 75 / 0.35);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@media (hover: hover) {
+  .tile:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 2px 6px oklch(0.4 0.03 75 / 0.07), 0 26px 50px -26px oklch(0.4 0.03 75 / 0.45);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tile { transition: none; }
+  .tile:hover { transform: none; }
+}
+
+@utility grain {
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.35;
+    background-image: radial-gradient(circle at 1px 1px, oklch(0.545 0.045 75 / 0.14) 1px, transparent 0);
+    background-size: 14px 14px;
+  }
+}
+
+@utility surface-sand {
+  background-image: linear-gradient(160deg, oklch(0.99 0.008 92) 0%, oklch(0.955 0.02 88) 55%, oklch(0.94 0.03 76) 100%);
+}
+
+@utility text-gradient-gold {
+  background-image: linear-gradient(135deg, oklch(0.82 0.11 92), oklch(0.66 0.13 74));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* Staggered entrance for a tile grid's direct children. */
+@utility stagger {
+  & > * { animation: fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+  & > *:nth-child(1) { animation-delay: 0.02s; }
+  & > *:nth-child(2) { animation-delay: 0.07s; }
+  & > *:nth-child(3) { animation-delay: 0.12s; }
+  & > *:nth-child(4) { animation-delay: 0.17s; }
+  & > *:nth-child(5) { animation-delay: 0.22s; }
+  & > *:nth-child(6) { animation-delay: 0.27s; }
+  & > *:nth-child(n + 7) { animation-delay: 0.32s; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stagger > * { animation: none; }
+  .animate-fade-up, .animate-fade-in, .animate-float { animation: none !important; }
+}

@@ -976,17 +976,43 @@ export default function NamazTracker() {
       )}
 
       {nextPrayer && (
-        <div className="namaz-streak-card">
-          <div className="namaz-streak-card-icon">
-            <span className="material-symbols-outlined">local_fire_department</span>
-          </div>
-          <div className="namaz-streak-card-info">
-            <h3 className="namaz-streak-card-title">Current Streak</h3>
-            <p className="namaz-streak-card-sub">Keep it up!</p>
-          </div>
-          <div className="namaz-streak-card-value">
-            <span className="namaz-streak-card-num">{streak}</span>
-            <span className="namaz-streak-card-unit">Days</span>
+        <div className="namaz-section">
+          <h2 className="namaz-section-title">
+            {calendarMonth.getMonth() === new Date().getMonth() && calendarMonth.getFullYear() === new Date().getFullYear()
+              ? 'This month'
+              : calendarMonth.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
+          </h2>
+          <div className="namaz-stat-strip">
+            <div className="namaz-stat-chip">
+              <span className="material-symbols-outlined namaz-stat-chip-icon namaz-stat-chip--ontime">check_circle</span>
+              <span className="namaz-stat-chip-val namaz-stat-chip--ontime">{monthStats.ontime}</span>
+              <span className="namaz-stat-chip-label">On time</span>
+            </div>
+            <div className="namaz-stat-chip">
+              <span className="material-symbols-outlined namaz-stat-chip-icon namaz-stat-chip--kaza">schedule</span>
+              <span className="namaz-stat-chip-val namaz-stat-chip--kaza">{monthStats.kaza}</span>
+              <span className="namaz-stat-chip-label">Kaza</span>
+            </div>
+            <div className="namaz-stat-chip">
+              <span className="material-symbols-outlined namaz-stat-chip-icon namaz-stat-chip--missed">cancel</span>
+              <span className="namaz-stat-chip-val namaz-stat-chip--missed">{monthStats.missed}</span>
+              <span className="namaz-stat-chip-label">Missed</span>
+            </div>
+            <div className="namaz-stat-chip">
+              <span className="material-symbols-outlined namaz-stat-chip-icon namaz-stat-chip--rate">trending_up</span>
+              <span className="namaz-stat-chip-val namaz-stat-chip--rate">{monthStats.percent}%</span>
+              <span className="namaz-stat-chip-label">On-time rate</span>
+            </div>
+            <div className="namaz-stat-chip">
+              <span className="material-symbols-outlined namaz-stat-chip-icon namaz-stat-chip--streak">local_fire_department</span>
+              <span className="namaz-stat-chip-val namaz-stat-chip--streak">{streak}</span>
+              <span className="namaz-stat-chip-label">Streak</span>
+            </div>
+            <div className="namaz-stat-chip">
+              <span className="material-symbols-outlined namaz-stat-chip-icon namaz-stat-chip--streak">trophy</span>
+              <span className="namaz-stat-chip-val namaz-stat-chip--streak">{longestStreak}</span>
+              <span className="namaz-stat-chip-label">Best</span>
+            </div>
           </div>
         </div>
       )}
@@ -1101,29 +1127,7 @@ export default function NamazTracker() {
         </div>
       </div>
 
-      <div className="namaz-section">
-        <h2 className="namaz-section-title">
-          {calendarMonth.getMonth() === new Date().getMonth() && calendarMonth.getFullYear() === new Date().getFullYear()
-            ? 'This month'
-            : calendarMonth.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
-        </h2>
-        <div className="namaz-monthly">
-          <div className="namaz-monthly-item">
-            <span className="namaz-monthly-val namaz-monthly-val--ontime">{monthStats.ontime}</span>
-            <span className="namaz-monthly-label">On time</span>
-          </div>
-          <div className="namaz-monthly-item">
-            <span className="namaz-monthly-val namaz-monthly-val--kaza">{monthStats.kaza}</span>
-            <span className="namaz-monthly-label">Kaza</span>
-          </div>
-          <div className="namaz-monthly-item">
-            <span className="namaz-monthly-val">{monthStats.missed}</span>
-            <span className="namaz-monthly-label">Missed</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="namaz-section">
+      <div className="namaz-toggle-row">
         <button className="namaz-analytics-toggle" onClick={() => setShowQada((v) => !v)}>
           <span className="namaz-analytics-toggle-label">
             <span className="namaz-analytics-toggle-icon"><span className="material-symbols-outlined">event_repeat</span></span>
@@ -1135,7 +1139,19 @@ export default function NamazTracker() {
           </span>
         </button>
 
-        {showQada && (
+        <button className="namaz-analytics-toggle" onClick={() => setShowAnalytics((v) => !v)}>
+          <span className="namaz-analytics-toggle-label">
+            <span className="namaz-analytics-toggle-icon"><span className="material-symbols-outlined">bar_chart</span></span>
+            Detailed Analytics
+          </span>
+          <span className={`namaz-analytics-chevron${showAnalytics ? ' open' : ''}`}>
+            <span className="material-symbols-outlined">expand_more</span>
+          </span>
+        </button>
+      </div>
+
+      {showQada && (
+        <div className="namaz-section">
           <div className="namaz-analytics">
             <p className="namaz-settings-hint">Track prayers you owe as makeup, and log them off as you complete them.</p>
             <div className="namaz-stat-grid">
@@ -1221,22 +1237,12 @@ export default function NamazTracker() {
               })}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      <div className="namaz-section">
-        <button className="namaz-analytics-toggle" onClick={() => setShowAnalytics((v) => !v)}>
-          <span className="namaz-analytics-toggle-label">
-            <span className="namaz-analytics-toggle-icon"><span className="material-symbols-outlined">bar_chart</span></span>
-            Detailed Analytics
-          </span>
-          <span className={`namaz-analytics-chevron${showAnalytics ? ' open' : ''}`}>
-            <span className="material-symbols-outlined">expand_more</span>
-          </span>
-        </button>
-
-        {showAnalytics && (
-          <div className="namaz-analytics">
+      {showAnalytics && (
+        <div className="namaz-section">
+          <div className="namaz-analytics namaz-analytics--flat">
             <label className="namaz-analytics-filter">
               <span className="material-symbols-outlined namaz-analytics-filter-icon">calendar_month</span>
               <select
@@ -1251,78 +1257,43 @@ export default function NamazTracker() {
               <span className="material-symbols-outlined namaz-analytics-filter-chevron">expand_more</span>
             </label>
 
-            <div className="namaz-stat-grid">
-              <div className="namaz-stat-card namaz-stat-card--ontime">
-                <span className="namaz-stat-icon"><span className="material-symbols-outlined">check_circle</span></span>
-                <span className="namaz-stat-val">{rangeStats.ontime}</span>
-                <span className="namaz-stat-label">On time</span>
-              </div>
-              <div className="namaz-stat-card namaz-stat-card--kaza">
-                <span className="namaz-stat-icon"><span className="material-symbols-outlined">schedule</span></span>
-                <span className="namaz-stat-val">{rangeStats.kaza}</span>
-                <span className="namaz-stat-label">Kaza</span>
-              </div>
-              <div className="namaz-stat-card namaz-stat-card--missed">
-                <span className="namaz-stat-icon"><span className="material-symbols-outlined">cancel</span></span>
-                <span className="namaz-stat-val">{rangeStats.missed}</span>
-                <span className="namaz-stat-label">Missed</span>
-              </div>
-              <div className="namaz-stat-card namaz-stat-card--rate">
-                <span className="namaz-stat-icon"><span className="material-symbols-outlined">trending_up</span></span>
-                <span className="namaz-stat-val">{rangeStats.percent}%</span>
-                <span className="namaz-stat-label">On-time rate</span>
-              </div>
-              <div className="namaz-stat-card namaz-stat-card--streak">
-                <span className="namaz-stat-icon"><span className="material-symbols-outlined">local_fire_department</span></span>
-                <span className="namaz-stat-val">{streak}</span>
-                <span className="namaz-stat-label">Current streak</span>
-              </div>
-              <div className="namaz-stat-card namaz-stat-card--best">
-                <span className="namaz-stat-icon"><span className="material-symbols-outlined">trophy</span></span>
-                <span className="namaz-stat-val">{longestStreak}</span>
-                <span className="namaz-stat-label">Best streak</span>
-              </div>
-            </div>
-
-            <div className="namaz-analytics-block">
-              <h3 className="namaz-analytics-title">Daily heatmap</h3>
-              <div className="namaz-heatmap-wrap">
-                <div className="namaz-heatmap-grid">
-                  {heatmapCells.map((d, i) => (
-                    <span
-                      key={d ? d.key : `pad-${i}`}
-                      className={`namaz-heat-cell${d ? ` namaz-heat-${heatLevel(d)}` : ' namaz-heat-pad'}${d?.kaza ? ' namaz-heat-haskaza' : ''}`}
-                      title={d ? `${d.date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} — ${d.ontime} on time, ${d.kaza} kaza` : undefined}
-                    />
-                  ))}
-                </div>
-              </div>
-              <div className="namaz-heat-legend">
-                <span>Less</span>
-                {[0, 1, 2, 3, 4, 5].map((l) => <span key={l} className={`namaz-heat-cell namaz-heat-${l}`} />)}
-                <span>More</span>
-              </div>
-            </div>
-
-            <div className="namaz-analytics-block">
-              <h3 className="namaz-analytics-title">By prayer</h3>
-              {prayerBreakdown.map((p) => (
-                <div key={p.key} className="namaz-breakdown-row">
-                  <span className="namaz-breakdown-label">{p.en}</span>
-                  <div className="namaz-breakdown-bar">
-                    <span className="namaz-breakdown-fill" style={{ width: `${p.percent}%` }} />
+            <div className="namaz-analytics-carousel">
+              <div className="namaz-chart-slide">
+                <h3 className="namaz-analytics-title">Daily heatmap</h3>
+                <div className="namaz-heatmap-wrap">
+                  <div className="namaz-heatmap-grid">
+                    {heatmapCells.map((d, i) => (
+                      <span
+                        key={d ? d.key : `pad-${i}`}
+                        className={`namaz-heat-cell${d ? ` namaz-heat-${heatLevel(d)}` : ' namaz-heat-pad'}${d?.kaza ? ' namaz-heat-haskaza' : ''}`}
+                        title={d ? `${d.date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} — ${d.ontime} on time, ${d.kaza} kaza` : undefined}
+                      />
+                    ))}
                   </div>
-                  <span className="namaz-breakdown-val">{p.total ? `${p.percent}%` : '—'}</span>
                 </div>
-              ))}
-            </div>
+                <div className="namaz-heat-legend">
+                  <span>Less</span>
+                  {[0, 1, 2, 3, 4, 5].map((l) => <span key={l} className={`namaz-heat-cell namaz-heat-${l}`} />)}
+                  <span>More</span>
+                </div>
+              </div>
 
-            <div className="namaz-comparative">
-              <h3 className="namaz-analytics-title">Comparative Insights</h3>
+              <div className="namaz-chart-slide">
+                <h3 className="namaz-analytics-title">By prayer</h3>
+                {prayerBreakdown.map((p) => (
+                  <div key={p.key} className="namaz-breakdown-row">
+                    <span className="namaz-breakdown-label">{p.en}</span>
+                    <div className="namaz-breakdown-bar">
+                      <span className="namaz-breakdown-fill" style={{ width: `${p.percent}%` }} />
+                    </div>
+                    <span className="namaz-breakdown-val">{p.total ? `${p.percent}%` : '—'}</span>
+                  </div>
+                ))}
+              </div>
 
               {trendBuckets.length > 0 && (
-                <div className="namaz-analytics-block namaz-analytics-block--boxed">
-                  <p className="namaz-block-caption">On-time vs. Kaza trend</p>
+                <div className="namaz-chart-slide">
+                  <h3 className="namaz-analytics-title">On-time vs. Kaza trend</h3>
                   <div className="namaz-trend-chart">
                     {trendBuckets.map((b) => (
                       <div key={b.key} className="namaz-trend-bar-wrap" title={`${b.label}: ${b.ontime} on time, ${b.kaza} kaza`}>
@@ -1341,8 +1312,8 @@ export default function NamazTracker() {
               )}
 
               {comparisonStats && (
-                <div className="namaz-analytics-block namaz-analytics-block--boxed">
-                  <p className="namaz-block-caption">This period vs. previous</p>
+                <div className="namaz-chart-slide">
+                  <h3 className="namaz-analytics-title">This period vs. previous</h3>
                   <div className="namaz-compare-row">
                     <span className="namaz-compare-label">Current</span>
                     <div className="namaz-compare-bar"><span className="namaz-compare-fill namaz-compare-fill--current" style={{ width: `${comparisonStats.currentPercent}%` }} /></div>
@@ -1356,8 +1327,8 @@ export default function NamazTracker() {
                 </div>
               )}
 
-              <div className="namaz-analytics-block namaz-analytics-block--boxed">
-                <p className="namaz-block-caption">Weekday performance</p>
+              <div className="namaz-chart-slide">
+                <h3 className="namaz-analytics-title">Weekday performance</h3>
                 <div className="namaz-weekday-chart">
                   {weekdayStats.map((w) => (
                     <div key={w.fullLabel} className="namaz-weekday-bar-wrap" title={`${w.fullLabel}: ${w.percent}%`}>
@@ -1376,7 +1347,8 @@ export default function NamazTracker() {
               </div>
 
               {reasonBreakdown && (
-                <div className="namaz-analytics-block namaz-analytics-block--boxed namaz-reasons-block">
+                <div className="namaz-chart-slide namaz-reasons-block">
+                  <h3 className="namaz-analytics-title">Missed reasons</h3>
                   <svg viewBox="0 0 36 36" className="namaz-reasons-donut">
                     <circle cx="18" cy="18" r={REASON_DONUT_R} fill="none" stroke="rgba(0,0,0,0.06)" strokeWidth="4" />
                     {(() => {
@@ -1400,7 +1372,6 @@ export default function NamazTracker() {
                     })()}
                   </svg>
                   <div className="namaz-reasons-legend">
-                    <p className="namaz-block-caption">Missed reasons</p>
                     {reasonBreakdown.items.map((item, i) => (
                       <div key={item.label} className="namaz-reasons-legend-item">
                         <span
@@ -1415,8 +1386,8 @@ export default function NamazTracker() {
               )}
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="namaz-hadith">
         <p className="namaz-hadith-text">"{todayQuote.text}"</p>

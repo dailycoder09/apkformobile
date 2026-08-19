@@ -1,41 +1,51 @@
 const TILES = [
-  { key: 'messages', icon: 'chat', label: 'Messages', desc: 'Family chat & files', accent: 'var(--browse-indigo)' },
-  { key: 'transactions', icon: 'payments', label: 'Transactions', desc: 'Monitor family spending', accent: 'var(--txn-rose)' },
-  { key: 'khatabook', icon: 'account_balance_wallet', label: 'Khatabook', desc: 'Family lend & borrow ledger', accent: 'var(--txn-rose)' },
-  { key: 'browsing', icon: 'travel_explore', label: 'Browsing Activity', desc: 'Sites visited in Chrome', accent: 'var(--browse-indigo)' },
-  { key: 'calllog', icon: 'call', label: 'Call Log', desc: 'Recent calls on the device', accent: 'var(--ink-muted)' },
-  { key: 'milestone', icon: 'flag', label: 'Milestones', desc: 'Goals, streaks & progress', accent: 'var(--hub-accent)' },
+  { key: 'messages', icon: 'chat', label: 'Messages', desc: 'Family chat & files', iconBg: 'bg-secondary', iconFg: 'text-foreground' },
+  { key: 'transactions', icon: 'payments', label: 'Transactions', desc: 'Monitor family spending', iconBg: 'bg-destructive-soft', iconFg: 'text-destructive' },
+  { key: 'khatabook', icon: 'account_balance_wallet', label: 'Khatabook', desc: 'Family lend & borrow ledger', iconBg: 'bg-destructive-soft', iconFg: 'text-destructive' },
+  { key: 'browsing', icon: 'travel_explore', label: 'Browsing Activity', desc: 'Sites visited in Chrome', iconBg: 'bg-secondary', iconFg: 'text-foreground' },
+  { key: 'calllog', icon: 'call', label: 'Call Log', desc: 'Recent calls on the device', iconBg: 'bg-secondary', iconFg: 'text-foreground' },
+  { key: 'milestone', icon: 'flag', label: 'Milestones', desc: 'Goals, streaks & progress', iconBg: 'bg-gold-soft', iconFg: 'text-gold' },
 ]
 
 export default function HomeScreen({ session, onSelect }) {
   return (
-    <div className="home-screen">
-      <span className="hub-meteors" aria-hidden="true">
-        <i className="hub-meteor" style={{ left: '20%', animationDelay: '0s' }} />
-        <i className="hub-meteor" style={{ left: '60%', animationDelay: '3.4s' }} />
-        <i className="hub-meteor" style={{ left: '85%', animationDelay: '6.1s' }} />
-      </span>
+    <div className="home-screen relative h-full overflow-y-auto overflow-x-hidden surface-sand font-sans">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-32 right-0 size-[220px] rounded-full bg-[image:var(--gradient-gold)] opacity-25 blur-3xl animate-float sm:-top-40 sm:-right-24 sm:size-[420px]"
+      />
 
-      <div className="home-header">
-        <div className="home-avatar">{(session?.name || 'U')[0].toUpperCase()}</div>
-        <div className="home-greeting">
-          <span className="home-hi">Welcome back</span>
-          <span className="home-name">{session?.name || 'User'}</span>
+      <main className="relative mx-auto w-full max-w-xl px-4 pt-10 pb-10">
+        <div className="mb-8 flex animate-fade-up items-center gap-3.5">
+          <div className="grid size-[52px] shrink-0 place-items-center rounded-full bg-[image:var(--gradient-gold)] text-lg font-bold text-white shadow-[var(--shadow-glow)]">
+            {(session?.name || 'U')[0].toUpperCase()}
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[13px] text-muted-foreground">Welcome back</span>
+            <span className="font-display text-xl font-extrabold text-foreground">{session?.name || 'User'}</span>
+          </div>
+          <span className="ml-auto shrink-0 rounded-full bg-[image:var(--gradient-gold)] px-3 py-1 text-[11px] font-bold text-white shadow-[var(--shadow-glow)]">
+            Admin
+          </span>
         </div>
-        <span className="home-role-badge">Admin</span>
-      </div>
 
-      <div className="home-tiles">
-        {TILES.map(t => (
-          <button key={t.key} className="home-tile" onClick={() => onSelect(t.key)}>
-            <span className="home-tile-icon-wrap" style={{ '--tile-accent': t.accent }}>
-              <span className="material-symbols-outlined home-tile-icon">{t.icon}</span>
-            </span>
-            <span className="home-tile-label">{t.label}</span>
-            <span className="home-tile-desc">{t.desc}</span>
-          </button>
-        ))}
-      </div>
+        <div className="grid grid-cols-2 gap-4 stagger">
+          {TILES.map(t => (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => onSelect(t.key)}
+              className="tile grain flex min-h-[152px] flex-col items-center gap-2.5 p-5 text-center"
+            >
+              <span className={`grid size-12 shrink-0 place-items-center rounded-2xl ${t.iconBg} ${t.iconFg}`}>
+                <span className="material-symbols-outlined text-2xl">{t.icon}</span>
+              </span>
+              <span className="text-[15px] font-bold text-foreground">{t.label}</span>
+              <span className="text-[11.5px] text-muted-foreground">{t.desc}</span>
+            </button>
+          ))}
+        </div>
+      </main>
     </div>
   )
 }
