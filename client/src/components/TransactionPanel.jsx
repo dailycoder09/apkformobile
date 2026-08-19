@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { LineChart } from '@mui/x-charts/LineChart'
 import { PieChart } from '@mui/x-charts/PieChart'
 import { ThemeProvider, createTheme } from '@mui/material/styles'
+import { Area, Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, XAxis, YAxis, Tooltip as RechartsTooltip } from 'recharts'
 import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank, OVERALL_BUDGET_CATEGORY, hasRealTime, loadCategoryOverrides, addCategoryOverride, applyCategoryOverrides } from '../utils/txnMeta'
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
@@ -74,6 +74,11 @@ function istMidnight(ms) {
 function istMonthStart(ms) {
   const s = new Date(ms + IST_OFFSET_MS)
   return Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), 1) - IST_OFFSET_MS
+}
+// Start of the IST calendar month `n` months before the one containing `ms`.
+function istMonthStartMinus(ms, n) {
+  const s = new Date(ms + IST_OFFSET_MS)
+  return Date.UTC(s.getUTCFullYear(), s.getUTCMonth() - n, 1) - IST_OFFSET_MS
 }
 // Parses a bare "YYYY-MM-DD" (from an <input type="date">) as IST midnight of that day,
 // rather than letting `new Date(str)` treat it as UTC midnight and then silently drifting
@@ -581,6 +586,25 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     return Math.round(((thisSpend - lastSpend) / lastSpend) * 100)
   }, [txns])
 
+  // Six full calendar months of spend (always the real last 6 months, independent of the
+  // analytics range filter — same reasoning as momChange above), with a trailing 3-month
+  // moving average as the smoothed trend line.
+  const sixMonthTrend = useMemo(() => {
+    const months = []
+    for (let i = 5; i >= 0; i--) {
+      const start = istMonthStartMinus(Date.now(), i)
+      const end = istMonthStartMinus(Date.now(), i - 1)
+      const spend = txns.filter(t => t.type === 'debit' && t.date >= start && t.date < end).reduce((s, t) => s + t.amount, 0)
+      const label = new Date(start).toLocaleDateString('en-IN', { timeZone: IST_TZ, month: 'short' })
+      months.push({ label, spend })
+    }
+    return months.map((m, i) => {
+      const window = months.slice(Math.max(0, i - 2), i + 1).map(x => x.spend)
+      const trend = Math.round(window.reduce((s, v) => s + v, 0) / window.length)
+      return { ...m, trend }
+    })
+  }, [txns])
+
   // Period-filtered analytics: trend, category/bank breakdowns, and quick-glance stats.
   // filteredTxns already has the analyticsRange lower bound baked in (see above), so this
   // is just an alias — kept for readability inside this block, not a second filter pass.
@@ -618,6 +642,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     const categories = Object.values(byCategory)
       .map(c => ({ ...c, pct: rangeSpend ? Math.round((c.amount / rangeSpend) * 100) : 0 }))
       .sort((a, b) => b.amount - a.amount)
+      .slice(0, 6)
 
     const byBank = {}
     inRange.filter(t => t.type === 'debit').forEach(t => {
@@ -926,91 +951,120 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
           <div className="txn-charts-grid">
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending Categories — {ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label}</h3>
-              {categoryPieData.length === 0 ? (
-                <p className="txn-donut-empty">No spending recorded in this period.</p>
-              ) : (
-                <PieChart
-                  series={[{ data: categoryPieData, innerRadius: 45, paddingAngle: 2, cornerRadius: 4 }]}
-                  height={200}
-                  slotProps={{ legend: { direction: 'vertical', position: { vertical: 'middle', horizontal: 'end' } } }}
-                />
-              )}
+              <div className="txn-chart-fill">
+                {categoryPieData.length === 0 ? (
+                  <p className="txn-donut-empty">No spending recorded in this period.</p>
+                ) : (
+                  <PieChart
+                    series={[{ data: categoryPieData, innerRadius: 45, paddingAngle: 2, cornerRadius: 4 }]}
+                    height={220}
+                    slotProps={{ legend: { direction: 'vertical', position: { vertical: 'middle', horizontal: 'end' } } }}
+                  />
+                )}
+              </div>
             </div>
 
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending vs Income Trend</h3>
-              {!trendChartData ? (
-                <p className="txn-donut-empty">Not enough data yet.</p>
-              ) : (
-                <LineChart
-                  xAxis={[{ data: trendChartData.labels.map((_, i) => i), scaleType: 'point', valueFormatter: (i) => trendChartData.labels[i] }]}
-                  yAxis={[{ valueFormatter: (v) => formatINRCompact(v) }]}
-                  series={[
-                    { data: trendChartData.debit, area: true, color: '#e0345c', label: 'Spent' },
-                    { data: trendChartData.credit, color: '#16a34a', label: 'Received' },
-                  ]}
-                  height={200}
-                  margin={{ top: 8, right: 8, bottom: 24, left: 48 }}
-                  grid={{ horizontal: true }}
-                />
-              )}
+              <div className="txn-chart-fill">
+                {!trendChartData ? (
+                  <p className="txn-donut-empty">Not enough data yet.</p>
+                ) : (
+                  <ResponsiveContainer width="100%" height={220}>
+                    <ComposedChart
+                      data={trendChartData.labels.map((label, i) => ({ label, debit: trendChartData.debit[i], credit: trendChartData.credit[i] }))}
+                      margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+                    >
+                      <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="rgba(58,42,46,0.1)" />
+                      <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'var(--txn-muted)' }} />
+                      <YAxis axisLine={false} tickLine={false} width={40} tick={{ fontSize: 11, fill: 'var(--txn-muted)' }} tickFormatter={(v) => formatINRShort(v)} />
+                      <RechartsTooltip formatter={(v) => formatINRShort(v)} contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 4px 14px rgba(0,0,0,0.12)' }} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Area type="monotone" dataKey="debit" name="Spent" stroke="#e0345c" fill="#e0345c" fillOpacity={0.75} strokeWidth={2} />
+                      <Line type="monotone" dataKey="credit" name="Received" stroke="#16a34a" strokeWidth={2.5} dot={false} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">Six-Month Trend</h3>
+              <div className="txn-chart-fill">
+                <ResponsiveContainer width="100%" height={220}>
+                  <ComposedChart data={sixMonthTrend} margin={{ top: 8, right: 4, bottom: 0, left: 0 }}>
+                    <CartesianGrid vertical={false} strokeDasharray="3 3" stroke="rgba(58,42,46,0.1)" />
+                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'var(--txn-muted)' }} />
+                    <YAxis axisLine={false} tickLine={false} width={48} tick={{ fontSize: 11, fill: 'var(--txn-muted)' }} tickFormatter={(v) => formatINRShort(v)} />
+                    <RechartsTooltip formatter={(v) => formatINRShort(v)} contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 4px 14px rgba(0,0,0,0.12)' }} />
+                    <Bar dataKey="spend" name="Spent" fill="#c9a227" radius={[6, 6, 0, 0]} barSize={22} />
+                    <Line type="monotone" dataKey="trend" name="Trend" stroke="#1f6b4d" strokeWidth={2.5} dot={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
             </div>
 
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending Intensity — Last 30 Days</h3>
-              <div className="txn-heatmap-row">
-                {spendingIntensity.map(d => (
-                  <button
-                    key={d.key}
-                    type="button"
-                    className={`txn-heatmap-cell level-${d.level}${heatmapDay?.key === d.key ? ' selected' : ''}`}
-                    title={`${d.key}: ${formatINRShort(d.amount)}`}
-                    onClick={() => setHeatmapDay(d)}
-                    aria-label={`${shortDateLabel(d.key)}: ${formatINRShort(d.amount)}`}
-                  />
-                ))}
-              </div>
-              <div className="txn-heatmap-detail">
-                {heatmapDay
-                  ? `${shortDateLabel(heatmapDay.key)} — ${formatINRShort(heatmapDay.amount)} spent`
-                  : 'Tap a day to see the amount spent'}
+              <div className="txn-chart-fill">
+                <div className="txn-heatmap-row">
+                  {spendingIntensity.map(d => (
+                    <button
+                      key={d.key}
+                      type="button"
+                      className={`txn-heatmap-cell level-${d.level}${heatmapDay?.key === d.key ? ' selected' : ''}`}
+                      title={`${d.key}: ${formatINRShort(d.amount)}`}
+                      onClick={() => setHeatmapDay(d)}
+                      aria-label={`${shortDateLabel(d.key)}: ${formatINRShort(d.amount)}`}
+                    />
+                  ))}
+                </div>
+                <div className="txn-heatmap-detail">
+                  {heatmapDay
+                    ? `${shortDateLabel(heatmapDay.key)} — ${formatINRShort(heatmapDay.amount)} spent`
+                    : 'Tap a day to see the amount spent'}
+                </div>
               </div>
             </div>
 
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Top Categories</h3>
-              {analyticsData.topCategories.length === 0 ? (
-                <p className="txn-donut-empty">Nothing in this period.</p>
-              ) : analyticsData.topCategories.map(c => (
-                <div key={c.id} className="txn-breakdown-row">
-                  <span className="txn-breakdown-label">{c.label}</span>
-                  <div className="txn-breakdown-bar">
-                    <span className="txn-breakdown-fill" style={{ width: `${(c.amount / analyticsData.topMax) * 100}%`, background: c.color }} />
+              <div className="txn-chart-fill">
+                {analyticsData.topCategories.length === 0 ? (
+                  <p className="txn-donut-empty">Nothing in this period.</p>
+                ) : analyticsData.topCategories.map(c => (
+                  <div key={c.id} className="txn-breakdown-row">
+                    <span className="txn-breakdown-label">{c.label}</span>
+                    <div className="txn-breakdown-bar">
+                      <span className="txn-breakdown-fill" style={{ width: `${(c.amount / analyticsData.topMax) * 100}%`, background: c.color }} />
+                    </div>
+                    <span className="txn-breakdown-val">{formatINRShort(c.amount)}</span>
                   </div>
-                  <span className="txn-breakdown-val">{formatINRShort(c.amount)}</span>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
 
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">By Bank / Account</h3>
-              {analyticsData.bankBreakdown.length === 0 ? (
-                <p className="txn-donut-empty">Nothing in this period.</p>
-              ) : analyticsData.bankBreakdown.map(b => (
-                <div key={b.bank} className="txn-breakdown-row">
-                  <span className="txn-breakdown-label">{b.bank}</span>
-                  <div className="txn-breakdown-bar">
-                    <span className="txn-breakdown-fill" style={{ width: `${(b.amount / analyticsData.bankMax) * 100}%` }} />
+              <div className="txn-chart-fill">
+                {analyticsData.bankBreakdown.length === 0 ? (
+                  <p className="txn-donut-empty">Nothing in this period.</p>
+                ) : analyticsData.bankBreakdown.map(b => (
+                  <div key={b.bank} className="txn-breakdown-row">
+                    <span className="txn-breakdown-label">{b.bank}</span>
+                    <div className="txn-breakdown-bar">
+                      <span className="txn-breakdown-fill" style={{ width: `${(b.amount / analyticsData.bankMax) * 100}%` }} />
+                    </div>
+                    <span className="txn-breakdown-val">{formatINRShort(b.amount)}</span>
                   </div>
-                  <span className="txn-breakdown-val">{formatINRShort(b.amount)}</span>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
 
             {budgetCategories.length > 0 && (
               <div className="txn-chart-card">
                 <h3 className="txn-analytics-title">Category Budgets — {monthStats.label}</h3>
-                <div className="txn-cat-budgets-list">
+                <div className="txn-chart-fill txn-cat-budgets-list">
                   {budgetCategories.map(c => {
                     const hasLimit = c.limit != null
                     const pct = hasLimit ? Math.min(100, Math.round((c.amount / c.limit) * 100)) : 0
@@ -1070,7 +1124,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                 <div className="txn-filter-group-head">
                   <span className="txn-filter-group-label">Search narration</span>
                 </div>
-                <input className="add-input" type="text" placeholder="e.g. FOOD CHOTU"
+                <input className="add-input txn-filter-search" type="text" placeholder="e.g. FOOD CHOTU"
                   value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
               </div>
 
