@@ -1,4 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { LineChart } from '@mui/x-charts/LineChart'
+import { PieChart } from '@mui/x-charts/PieChart'
+import { ThemeProvider, createTheme } from '@mui/material/styles'
 import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank, OVERALL_BUDGET_CATEGORY, hasRealTime, loadCategoryOverrides, addCategoryOverride, applyCategoryOverrides } from '../utils/txnMeta'
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
@@ -216,6 +219,9 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [searchQuery, setSearchQuery] = useState('')
   const [showStats, setShowStats] = useState(false)
   const [showCharts, setShowCharts] = useState(false)
+  // Tapped heatmap day — `title` tooltips never fire on mobile touch (no hover state), so
+  // the Spending Intensity heatmap needs its own tap-to-reveal instead.
+  const [heatmapDay, setHeatmapDay] = useState(null)
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
@@ -643,30 +649,57 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     return { buckets, bucketMax, topCategories, topMax, categories, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate, totalDebitInRange, totalCreditInRange, count: inRange.length }
   }, [filteredTxns, analyticsRange])
 
-  // The donut used to be pinned to monthStats (always "this calendar month") even though
-  // it sits right next to range-scoped cards sharing the same range selector above —
-  // picking "All time" changed the trend/top-categories/bank cards but not this one,
-  // which read as the filter being broken. Now driven by the same analyticsData.categories.
-  const donutGradient = useMemo(() => {
-    if (!analyticsData.categories.length) return null
-    let cumulative = 0
-    const stops = analyticsData.categories.map(c => {
-      const from = cumulative
-      cumulative += c.pct
-      return `${c.color} ${from}% ${cumulative}%`
+  // Fixed last-30-calendar-days spend-per-day heatmap, independent of the analytics range
+  // picker/Filters panel (mirrors reference "Spending Intensity" designs, which are always a
+  // rolling 30-day window regardless of whatever period the rest of the page is scoped to).
+  // Uses all of `txns`, not `filteredTxns`, for that reason.
+  const spendingIntensity = useMemo(() => {
+    const todayIst = istMidnight(Date.now())
+    const days = []
+    for (let i = 29; i >= 0; i--) {
+      const dayStart = todayIst - i * 86400000
+      days.push({ key: istDateKey(dayStart), amount: 0 })
+    }
+    const byKey = {}
+    days.forEach(d => { byKey[d.key] = d })
+    txns.forEach(t => {
+      if (t.type !== 'debit') return
+      const d = byKey[istDateKey(t.date)]
+      if (d) d.amount += t.amount
     })
-    return `conic-gradient(${stops.join(', ')})`
-  }, [analyticsData.categories])
+    const max = Math.max(1, ...days.map(d => d.amount))
+    return days.map(d => ({ ...d, level: d.amount === 0 ? 0 : Math.min(4, Math.ceil((d.amount / max) * 4)) }))
+  }, [txns])
+
+  // Spending Categories is an MUI X Charts PieChart — driven by the same
+  // analyticsData.categories every other range-scoped card uses, so it can't drift out of
+  // sync with the range/filter selection the way it once did when pinned to monthStats.
+  const categoryPieData = useMemo(
+    () => analyticsData.categories.map((c, i) => ({ id: i, label: `${c.label} · ${c.pct}%`, value: c.amount, color: c.color })),
+    [analyticsData.categories]
+  )
 
   // SVG polyline points for the spending-trend line chart — a 0..100 x 4..36 y viewBox,
   // padded off the top/bottom edges so the line's stroke never clips.
-  const trendLine = useMemo(() => {
-    const { buckets, bucketMax } = analyticsData
+  const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  // bucket.key is already an IST YYYY-MM-DD string (see analyticsData above) — parsed
+  // directly rather than round-tripped through another Date/timezone conversion.
+  const shortDateLabel = (key) => {
+    const [, mo, da] = key.split('-')
+    return `${parseInt(da, 10)} ${MONTH_SHORT[parseInt(mo, 10) - 1]}`
+  }
+
+  // Spending vs Income Trend is an MUI X Charts LineChart — MUI's own curve rendering
+  // uses monotone interpolation internally (no manual smoothing/overshoot math needed
+  // here anymore, unlike the hand-rolled version this replaces).
+  const trendChartData = useMemo(() => {
+    const { buckets } = analyticsData
     if (buckets.length < 2) return null
-    const stepX = 100 / (buckets.length - 1)
-    const toY = (v) => 36 - (v / bucketMax) * 32
-    const toPoints = (key) => buckets.map((b, i) => `${(i * stepX).toFixed(2)},${toY(b[key]).toFixed(2)}`).join(' ')
-    return { debit: toPoints('debit'), credit: toPoints('credit') }
+    return {
+      labels: buckets.map(b => shortDateLabel(b.key)),
+      debit: buckets.map(b => b.debit),
+      credit: buckets.map(b => b.credit),
+    }
   }, [analyticsData])
 
   const overallBudget = budgets[OVERALL_BUDGET_CATEGORY] ?? DEFAULT_BUDGET
@@ -746,7 +779,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
             </button>
           </div>
           <div className="txn-budget-row">
-            <span className="txn-budget-pct">{budgetPct}% Spent</span>
+            <span className={`txn-budget-pct-badge${budgetOver ? ' over' : ''}`}>{budgetPct}% Spent</span>
             <span className="txn-budget-remaining">{formatINRShort(Math.max(0, overallBudget - monthStats.spent))} Remaining</span>
           </div>
           <div className="txn-budget-bar">
@@ -889,47 +922,59 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
 
           {/* Multiple chart cards, side by side on wider screens — collapsed by default */}
           {showCharts && (
+          <ThemeProvider theme={createTheme({ palette: { primary: { main: '#e0345c' } } })}>
           <div className="txn-charts-grid">
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending Categories — {ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label}</h3>
-              {analyticsData.categories.length === 0 ? (
+              {categoryPieData.length === 0 ? (
                 <p className="txn-donut-empty">No spending recorded in this period.</p>
               ) : (
-                <div className="txn-donut-body">
-                  <div className="txn-donut-ring" style={{ background: donutGradient }}>
-                    <div className="txn-donut-hole">
-                      <span className="material-symbols-outlined">pie_chart</span>
-                    </div>
-                  </div>
-                  <div className="txn-donut-legend">
-                    {analyticsData.categories.map(c => (
-                      <div key={c.id} className="txn-donut-legend-item">
-                        <span className="txn-donut-dot" style={{ background: c.color }} />
-                        <span className="txn-donut-legend-name">{c.label}</span>
-                        <span className="txn-donut-legend-pct">{c.pct}%</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <PieChart
+                  series={[{ data: categoryPieData, innerRadius: 45, paddingAngle: 2, cornerRadius: 4 }]}
+                  height={200}
+                  slotProps={{ legend: { direction: 'vertical', position: { vertical: 'middle', horizontal: 'end' } } }}
+                />
               )}
             </div>
 
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending vs Income Trend</h3>
-              {!trendLine ? (
+              {!trendChartData ? (
                 <p className="txn-donut-empty">Not enough data yet.</p>
               ) : (
-                <>
-                  <svg className="txn-line-chart" viewBox="0 0 100 40" preserveAspectRatio="none">
-                    <polyline className="txn-line-chart-line txn-line-chart-line--credit" points={trendLine.credit} />
-                    <polyline className="txn-line-chart-line txn-line-chart-line--debit" points={trendLine.debit} />
-                  </svg>
-                  <div className="txn-trend-legend">
-                    <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-rose)' }} />Spent</span>
-                    <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-green)' }} />Received</span>
-                  </div>
-                </>
+                <LineChart
+                  xAxis={[{ data: trendChartData.labels.map((_, i) => i), scaleType: 'point', valueFormatter: (i) => trendChartData.labels[i] }]}
+                  yAxis={[{ valueFormatter: (v) => formatINRCompact(v) }]}
+                  series={[
+                    { data: trendChartData.debit, area: true, color: '#e0345c', label: 'Spent' },
+                    { data: trendChartData.credit, color: '#16a34a', label: 'Received' },
+                  ]}
+                  height={200}
+                  margin={{ top: 8, right: 8, bottom: 24, left: 48 }}
+                  grid={{ horizontal: true }}
+                />
               )}
+            </div>
+
+            <div className="txn-chart-card">
+              <h3 className="txn-analytics-title">Spending Intensity — Last 30 Days</h3>
+              <div className="txn-heatmap-row">
+                {spendingIntensity.map(d => (
+                  <button
+                    key={d.key}
+                    type="button"
+                    className={`txn-heatmap-cell level-${d.level}${heatmapDay?.key === d.key ? ' selected' : ''}`}
+                    title={`${d.key}: ${formatINRShort(d.amount)}`}
+                    onClick={() => setHeatmapDay(d)}
+                    aria-label={`${shortDateLabel(d.key)}: ${formatINRShort(d.amount)}`}
+                  />
+                ))}
+              </div>
+              <div className="txn-heatmap-detail">
+                {heatmapDay
+                  ? `${shortDateLabel(heatmapDay.key)} — ${formatINRShort(heatmapDay.amount)} spent`
+                  : 'Tap a day to see the amount spent'}
+              </div>
             </div>
 
             <div className="txn-chart-card">
@@ -996,6 +1041,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               </div>
             )}
           </div>
+          </ThemeProvider>
           )}
         </div>
 

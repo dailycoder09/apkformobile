@@ -9,6 +9,10 @@ const TABLES = {
   TRANSACTIONS: 'transactions',
   BROWSING_HISTORY: 'browsing_history',
   CALL_LOGS: 'call_logs',
+  LEDGER_CONTACTS: 'ledger_contacts',
+  LEDGER_ENTRIES: 'ledger_entries',
+  MILESTONE_GOALS: 'milestone_goals',
+  MILESTONE_TASKS: 'milestone_tasks',
 }
 
 // Mechanical schema fixup for DBs created before the name→phone-number identity

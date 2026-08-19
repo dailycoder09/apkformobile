@@ -80,6 +80,17 @@
   --browse-rose:        #e0345c;
   --browse-rose-dark:   #a8123a;
   --browse-rose-pastel: #fde2e8;
+
+  /* Home hub — shared identity for the two landing screens (Dashboard.jsx child view +
+     HomeScreen.jsx admin view). Aliases Namaz/Milestones' existing cream/gold rather than
+     a new palette, so the app's "premium" screens read as one consistent design language. */
+  --hub-accent:        var(--txn-gold);
+  --hub-accent-dark:   var(--namaz-gold-dark);
+  --hub-accent-pastel: var(--namaz-gold-pastel);
+  --hub-card:          #fffdf8;
+  --hub-ink:           #3a2f1c;
+  --hub-muted:         #8a7c5c;
+  --hub-border:        rgba(138, 109, 31, 0.14);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -401,25 +412,44 @@ button { font-family: inherit; cursor: pointer; }
 .coming-soon-btn:hover { background: var(--accent-dark); }
 
 /* ── Dashboard ──────────────────────────────────── */
+/* Home hub — shared landing-screen identity for Dashboard.jsx (child) + HomeScreen.jsx
+   (admin). Reuses Namaz/Milestones' cream/gold rather than inventing a third palette, so
+   every "premium" screen in the app reads as one consistent design language; each tile
+   below still carries its own true module accent inside this shared shell. */
+.dashboard .material-symbols-outlined, .home-screen .material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal; font-style: normal; line-height: 1;
+  display: inline-block; vertical-align: middle;
+}
 .dashboard {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  background: linear-gradient(160deg, var(--page-bg-from), var(--page-bg-to));
+  overflow-x: hidden;
+  background:
+    radial-gradient(at 18% 8%, rgba(255,248,232,0.9) 0%, transparent 55%),
+    radial-gradient(at 88% 4%, rgba(253,243,216,0.85) 0%, transparent 55%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.02'/%3E%3C/svg%3E"),
+    linear-gradient(160deg, var(--namaz-bg-from), var(--namaz-bg-to));
+  background-size: 160% 160%, 160% 160%, auto, auto;
+  animation: mile-card-glow-drift 20s ease-in-out infinite alternate;
   padding: 24px 20px 32px;
 }
 .dash-header {
+  position: relative; z-index: 1;
   display: flex;
   flex-direction: column;
   margin-bottom: 20px;
 }
-.dash-greeting { font-size: 14px; color: var(--ink-muted); }
-.dash-name { font-size: 26px; font-weight: 700; color: var(--ink); margin: 2px 0 4px; }
-.dash-date { font-size: 13px; color: var(--ink-muted); }
+.dash-greeting { font-size: 14px; color: var(--hub-muted); }
+.dash-name { font-size: 26px; font-weight: 700; color: var(--hub-ink); margin: 2px 0 4px; }
+.dash-date { font-size: 13px; color: var(--hub-muted); }
 
 .dash-stats {
+  position: relative; z-index: 1;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
   gap: 10px;
   margin-bottom: 24px;
 }
@@ -429,13 +459,15 @@ button { font-family: inherit; cursor: pointer; }
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: 6px;
   border: none;
   border-radius: 20px;
   padding: 14px 12px;
   text-align: left;
   box-shadow: var(--shadow-soft);
+  transition: transform 0.15s ease;
 }
+.dash-stat:active { transform: scale(0.96); }
 .dash-stat::after {
   content: '';
   position: absolute;
@@ -447,17 +479,31 @@ button { font-family: inherit; cursor: pointer; }
   opacity: 0.3;
   pointer-events: none;
 }
-.dash-stat--gold    { background: var(--pastel-gold); }
-.dash-stat--gold::after    { background: var(--gold); }
-.dash-stat--emerald { background: var(--pastel-emerald); }
-.dash-stat--emerald::after { background: var(--emerald); }
-.dash-stat--rose    { background: var(--pastel-rose); }
-.dash-stat--rose::after    { background: var(--rose); }
-.dash-stat-icon { font-size: 20px; }
-.dash-stat-value { font-size: 18px; font-weight: 700; color: var(--ink); }
+.dash-stat--gold      { background: var(--pastel-gold); }
+.dash-stat--gold::after      { background: var(--gold); }
+.dash-stat--emerald   { background: var(--pastel-emerald); }
+.dash-stat--emerald::after   { background: var(--emerald); }
+.dash-stat--rose      { background: var(--pastel-rose); }
+.dash-stat--rose::after      { background: var(--rose); }
+.dash-stat--khata     { background: var(--txn-rose-pastel); }
+.dash-stat--khata::after     { background: var(--txn-rose); }
+.dash-stat--milestone { background: var(--hub-accent-pastel); }
+.dash-stat--milestone::after { background: var(--hub-accent); }
+.dash-stat-icon-wrap {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 11px;
+  background: rgba(255,255,255,0.55);
+}
+.dash-stat-icon-wrap .material-symbols-outlined { font-size: 18px; }
+.dash-stat--gold      .dash-stat-icon-wrap .material-symbols-outlined { color: var(--namaz-gold-dark); }
+.dash-stat--emerald   .dash-stat-icon-wrap .material-symbols-outlined { color: #0f7a4f; }
+.dash-stat--rose      .dash-stat-icon-wrap .material-symbols-outlined { color: var(--txn-rose-dark); }
+.dash-stat--khata     .dash-stat-icon-wrap .material-symbols-outlined { color: var(--txn-rose-dark); }
+.dash-stat--milestone .dash-stat-icon-wrap .material-symbols-outlined { color: var(--hub-accent-dark); }
+.dash-stat-value { font-size: 17px; font-weight: 700; color: var(--hub-ink); }
 .dash-stat-value--pos { color: #16a34a; }
 .dash-stat-value--neg { color: #dc2626; }
-.dash-stat-label { font-size: 11px; color: var(--ink-muted); }
+.dash-stat-label { font-size: 11px; color: var(--hub-muted); }
 .dash-stat-bar {
   width: 100%;
   height: 4px;
@@ -470,8 +516,14 @@ button { font-family: inherit; cursor: pointer; }
 .dash-stat--gold .dash-stat-bar-fill    { background: var(--gold); }
 .dash-stat--emerald .dash-stat-bar-fill { background: var(--emerald); }
 
-.dash-section-title { font-size: 15px; font-weight: 700; color: var(--ink); margin-bottom: 10px; }
-.dash-empty { font-size: 13px; color: var(--ink-muted); }
+.dash-activity { position: relative; z-index: 1; }
+.dash-section-title { font-size: 15px; font-weight: 700; color: var(--hub-ink); margin-bottom: 10px; }
+.dash-empty-state {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 40px 16px 16px; text-align: center;
+}
+.dash-empty-state .material-symbols-outlined { font-size: 34px; color: var(--hub-accent); opacity: 0.55; }
+.dash-empty-text { font-size: 13px; color: var(--hub-muted); }
 .dash-activity-list {
   display: flex;
   flex-direction: column;
@@ -481,17 +533,32 @@ button { font-family: inherit; cursor: pointer; }
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--card-bg);
+  background: var(--hub-card);
   border-radius: 16px;
   padding: 10px 14px;
   box-shadow: var(--shadow-soft);
 }
 .dash-activity-icon { font-size: 18px; }
-.dash-activity-merchant { flex: 1; font-size: 14px; color: var(--ink); font-weight: 600; }
+.dash-activity-merchant { flex: 1; font-size: 14px; color: var(--hub-ink); font-weight: 600; }
 .dash-activity-amount { font-size: 14px; font-weight: 700; }
 .dash-activity-amount--pos { color: #16a34a; }
 .dash-activity-amount--neg { color: #dc2626; }
-.dash-activity-time { font-size: 11px; color: var(--ink-muted); }
+.dash-activity-time { font-size: 11px; color: var(--hub-muted); }
+
+/* Ambient meteors accent for the two landing screens — same technique/keyframes as
+   .mile-summary-card's, applied to a full screen instead of a card. Sparser and slower
+   here since this is the first screen seen and shouldn't compete for attention. */
+.hub-meteors { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.hub-meteor {
+  position: absolute; top: -10%; width: 2px; height: 60px;
+  background: linear-gradient(180deg, var(--hub-accent), transparent);
+  border-radius: 999px; opacity: 0;
+  animation: mile-meteor-fall 8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dashboard, .home-screen { animation: none !important; }
+  .hub-meteor { animation: none !important; display: none; }
+}
 
 /* ── Namaz tracker (gold/cream palette) ─────────── */
 .namaz-screen .material-symbols-outlined {
@@ -3165,24 +3232,33 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ── Home Screen ──────────────────────────────────────────────────────────── */
 .home-screen {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%23c9a227' stroke-opacity='0.08' stroke-width='1'%3E%3Crect x='16' y='16' width='28' height='28'/%3E%3Crect x='16' y='16' width='28' height='28' transform='rotate(45 30 30)'/%3E%3C/g%3E%3C/svg%3E") repeat,
-              linear-gradient(160deg, var(--namaz-bg-from), var(--namaz-bg-to));
-  background-size: 60px 60px, cover;
+  background:
+    radial-gradient(at 20% 6%, rgba(255,248,232,0.9) 0%, transparent 55%),
+    radial-gradient(at 85% 4%, rgba(253,243,216,0.85) 0%, transparent 55%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 60 60'%3E%3Cg fill='none' stroke='%23c9a227' stroke-opacity='0.08' stroke-width='1'%3E%3Crect x='16' y='16' width='28' height='28'/%3E%3Crect x='16' y='16' width='28' height='28' transform='rotate(45 30 30)'/%3E%3C/g%3E%3C/svg%3E") repeat,
+    linear-gradient(160deg, var(--namaz-bg-from), var(--namaz-bg-to));
+  background-size: 160% 160%, 160% 160%, 60px 60px, cover;
+  animation: mile-card-glow-drift 20s ease-in-out infinite alternate;
   display: flex;
   flex-direction: column;
   align-items: center;
   padding: 48px 24px 32px;
 }
 .home-header {
+  position: relative; z-index: 1;
   display: flex;
   align-items: center;
   gap: 14px;
   margin-bottom: 32px;
   align-self: flex-start;
+  width: 100%;
+  max-width: 420px;
 }
 .home-avatar {
   width: 52px; height: 52px;
@@ -3210,6 +3286,7 @@ button { font-family: inherit; cursor: pointer; }
   box-shadow: 0 4px 10px rgba(138,109,31,0.25);
 }
 .home-tiles {
+  position: relative; z-index: 1;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
@@ -3230,12 +3307,15 @@ button { font-family: inherit; cursor: pointer; }
   box-shadow: 0 14px 34px rgba(138,109,31,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
 }
 .home-tile:active { transform: scale(0.96); }
+/* Per-tile accent comes from an inline custom property (--tile-accent) set in
+   HomeScreen.jsx per module, so every tile reads its real module color at a glance
+   instead of one uniform gold icon-wrap regardless of what it links to. */
 .home-tile-icon-wrap {
   display: flex; align-items: center; justify-content: center;
   width: 52px; height: 52px; border-radius: 16px;
-  background: linear-gradient(135deg, var(--namaz-gold-pastel), #fff);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--tile-accent, var(--hub-accent)) 22%, #fff), #fff);
 }
-.home-tile-icon  { font-size: 28px; line-height: 1; }
+.home-tile-icon  { font-size: 26px; line-height: 1; color: var(--tile-accent, var(--hub-accent)); }
 .home-tile-label { font-size: 15px; font-weight: 800; color: var(--namaz-gold-dark); text-align: center; }
 .home-tile-desc  { font-size: 11.5px; color: var(--namaz-muted); text-align: center; }
 
@@ -3319,8 +3399,11 @@ button { font-family: inherit; cursor: pointer; }
 .txn-budget-amounts:active { background: var(--txn-rose-pastel); }
 .txn-budget-spent { font-size: 24px; font-weight: 800; color: var(--txn-rose); }
 .txn-budget-of { font-size: 13px; color: var(--txn-muted); }
-.txn-budget-row { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 12px; font-weight: 700; }
-.txn-budget-pct { color: var(--txn-rose); }
+.txn-budget-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-size: 12px; font-weight: 700; }
+/* Pill-badge treatment for the % figure, instead of plain colored text — a small nod
+   toward the "42% Spent" chip style seen in reference budget-card designs. */
+.txn-budget-pct-badge { color: var(--txn-rose-dark); background: var(--txn-rose-pastel); padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 800; }
+.txn-budget-pct-badge.over { color: #7f1d1d; background: rgba(127,29,29,0.12); }
 .txn-budget-remaining { color: var(--txn-muted); font-weight: 600; }
 .txn-budget-bar { width: 100%; height: 8px; border-radius: 999px; background: rgba(0,0,0,0.06); overflow: hidden; }
 .txn-budget-bar-fill { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--txn-rose), var(--txn-rose-dark)); transition: width 0.6s ease; }
@@ -3407,36 +3490,15 @@ button { font-family: inherit; cursor: pointer; }
 }
 @media (min-width: 640px) { .txn-chart-card { flex-basis: 320px; } }
 
-/* Spending-vs-income line chart — hand-rolled SVG polylines, no charting library */
-.txn-line-chart { width: 100%; height: 90px; display: block; }
-.txn-line-chart-line {
-  fill: none; stroke-width: 2.4; vector-effect: non-scaling-stroke;
-  stroke-linecap: round; stroke-linejoin: round;
-}
-.txn-line-chart-line--debit  { stroke: var(--txn-rose); }
-.txn-line-chart-line--credit { stroke: var(--txn-green); }
-
-/* Spending categories donut card */
-.txn-donut-card {
-  background: var(--txn-card);
-  border-radius: 20px;
-  padding: 18px;
-  box-shadow: var(--shadow-soft);
-}
-.txn-donut-title { font-size: 14px; font-weight: 700; color: var(--txn-ink); margin-bottom: 14px; }
-.txn-donut-body { display: flex; align-items: center; gap: 18px; }
-.txn-donut-ring { position: relative; width: 100px; height: 100px; flex-shrink: 0; border-radius: 50%; }
-.txn-donut-hole {
-  position: absolute; inset: 10px; border-radius: 50%;
-  background: var(--txn-card); display: flex; align-items: center; justify-content: center;
-  box-shadow: inset 0 1px 3px rgba(0,0,0,0.08);
-}
-.txn-donut-hole .material-symbols-outlined { font-size: 26px; color: var(--txn-rose); }
-.txn-donut-legend { flex: 1; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.txn-donut-legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.txn-donut-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
-.txn-donut-legend-name { flex: 1; color: var(--txn-ink); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.txn-donut-legend-pct { color: var(--txn-muted); font-weight: 700; }
+/* Spending-vs-income line chart — hand-rolled SVG paths, no charting library.
+   .txn-charts-grid is a flex row with default (stretch) alignment, so every card in the
+   horizontal carousel matches the height of its tallest sibling (e.g. the donut or category
+   budgets card) — without this, the trend card's fixed-height chart left a large dead gap
+   below it. Making the card a flex column and the chart body flex:1 lets the chart itself
+   grow to fill whatever height the row gives it instead. */
+/* Spending Categories (donut) and Spending vs Income Trend (line) are now MUI X Charts
+   PieChart/LineChart components (see TransactionPanel.jsx/AdminTransactionView.jsx) — no
+   hand-rolled SVG/CSS needed for either anymore. */
 .txn-donut-empty { font-size: 12px; color: var(--txn-muted); font-style: italic; }
 
 /* Detailed analytics (collapsible) */
@@ -3460,6 +3522,7 @@ button { font-family: inherit; cursor: pointer; }
 .txn-analytics-title { font-size: 11px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 10px; }
 .txn-trend-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: var(--txn-muted); font-weight: 600; }
 .txn-trend-legend-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+.txn-trend-legend-dot--dashed { background: none !important; border: 1.5px dashed var(--txn-green); }
 .txn-breakdown-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .txn-breakdown-row:last-child { margin-bottom: 0; }
 .txn-breakdown-label { width: 78px; font-size: 12px; font-weight: 700; color: var(--txn-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -3470,27 +3533,27 @@ button { font-family: inherit; cursor: pointer; }
 /* Quick-glance analytics stat tiles — a small icon badge names each metric at a glance,
    and the card itself gets the same soft-shadow "premium card" treatment as the budget/
    hero cards above instead of a flatter, plainer translucent block. */
-.txn-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.txn-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .txn-stat-card {
-  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
   background: var(--txn-card); border: 1px solid rgba(255,255,255,0.7);
-  border-radius: 18px; padding: 14px;
+  border-radius: 14px; padding: 10px;
   box-shadow: var(--shadow-soft);
 }
-.txn-stat-top { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.txn-stat-top { display: flex; align-items: center; gap: 6px; margin-bottom: 1px; }
 .txn-stat-icon {
   display: flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: 9px; flex-shrink: 0;
+  width: 20px; height: 20px; border-radius: 7px; flex-shrink: 0;
 }
-.txn-stat-icon .material-symbols-outlined { font-size: 15px; }
+.txn-stat-icon .material-symbols-outlined { font-size: 12px; }
 .txn-stat-label {
-  font-size: 10px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase;
-  letter-spacing: 0.4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 9.5px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase;
+  letter-spacing: 0.3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.txn-stat-value { font-size: 18px; font-weight: 800; color: var(--txn-ink); overflow-wrap: anywhere; }
+.txn-stat-value { font-size: 15px; font-weight: 800; color: var(--txn-ink); overflow-wrap: anywhere; }
 .txn-stat-value.good { color: var(--txn-green-dark); }
 .txn-stat-value.bad  { color: var(--txn-rose-dark); }
-.txn-stat-sub { font-size: 11px; color: var(--txn-muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.txn-stat-sub { font-size: 10px; color: var(--txn-muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Filters panel (type/category/source/bank multi-select + include-vs-exclude toggle) —
    compact chip rows that scroll horizontally instead of wrapping onto multiple lines,
@@ -3527,6 +3590,20 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 4px 0;
 }
 
+/* Spending Intensity heatmap — a fixed row of 30 squares (one per calendar day), shaded by
+   spend level, GitHub-contribution-graph style. */
+.txn-heatmap-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.txn-heatmap-cell {
+  width: 18px; height: 18px; border-radius: 4px; background: rgba(58, 42, 46, 0.06);
+  border: 1.5px solid transparent; padding: 0; cursor: pointer;
+}
+.txn-heatmap-cell.level-1 { background: #f7cdd8; }
+.txn-heatmap-cell.level-2 { background: #ee94a8; }
+.txn-heatmap-cell.level-3 { background: var(--txn-rose); }
+.txn-heatmap-cell.level-4 { background: var(--txn-rose-dark); }
+.txn-heatmap-cell.selected { border-color: var(--txn-ink); }
+.txn-heatmap-detail { margin-top: 10px; font-size: 12px; font-weight: 700; color: var(--txn-muted); }
+
 /* Divider between the Monthly Budget section and the Spent/Received/Net "hero" section,
    now folded into the same .txn-budget-card instead of two separate stacked cards. */
 .txn-card-divider { height: 1px; background: rgba(58, 42, 46, 0.08); margin: 8px 0; }
@@ -3536,8 +3613,12 @@ button { font-family: inherit; cursor: pointer; }
 .txn-hero-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .txn-hero-label { font-size: 11px; font-weight: 700; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.6px; }
 .txn-hero-count { font-size: 11.5px; font-weight: 700; color: var(--txn-rose-dark); background: var(--txn-rose-pastel); padding: 3px 10px; border-radius: 999px; }
-.txn-hero-stats { display: flex; gap: 4px; }
-.txn-hero-stat { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+/* Divided-column footer band — a nod to reference budget-card designs that separate their
+   stat row with thin vertical rules on a faint tinted background, rather than a bare flex
+   row with only gap spacing. */
+.txn-hero-stats { display: flex; background: rgba(58, 42, 46, 0.03); border-radius: 12px; padding: 8px 0; }
+.txn-hero-stat { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.txn-hero-stat + .txn-hero-stat::before { content: ''; position: absolute; left: 0; top: 12%; bottom: 12%; width: 1px; background: rgba(58, 42, 46, 0.1); }
 .txn-hero-stat-label { font-size: 10.5px; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 600; }
 /* min-width:0 lets these flex items shrink instead of overflowing past their 1/3 share —
    without it, large unbreakable amounts (no spaces to wrap on) ran into each other on
@@ -3632,44 +3713,46 @@ button { font-family: inherit; cursor: pointer; }
 .txn-empty-sub  { font-size: 13px; }
 
 .txn-group-header {
-  font-size: 11px; font-weight: 700; color: var(--txn-muted);
-  padding: 12px 14px 6px;
+  font-size: 10.5px; font-weight: 700; color: var(--txn-muted);
+  padding: 8px 14px 4px;
   text-transform: uppercase; letter-spacing: 0.5px;
 }
 
 /* Each transaction is its own card: a rounded, softly-shadowed block (rather than a
    flat single-line row) so merchant names / narrations that HDFC statements produce
-   (much longer than PhonePe's) have room to wrap instead of being clipped. */
+   (much longer than PhonePe's) have room to wrap instead of being clipped. Kept as
+   compact as the wrapping requirement allows — tight padding/gaps, small icon/chips —
+   so a long list of these doesn't turn into a lot of scrolling. */
 .txn-row {
-  display: flex; flex-direction: column; gap: 8px;
-  margin: 0 14px 10px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 5px;
+  margin: 0 12px 6px; padding: 9px 10px;
   background: var(--txn-card);
   border: 1px solid rgba(58, 42, 46, 0.06);
-  border-radius: 16px;
+  border-radius: 13px;
   box-shadow: 0 1px 3px rgba(58, 42, 46, 0.06);
 }
 .txn-group .txn-row:last-child { margin-bottom: 2px; }
 .txn-row:active { background: rgba(224, 52, 92, 0.04); }
 
-.txn-card-top { display: flex; align-items: flex-start; gap: 10px; }
+.txn-card-top { display: flex; align-items: flex-start; gap: 8px; }
 .txn-cat-icon {
   display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; border-radius: 9px; flex-shrink: 0;
+  width: 24px; height: 24px; border-radius: 8px; flex-shrink: 0;
   background: var(--txn-rose-pastel);
 }
-.txn-cat-icon .material-symbols-outlined { font-size: 15px; color: var(--txn-rose-dark); }
+.txn-cat-icon .material-symbols-outlined { font-size: 13px; color: var(--txn-rose-dark); }
 
 /* Merchant/payee — the field HDFC narrations blow past PhonePe's short names on.
    No more nowrap+ellipsis single line: it now wraps onto as many lines as it needs. */
 .txn-row-info { flex: 1; min-width: 0; }
 .txn-merchant {
-  font-size: 13.5px; font-weight: 700; color: var(--txn-ink);
+  font-size: 12.5px; font-weight: 700; color: var(--txn-ink);
   white-space: normal; overflow-wrap: anywhere; word-break: break-word;
-  line-height: 1.3;
+  line-height: 1.25;
 }
 
-.txn-card-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.txn-amount     { font-size: 16px; font-weight: 800; white-space: nowrap; }
+.txn-card-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.txn-amount     { font-size: 14px; font-weight: 800; white-space: nowrap; }
 .txn-amount.debit    { color: var(--txn-rose); }
 .txn-amount.credit   { color: var(--txn-green); }
 .txn-amount.transfer { color: #64748b; }
@@ -3677,35 +3760,35 @@ button { font-family: inherit; cursor: pointer; }
 /* Fuller narration (bank ref numbers etc.) — secondary, muted, wraps freely. Only
    rendered when it says something the merchant name alone doesn't. */
 .txn-desc {
-  font-size: 11.5px; color: var(--txn-muted); line-height: 1.4; margin: 0;
-  overflow-wrap: anywhere; padding-left: 38px;
+  font-size: 10.5px; color: var(--txn-muted); line-height: 1.35; margin: 0;
+  overflow-wrap: anywhere; padding-left: 32px;
 }
 
 /* Chips on the left, timestamp pinned to the bottom-right corner (.txn-corner) —
    kept apart so a long chip row never pushes the time out of view or forces it
    to wrap awkwardly among the tags. */
-.txn-card-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; padding-left: 38px; }
-.txn-meta       { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.txn-cat-chip   { font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: 700; }
+.txn-card-bottom { display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; padding-left: 32px; }
+.txn-meta       { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.txn-cat-chip   { font-size: 9.5px; padding: 1px 5px; border-radius: 4px; font-weight: 700; }
 .txn-bank-tag   {
-  font-size: 10px; background: rgba(0,0,0,0.05); color: var(--txn-muted); padding: 1px 6px;
+  font-size: 9.5px; background: rgba(0,0,0,0.05); color: var(--txn-muted); padding: 1px 5px;
   border-radius: 4px; font-weight: 600; display: inline-block; max-width: 150px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
 }
-.txn-sms-tag    { font-size: 10px; background: var(--txn-green-pastel); color: var(--txn-green-dark); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-.txn-user-tag   { font-size: 10px; background: var(--txn-gold-pastel); color: #7a5c0a; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-.txn-corner     { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
-.txn-time       { font-size: 10px; color: var(--txn-muted); font-weight: 600; white-space: nowrap; }
+.txn-sms-tag    { font-size: 9.5px; background: var(--txn-green-pastel); color: var(--txn-green-dark); padding: 1px 5px; border-radius: 4px; font-weight: 600; }
+.txn-user-tag   { font-size: 9.5px; background: var(--txn-gold-pastel); color: #7a5c0a; padding: 1px 5px; border-radius: 4px; font-weight: 600; }
+.txn-corner     { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
+.txn-time       { font-size: 9.5px; color: var(--txn-muted); font-weight: 600; white-space: nowrap; }
 /* Running balance from the HDFC statement parser — small and muted since it's
    supplementary, but genuinely useful data that was previously parsed and unused. */
-.txn-balance    { font-size: 10.5px; color: var(--txn-muted); font-weight: 700; white-space: nowrap; flex-shrink: 0; }
+.txn-balance    { font-size: 10px; color: var(--txn-muted); font-weight: 700; white-space: nowrap; flex-shrink: 0; }
 
 .txn-row-delete {
   display: flex; align-items: center; justify-content: center;
-  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
   background: none; border: none; color: var(--txn-muted);
 }
-.txn-row-delete .material-symbols-outlined { font-size: 18px; }
+.txn-row-delete .material-symbols-outlined { font-size: 16px; }
 .txn-row-delete:active { background: var(--txn-rose-pastel); color: var(--txn-rose-dark); }
 
 /* Floating action button */
@@ -3797,8 +3880,13 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: 14px; padding: 14px;
   font-size: 15px; font-weight: 800; cursor: pointer;
   min-height: 48px;
+  /* Resting lift + press-in, matching .mile-fab — the primary CTA on this shared sheet
+     (used by Finance/Khatabook/Milestone alike) previously had no shadow at all. */
+  box-shadow: 0 4px 14px rgba(160, 20, 60, 0.3);
+  transition: transform 0.1s, box-shadow 0.1s;
 }
-.add-txn-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+.add-txn-submit:active { transform: translateY(1px); box-shadow: 0 1px 4px rgba(160, 20, 60, 0.25); }
+.add-txn-submit:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
 .add-txn-delete {
   display: block; width: calc(100% - 32px); margin: 0 16px 16px;
   background: none; color: var(--txn-rose); border: 1.5px solid var(--txn-rose-pastel);
@@ -3806,6 +3894,692 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 14px; font-weight: 700; cursor: pointer;
   min-height: 44px;
 }
+
+/* ── Khatabook (personal lend/borrow ledger) ──────────────────────────────── */
+/* Own class namespace (khata-*) rather than sharing .txn-* — a separate screen with the
+   same rose/glass palette (reuses the shared --txn-* tokens for visual consistency), but
+   structurally independent so Finance-screen CSS changes don't silently ripple here. The
+   bottom-sheet primitives (.add-txn-*, .type-toggle/.type-btn, .add-field/.add-label/
+   .add-input) ARE shared as-is — those were already screen-agnostic. */
+.khata-screen .material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal; font-style: normal; line-height: 1;
+  display: inline-block; vertical-align: middle;
+}
+.khata-screen {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: linear-gradient(160deg, var(--txn-bg-from), var(--txn-bg-to));
+  display: flex;
+  flex-direction: column;
+  color: var(--txn-ink);
+}
+.khata-header { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px; flex-shrink: 0; }
+.khata-home-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+  background: var(--txn-card); border: none; color: var(--txn-rose-dark);
+}
+.khata-title { font-size: 20px; font-weight: 800; color: var(--txn-ink); flex: 1; overflow-wrap: anywhere; }
+.khata-body { padding: 8px 20px 100px; display: flex; flex-direction: column; gap: 12px; }
+
+/* Summary card — same divided-hero-stats treatment as .txn-budget-card/.txn-hero-card */
+.khata-summary-card {
+  position: relative; overflow: hidden;
+  background: linear-gradient(160deg, rgba(255,255,255,0.92), rgba(255,255,255,0.7));
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.7);
+  border-radius: 20px; padding: 14px;
+  box-shadow: 0 14px 34px rgba(160,20,60,0.1), inset 0 1px 0 rgba(255,255,255,0.9);
+}
+.khata-summary-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.khata-summary-label { font-size: 15px; font-weight: 800; color: var(--txn-ink); }
+.khata-summary-sub { font-size: 11.5px; color: var(--txn-muted); font-weight: 600; text-align: right; }
+.khata-card-divider { height: 1px; background: rgba(58, 42, 46, 0.08); margin: 10px 0; }
+.khata-summary-stats { display: flex; background: rgba(58, 42, 46, 0.03); border-radius: 12px; padding: 10px 0; }
+.khata-summary-stat { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.khata-summary-stat + .khata-summary-stat::before { content: ''; position: absolute; left: 0; top: 12%; bottom: 12%; width: 1px; background: rgba(58, 42, 46, 0.1); }
+.khata-summary-stat-label { font-size: 10.5px; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700; }
+.khata-summary-stat-val { font-size: 18px; font-weight: 800; overflow-wrap: anywhere; }
+.khata-summary-stat.get .khata-summary-stat-val { color: var(--txn-green-dark); }
+.khata-summary-stat.pay .khata-summary-stat-val { color: var(--txn-rose); }
+
+/* Contact-detail balance banner (replaces the two-tile stats when a single contact is open) */
+.khata-contact-detail-balance { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0; }
+.khata-detail-balance-val { font-size: 24px; font-weight: 800; }
+.khata-detail-balance-val.get  { color: var(--txn-green-dark); }
+.khata-detail-balance-val.pay  { color: var(--txn-rose); }
+.khata-detail-balance-val.even { color: var(--txn-muted); }
+.khata-detail-balance-tag { font-size: 11px; color: var(--txn-muted); font-weight: 600; }
+
+/* Shared list-card shell for both the contact list and a contact's entry list */
+.khata-list-card { background: var(--txn-card); border-radius: 20px; padding: 4px 0 10px; box-shadow: var(--shadow-soft); }
+.khata-empty {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 48px 24px; gap: 8px; color: var(--txn-muted);
+  text-align: center;
+}
+.khata-empty-icon { font-size: 40px; margin-bottom: 4px; opacity: 0.6; }
+.khata-empty-sub { font-size: 13px; }
+
+.khata-contact-row {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 12px 6px; padding: 10px;
+  background: var(--txn-card);
+  border: 1px solid rgba(58, 42, 46, 0.06);
+  border-radius: 13px;
+  box-shadow: 0 1px 3px rgba(58, 42, 46, 0.06);
+  cursor: pointer;
+}
+.khata-contact-row:active { background: rgba(224, 52, 92, 0.04); }
+.khata-contact-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+  background: var(--txn-rose-pastel); color: var(--txn-rose-dark);
+}
+.khata-contact-icon .material-symbols-outlined { font-size: 18px; }
+.khata-contact-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.khata-contact-name { font-size: 13.5px; font-weight: 700; color: var(--txn-ink); overflow-wrap: anywhere; }
+.khata-contact-sub { font-size: 11px; color: var(--txn-muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.khata-contact-right { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex-shrink: 0; }
+.khata-contact-balance { font-size: 13px; font-weight: 800; white-space: nowrap; }
+.khata-contact-balance.get  { color: var(--txn-green-dark); }
+.khata-contact-balance.pay  { color: var(--txn-rose); }
+.khata-contact-balance.even { color: var(--txn-muted); font-size: 11px; font-weight: 700; }
+.khata-contact-balance-tag { font-size: 9.5px; color: var(--txn-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+
+.khata-entry-row {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 12px 6px; padding: 10px;
+  background: var(--txn-card);
+  border: 1px solid rgba(58, 42, 46, 0.06);
+  border-radius: 13px;
+  box-shadow: 0 1px 3px rgba(58, 42, 46, 0.06);
+  cursor: pointer;
+}
+.khata-entry-row:active { background: rgba(224, 52, 92, 0.04); }
+.khata-entry-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
+}
+.khata-entry-icon.gave { background: var(--txn-rose-pastel); color: var(--txn-rose-dark); }
+.khata-entry-icon.got  { background: var(--txn-green-pastel); color: var(--txn-green-dark); }
+.khata-entry-icon .material-symbols-outlined { font-size: 16px; }
+.khata-entry-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.khata-entry-label { font-size: 12.5px; font-weight: 700; color: var(--txn-ink); }
+.khata-entry-note { font-size: 11px; color: var(--txn-muted); font-weight: 600; overflow-wrap: anywhere; }
+.khata-entry-date { font-size: 10px; color: var(--txn-muted); font-weight: 600; }
+.khata-entry-amount { font-size: 14px; font-weight: 800; white-space: nowrap; flex-shrink: 0; }
+.khata-entry-amount.gave { color: var(--txn-rose); }
+.khata-entry-amount.got  { color: var(--txn-green); }
+
+.khata-row-delete {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+  background: none; border: none; color: var(--txn-muted);
+}
+.khata-row-delete .material-symbols-outlined { font-size: 16px; }
+.khata-row-delete:active { background: var(--txn-rose-pastel); color: var(--txn-rose-dark); }
+
+.khata-fab {
+  position: fixed; right: 20px; bottom: 90px;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--txn-rose), var(--txn-rose-dark));
+  color: #fff; border: none; box-shadow: 0 8px 24px rgba(160,20,60,0.35);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 40;
+}
+.khata-fab .material-symbols-outlined { font-size: 26px; }
+.khata-fab:active { transform: scale(0.95); }
+
+/* ── Milestones (goal tracking: streaks, progress rings, badges) ─────────── */
+/* Own namespace (mile-) AND own warm cream/gold palette — deliberately distinct from
+   Finance's rose/glass treatment (khata-/txn-) rather than reusing it, so this reads as
+   its own considered space instead of a re-skinned Finance screen. Gold is the primary
+   accent throughout; green is reserved specifically for "done/completed" signals. */
+.mile-screen {
+  --mile-bg-from: #fdfbf3;
+  --mile-bg-to: #f6efd8;
+  --mile-card: #fffdf7;
+  --mile-accent: var(--txn-gold);        /* #c9a227 */
+  --mile-accent-dark: #8a6d1f;
+  --mile-accent-pastel: var(--txn-gold-pastel); /* #faf1d0 */
+  --mile-border: rgba(138, 109, 31, 0.14);
+  --mile-ink: #3a2f1c;
+  --mile-muted: #8a7c5c;
+  /* A real sampled spring curve (mass/stiffness/damping baked into the sample points),
+     not a cubic-bezier approximation — cubic-bezier can only fake one overshoot+settle,
+     linear() can reproduce genuine decaying-oscillation spring motion. Supported Chrome
+     113+/Safari 17.2+/Firefox 112+; unsupported browsers just ignore the declaration and
+     fall back to the default (still-functional) ease. */
+  --mile-spring: linear(0, 0.006, 0.025 2.8%, 0.101 6.27%, 0.539 18.55%, 0.721 24.65%, 0.849 30.87%, 0.937 37.85%, 0.968 42.05%, 0.991 47.79%, 1.006 55.16%, 1.015 64.71%, 1.017 76.09%, 1.007 95.45%, 1);
+}
+.mile-screen .material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal; font-style: normal; line-height: 1;
+  display: inline-block; vertical-align: middle;
+}
+.mile-screen {
+  flex: 1; min-height: 0; overflow-y: auto;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: linear-gradient(160deg, var(--mile-bg-from), var(--mile-bg-to));
+  display: flex; flex-direction: column; color: var(--mile-ink);
+}
+.mile-header { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px; flex-shrink: 0; }
+.mile-home-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0;
+  background: var(--mile-card); border: none; color: var(--mile-accent-dark);
+  box-shadow: 0 1px 3px rgba(138, 109, 31, 0.12);
+}
+.mile-title { font-size: 21px; font-weight: 800; color: var(--mile-ink); flex: 1; overflow-wrap: anywhere; }
+.mile-body { padding: 8px 20px 100px; display: flex; flex-direction: column; gap: 12px; }
+
+/* Progress ring — conic-gradient trick borrowed from .txn-donut-ring, sized smaller for
+   list rows and larger for the goal-detail summary card. Deliberately thin (larger hole
+   inset relative to ring size) so it reads as a slim activity-ring arc, not a thick donut. */
+.mile-ring {
+  position: relative; width: 54px; height: 54px; flex-shrink: 0; border-radius: 50%;
+}
+/* Embossed/"raised puck" treatment — inset shadow on the darker side, inset highlight on
+   the lighter side, so the ring reads as a lifted disc rather than a flat cutout. */
+.mile-ring-hole {
+  position: absolute; inset: 8px; border-radius: 50%;
+  background: var(--mile-card); display: flex; align-items: center; justify-content: center;
+  box-shadow: inset 0 2px 4px rgba(138, 109, 31, 0.12), inset 0 -1px 0 rgba(255,255,255,0.8);
+  font-size: 11px; font-weight: 800; color: var(--mile-accent-dark);
+}
+/* Hero ring, redesigned per "premium dashboard" research (Oura/WHOOP/Linear pattern):
+   one oversized dominant number + a light-source glow behind it, rather than a modestly
+   sized ring with modest text — scale contrast is what reads as premium vs. competent. */
+.mile-ring-lg { width: 148px; height: 148px; flex-shrink: 0; }
+.mile-ring-hole-lg { inset: 16px; flex-direction: column; gap: 2px; }
+.mile-ring-day {
+  font-size: 56px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums;
+  background: linear-gradient(135deg, #e8c04a, var(--mile-accent) 60%, #96751c);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.mile-ring-of { font-size: 11px; font-weight: 700; color: var(--mile-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+
+.mile-summary-hero { position: relative; display: flex; justify-content: center; padding: 16px 0 14px; }
+.mile-ring-wrap { position: relative; }
+/* The "spotlight" trick — a soft radial glow behind the ring simulates a light source.
+   Kept small enough to stay inside .mile-summary-card's own padding (it was previously
+   sized/blurred large enough to get clipped by the card's overflow:hidden, which read
+   as a messy hard-edged smear rather than a clean halo — this version fits comfortably
+   inside the available space instead). */
+.mile-ring-glow {
+  position: absolute; inset: -10px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(201,162,39,0.28) 0%, transparent 72%);
+  filter: blur(14px); z-index: 0;
+}
+.mile-ring-wrap .mile-ring { position: relative; z-index: 1; box-shadow: 0 0 14px rgba(201,162,39,0.3); }
+
+.mile-summary-status-row { display: flex; justify-content: center; margin-bottom: 10px; }
+/* The goal title as a real headline inside the card — previously this only appeared
+   small in the page header, which buried the one thing the whole card is about. */
+.mile-summary-title {
+  font-size: 22px; font-weight: 800; color: var(--mile-ink); text-align: center;
+  text-wrap: balance; margin: 0 0 14px; overflow-wrap: anywhere;
+}
+
+/* Layered "elevation" shadow — a tight contact shadow plus a soft ambient one, plus an
+   inset top highlight, so the card reads as resting on the page rather than a flat
+   rectangle. Deliberately not neumorphism (no dual inset/outset pillowing, no low-
+   contrast surfaces) — see the styling-research note above the badge chips below.
+   Background is a soft mesh (2-3 large low-opacity radial gradients at different
+   corners) plus a barely-visible noise overlay — the detail research flags as what
+   separates a considered indie-app feel from a flat "generic SaaS" card. */
+.mile-summary-card {
+  position: relative; overflow: hidden;
+  background:
+    radial-gradient(at 15% 10%, rgba(255,248,232,0.9) 0%, transparent 55%),
+    radial-gradient(at 85% 0%, rgba(253,243,216,0.8) 0%, transparent 55%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E"),
+    var(--mile-card);
+  background-size: 160% 160%, 160% 160%, auto, auto;
+  border: 1px solid var(--mile-border);
+  border-radius: 22px; padding: 18px;
+  box-shadow: 0 1px 2px rgba(138, 109, 31, 0.08), 0 10px 28px rgba(138, 109, 31, 0.08), inset 0 1px 0 rgba(255,255,255,0.9);
+  /* Ambient "background gradient" accent (Aceternity-inspired, ported to plain CSS) — the
+     mesh's two radial layers slowly drift rather than sitting static, a subtle premium
+     touch. Only background-position is animated (cheap, compositor-friendly), never the
+     blur/gradient itself. */
+  animation: mile-card-glow-drift 14s ease-in-out infinite alternate;
+}
+@keyframes mile-card-glow-drift {
+  from { background-position: 0% 0%, 100% 0%, 0 0, 0 0; }
+  to   { background-position: 15% 20%, 80% 15%, 0 0, 0 0; }
+}
+
+/* "Meteors" accent (Aceternity-inspired, ported to plain CSS: transform+opacity only,
+   sparse count, slow loop) — a few faint streaks behind the ring, shown only while an
+   active streak is running, as a small celebratory touch rather than standing chrome. */
+.mile-meteors { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.mile-meteor {
+  position: absolute; top: -10%; width: 2px; height: 50px;
+  background: linear-gradient(180deg, var(--mile-accent), transparent);
+  border-radius: 999px; opacity: 0;
+  animation: mile-meteor-fall 5s linear infinite;
+}
+@keyframes mile-meteor-fall {
+  0% { transform: translate(0, 0) rotate(215deg); opacity: 0; }
+  8% { opacity: 0.55; }
+  85% { opacity: 0.55; }
+  100% { transform: translate(-160px, 160px) rotate(215deg); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mile-summary-card { animation: none !important; }
+  .mile-meteor { animation: none !important; display: none; }
+}
+.mile-summary-top { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
+.mile-summary-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.mile-summary-desc { font-size: 12.5px; color: var(--mile-muted); font-weight: 600; margin: 0 0 10px; overflow-wrap: anywhere; }
+.mile-summary-days { font-size: 12px; color: var(--mile-muted); font-weight: 700; }
+.mile-card-divider { height: 1px; background: var(--mile-border); margin: 12px 0; }
+
+.mile-status-col { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.mile-status-pill {
+  font-size: 10.5px; font-weight: 800; color: var(--mile-accent-dark); background: var(--mile-accent-pastel);
+  padding: 4px 11px; border-radius: 999px; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.mile-status-pill.complete { color: var(--txn-green-dark); background: var(--txn-green-pastel); }
+.mile-freeze-chip { font-size: 10.5px; font-weight: 700; color: #2a6f97; white-space: nowrap; }
+.mile-freeze-banner {
+  font-size: 12px; font-weight: 600; color: #2a6f97; background: #e8f4fb;
+  border-radius: 10px; padding: 8px 12px; margin-bottom: 8px;
+}
+.mile-freeze-btn {
+  display: block; width: 100%; font-size: 12px; font-weight: 700; color: #2a6f97;
+  background: #e8f4fb; border: 1.5px dashed #a9d4ec; border-radius: 10px;
+  padding: 9px 12px; margin-bottom: 8px; cursor: pointer;
+}
+
+.mile-motivation-box {
+  display: flex; align-items: center; gap: 12px;
+  background: linear-gradient(135deg, var(--mile-accent-pastel), rgba(250, 241, 208, 0.4));
+  border-radius: 14px; padding: 12px 14px; margin-bottom: 12px;
+}
+/* Wrapper is the flex container; the actual icon glyph is a child span (same working
+   pattern as .mile-task-icon) — applying display:flex directly to the icon's OWN element
+   doesn't reliably center its ligature text, which is what caused the icon to render
+   off-center within its circle. */
+.mile-motivation-box-icon {
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 34px; height: 34px; border-radius: 50%; font-size: 18px;
+  background: var(--mile-card); color: var(--mile-accent-dark);
+  box-shadow: inset 0 1px 2px rgba(138,109,31,0.12);
+}
+.mile-motivation-label { display: block; font-size: 10.5px; color: var(--mile-accent-dark); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 800; }
+.mile-motivation-val { font-size: 20px; font-weight: 800; color: var(--mile-ink); }
+.mile-motivation-max { font-size: 12px; font-weight: 600; color: var(--mile-muted); }
+.mile-motivation-box .mile-freeze-chip { margin-left: auto; background: var(--mile-card); padding: 5px 10px; border-radius: 999px; }
+
+.mile-quote {
+  font-size: 13px; font-style: italic; color: var(--mile-muted); font-weight: 600;
+  border-left: 2.5px solid var(--mile-accent); padding-left: 12px; margin: 0;
+}
+
+.mile-streak-chip {
+  align-self: flex-start; font-size: 12px; font-weight: 800; color: var(--mile-accent-dark);
+  background: var(--mile-accent-pastel); padding: 3px 9px; border-radius: 999px;
+}
+.mile-streak-chip.lg { font-size: 13px; padding: 4px 11px; }
+.mile-badge-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.mile-badge-chip {
+  font-size: 13px; background: rgba(138, 109, 31, 0.06); border-radius: 999px;
+  padding: 3px 8px; display: inline-flex; align-items: center; gap: 4px;
+}
+/* Earned-badge "medallion" treatment (research-recommended: this is where a bevel/
+   dimensional look actually pays off — badges read as trophy objects, not routine list
+   chrome). Radial highlight (upper-left light source) + rim gradient + drop shadow. */
+.mile-badge-chip.lg {
+  font-size: 12.5px; font-weight: 700; color: var(--mile-ink); padding: 4px 12px 4px 4px;
+  background: linear-gradient(135deg, var(--mile-accent-pastel), rgba(250,241,208,0.5));
+  box-shadow: 0 3px 8px rgba(138, 109, 31, 0.18), inset 0 1px 0 rgba(255,255,255,0.9), inset 0 -1px 2px rgba(138,109,31,0.12);
+}
+
+.mile-list-card { background: var(--mile-card); border: 1px solid var(--mile-border); border-radius: 22px; padding: 4px 0 10px; box-shadow: 0 1px 2px rgba(138, 109, 31, 0.06), 0 6px 20px rgba(138, 109, 31, 0.06), inset 0 1px 0 rgba(255,255,255,0.9); }
+.mile-heatmap-card { padding: 16px; }
+
+/* Real month-grid calendar for goals longer than 14 days (see MilestonePanel.jsx
+   useCalendarGrid) — ported from NamazTracker.jsx's existing working calendar pattern
+   (.namaz-cal-*) rather than reinvented, restyled into the mile-* gold palette. */
+.mile-cal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.mile-cal-title { font-size: 13px; font-weight: 800; color: var(--mile-ink); }
+.mile-cal-nav {
+  background: var(--mile-accent-pastel); border: none; border-radius: 50%;
+  width: 28px; height: 28px; font-size: 15px; color: var(--mile-accent-dark);
+}
+.mile-cal-nav:disabled { opacity: 0.35; }
+.mile-cal-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); margin-bottom: 6px; }
+.mile-cal-weekday { text-align: center; font-size: 10.5px; font-weight: 700; color: var(--mile-muted); }
+.mile-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.mile-cal-cell {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  aspect-ratio: 1; border-radius: 10px; background: rgba(138, 109, 31, 0.05);
+  border: none; padding: 0; cursor: pointer;
+  opacity: 0; animation: mile-row-in 0.3s ease-out forwards;
+  animation-delay: calc(min(var(--i, 0), 20) * 12ms);
+}
+.mile-cal-cell--blank { visibility: hidden; animation: none; opacity: 1; }
+.mile-cal-cell--outside { background: none; cursor: default; opacity: 0.3; }
+.mile-cal-cell--future { background: rgba(138, 109, 31, 0.04); cursor: default; }
+/* Today gets a soft pulsing glow ring rather than a flat highlight fill, consistent
+   with the hero ring's own glow treatment elsewhere on this card. */
+.mile-cal-cell--today { box-shadow: 0 0 0 2px var(--mile-accent-dark); animation: mile-row-in 0.3s ease-out forwards, mile-cal-pulse 2s ease-in-out infinite 0.3s; }
+@keyframes mile-cal-pulse { 0%, 100% { box-shadow: 0 0 0 2px var(--mile-accent-dark); } 50% { box-shadow: 0 0 0 2px var(--mile-accent-dark), 0 0 10px 2px rgba(201,162,39,0.5); } }
+.mile-cal-daynum { font-size: 11.5px; font-weight: 700; color: var(--mile-ink); }
+.mile-cal-freeze { position: absolute; bottom: 0; right: 0; font-size: 9px !important; color: #2a6f97; }
+
+/* Small inline Material Symbols icon used wherever an emoji used to sit inline with text
+   (streak counts, freeze/motivation chips, etc.) — same icon language as the rest of the
+   app, sized to match surrounding text rather than the default icon-button scale. */
+.mile-inline-icon { font-size: 13px !important; vertical-align: -2px; }
+.mile-inline-icon.done { color: var(--txn-green-dark); }
+
+.mile-goal-row-actions { display: flex; gap: 2px; align-self: flex-start; }
+.mile-goal-row--archived { opacity: 0.75; }
+.mile-archived-tag {
+  font-size: 9.5px; font-weight: 700; color: var(--mile-muted); background: rgba(138, 109, 31, 0.08);
+  padding: 1px 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.3px;
+  margin-left: 4px; vertical-align: middle;
+}
+.mile-archived-section { margin-top: 4px; }
+.mile-archived-toggle {
+  display: flex; align-items: center; gap: 4px; width: 100%;
+  background: none; border: none; color: var(--mile-muted); font-size: 12.5px; font-weight: 700;
+  padding: 6px 4px; cursor: pointer; margin-bottom: 8px;
+}
+.mile-archived-toggle .material-symbols-outlined { font-size: 18px; }
+
+/* Compact icon-only corner toolbar — the previous full-width text+icon button row
+   (Duplicate/Archive/Delete) dominated the hero card visually; these are secondary
+   actions and should read as such, not compete with the title/ring for attention. */
+.mile-card-toolbar { position: absolute; top: 14px; right: 14px; display: flex; gap: 4px; z-index: 2; }
+.mile-toolbar-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 50%; border: none; cursor: pointer;
+  background: rgba(138, 109, 31, 0.07); color: var(--mile-accent-dark);
+}
+.mile-toolbar-btn .material-symbols-outlined { font-size: 15px; }
+.mile-toolbar-btn.danger { color: var(--txn-rose-dark); }
+.mile-toolbar-btn.danger:active { background: var(--txn-rose-pastel); }
+@media (prefers-reduced-motion: reduce) {
+  .mile-cal-cell { animation: none !important; opacity: 1 !important; }
+  .mile-cal-cell--today { box-shadow: 0 0 0 2px var(--mile-accent-dark) !important; }
+}
+.mile-section-title { font-size: 11px; font-weight: 800; color: var(--mile-muted); text-transform: uppercase; letter-spacing: 0.7px; margin: 0 0 12px; }
+.mile-empty {
+  display: flex; flex-direction: column; align-items: center;
+  padding: 48px 24px; gap: 8px; color: var(--mile-muted); text-align: center;
+}
+.mile-empty-icon { font-size: 40px; margin-bottom: 4px; opacity: 0.6; }
+.mile-empty-sub { font-size: 13px; }
+
+/* Per-goal identity color (--goal-accent, set inline per row from accentFor() in JS) threads
+   through the ring, a thin left accent bar (Linear-style — a signal, not a full tint), and
+   the shadow's color, so each goal reads as visually distinct at a glance without any row
+   getting a full colored background (list-card research: accent, never full-card tint). */
+.mile-goal-row {
+  position: relative;
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 12px 8px; padding: 13px 13px 13px 16px;
+  background: var(--mile-card);
+  border: 1px solid var(--mile-border);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(138, 109, 31, 0.08), 0 4px 14px color-mix(in srgb, var(--goal-accent, var(--mile-accent)) 18%, transparent);
+  cursor: pointer;
+  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.12s;
+  /* Staggered entrance on mount/navigation-back — each row's --i (set inline per row)
+     delays its animation slightly, so the list "settles in" rather than popping in at
+     once. Purely decorative, so fully skipped under prefers-reduced-motion below. */
+  opacity: 0;
+  animation: mile-row-in 0.35s ease-out forwards;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+.mile-goal-row::before {
+  content: ''; position: absolute; left: 5px; top: 12px; bottom: 12px; width: 3px;
+  border-radius: 2px; background: var(--goal-accent, var(--mile-accent));
+}
+@keyframes mile-row-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* 3D press: the card "sinks" with a slight spring plus its shadow collapsing — rather
+   than just a flat color swap, so the tap itself feels tactile. */
+.mile-goal-row:active {
+  background: var(--mile-accent-pastel);
+  transform: translateY(1px) scale(0.985);
+  box-shadow: 0 1px 2px rgba(138, 109, 31, 0.1);
+}
+.mile-goal-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mile-goal-title { display: flex; align-items: center; gap: 6px; font-size: 14.5px; font-weight: 700; color: var(--mile-ink); overflow-wrap: anywhere; }
+.mile-goal-sub { font-size: 11.5px; color: var(--mile-muted); font-weight: 600; }
+
+/* Pulsing "due today, not yet done" signal — one small dot instead of another chip,
+   per list-card research (one dominant anchor + one line, not stacked indicators). */
+.mile-due-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: #d97706; flex-shrink: 0;
+  animation: mile-pulse 2s ease-in-out infinite;
+}
+@keyframes mile-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+
+.mile-row-delete {
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  background: none; border: none; color: var(--mile-muted); align-self: flex-start;
+}
+.mile-row-delete .material-symbols-outlined { font-size: 16px; }
+.mile-row-delete:active { background: var(--txn-rose-pastel); color: var(--txn-rose-dark); }
+
+/* Daily-progress heatmap — same GitHub-contribution-graph technique as
+   .txn-heatmap-cell/spendingIntensity in TransactionPanel.jsx, own class names since this
+   spans a goal's whole custom period rather than a fixed 30 days. */
+.mile-heatmap-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.mile-heatmap-cell {
+  width: 18px; height: 18px; border-radius: 4px; background: rgba(138, 109, 31, 0.08);
+  border: 1.5px solid transparent; padding: 0; cursor: pointer;
+}
+.mile-heatmap-cell.done { background: var(--txn-green); }
+.mile-heatmap-cell.future { background: rgba(138, 109, 31, 0.04); cursor: default; opacity: 0.5; }
+.mile-heatmap-cell.today { border-color: var(--mile-accent-dark); }
+.mile-heatmap-cell.frozen { background: #bfe3f5; }
+.mile-heatmap-cell.selected { border-color: var(--mile-ink); }
+
+/* Analytics — an animated SVG line for the Completion Trend (a %-over-time series reads
+   better as a line, and scales to a year-long goal without horizontal scroll) plus a
+   hand-rolled bar chart for the 7-bucket weekday breakdown (categorical, bars are
+   correct there) — no charting library, same spirit as TransactionPanel.jsx's charts. */
+.mile-analytics-card { padding: 4px; }
+.mile-analytics-toggle {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  background: none; border: none; padding: 14px 12px; cursor: pointer;
+  font-size: 13.5px; font-weight: 800; color: var(--mile-ink);
+}
+.mile-analytics-toggle .material-symbols-outlined:first-child { font-size: 18px; color: var(--mile-accent-dark); }
+.mile-analytics-chevron { margin-left: auto; color: var(--mile-muted); transition: transform 0.2s; }
+.mile-analytics-chevron.open { transform: rotate(180deg); }
+/* Horizontal swipeable chart carousel — same pattern as Finance's .txn-charts-grid, so
+   multiple charts (trend line, completion pie, weekday bars) sit side by side and the
+   user scrolls between them instead of one long vertical stack. */
+.mile-analytics-carousel {
+  display: flex; gap: 14px;
+  overflow-x: auto; scroll-snap-type: x mandatory;
+  padding: 4px 16px 16px; scrollbar-width: none;
+}
+.mile-analytics-carousel::-webkit-scrollbar { display: none; }
+.mile-chart-slide {
+  flex: 0 0 85%; scroll-snap-align: start; min-width: 0;
+}
+@media (min-width: 640px) { .mile-chart-slide { flex-basis: 320px; } }
+.mile-analytics-subtitle { margin-top: 16px; }
+
+/* Completion Trend is now an MUI X Charts LineChart (see MilestonePanel.jsx/
+   AdminMilestoneView.jsx) — no CSS needed here, MUI handles its own styling. */
+
+.mile-bar-chart {
+  display: flex; align-items: flex-end; gap: 3px;
+  height: 72px; overflow-x: auto; padding-bottom: 1px;
+}
+.mile-bar-chart-week { height: 60px; gap: 8px; }
+.mile-bar-col { flex: 1 0 auto; min-width: 6px; max-width: 28px; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; }
+.mile-bar-chart-week .mile-bar-col { min-width: 0; }
+.mile-bar-fill {
+  width: 100%; min-height: 4px; border-radius: 3px 3px 1px 1px;
+  background: linear-gradient(180deg, var(--mile-accent), var(--mile-accent-dark));
+  transform-origin: bottom; transform: scaleY(1);
+  animation: mile-bar-grow 620ms var(--mile-spring) both;
+  animation-delay: calc(min(var(--i, 0), 20) * 18ms);
+}
+.mile-bar-fill.full { background: linear-gradient(180deg, var(--txn-green), var(--txn-green-dark)); }
+/* The single best weekday gets a soft glow — a small "look here" signal, not another chip. */
+.mile-bar-fill.best { box-shadow: 0 0 10px 1px color-mix(in srgb, var(--mile-accent) 55%, transparent); }
+@keyframes mile-bar-grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+.mile-bar-label { font-size: 9.5px; font-weight: 700; color: var(--mile-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mile-bar-fill { animation: none !important; transform: scaleY(1) !important; }
+}
+
+.mile-focus-card { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.mile-focus-empty { padding: 4px 0 8px; }
+
+.mile-task-card {
+  position: relative;
+  display: flex; align-items: flex-start; gap: 12px;
+  background: var(--mile-card); border: 1px solid var(--mile-border);
+  border-radius: 16px; padding: 12px 14px;
+  box-shadow: 0 1px 2px rgba(138, 109, 31, 0.06), 0 3px 8px rgba(138, 109, 31, 0.04);
+}
+.mile-task-card.done { background: rgba(138, 109, 31, 0.03); box-shadow: none; }
+
+/* Task-done micro-burst — a handful of colored dots flung outward from the icon and
+   faded, confined to the row itself. Pure CSS, GPU-cheap (transform+opacity only). */
+.mile-burst { position: absolute; top: 26px; left: 28px; width: 0; height: 0; pointer-events: none; }
+.mile-burst-particle {
+  position: absolute; top: 0; left: 0; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--mile-accent);
+  animation: mile-burst-pop 0.6s ease-out forwards;
+  animation-delay: calc(var(--i) * 15ms);
+}
+.mile-burst-particle:nth-child(1) { --tx: 18px; --ty: -16px; }
+.mile-burst-particle:nth-child(2) { --tx: -22px; --ty: -8px; background: var(--txn-green); }
+.mile-burst-particle:nth-child(3) { --tx: 16px; --ty: 18px; }
+.mile-burst-particle:nth-child(4) { --tx: -14px; --ty: 20px; background: var(--txn-green); }
+.mile-burst-particle:nth-child(5) { --tx: 24px; --ty: 4px; }
+.mile-burst-particle:nth-child(6) { --tx: -24px; --ty: 6px; }
+.mile-burst-particle:nth-child(7) { --tx: 6px; --ty: -24px; background: var(--txn-green); }
+.mile-burst-particle:nth-child(8) { --tx: -6px; --ty: -22px; }
+@keyframes mile-burst-pop {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--tx), var(--ty)) scale(0.3); opacity: 0; }
+}
+
+/* Badge-unlocked toast — brief, dismisses itself (see MilestonePanel.jsx setTimeout). */
+.mile-badge-toast {
+  position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  background: var(--mile-ink); color: #fff; font-size: 13px; font-weight: 700;
+  padding: 10px 18px; border-radius: 999px; box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+  z-index: 100; animation: mile-toast-in 0.3s ease-out;
+}
+.mile-badge-toast-icon { font-size: 18px; }
+@keyframes mile-toast-in { from { transform: translate(-50%, -20px); opacity: 0; } to { transform: translate(-50%, 0); opacity: 1; } }
+
+/* Home-screen stat strip — one line above the goal list, not a full dashboard (per
+   research: leading habit apps keep the home screen the actionable list itself). */
+.mile-stat-strip {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 12px; font-weight: 700; color: var(--mile-accent-dark);
+  padding: 2px 4px 2px;
+}
+.mile-stat-strip-dot { color: var(--mile-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .mile-goal-row { animation: none !important; opacity: 1 !important; }
+  .mile-burst-particle { animation: none !important; display: none; }
+  .mile-due-dot { animation: none !important; opacity: 1 !important; }
+}
+/* Embossed treatment (same inset-highlight recipe as .mile-ring-hole) — previously the
+   one flat element among siblings that already had dimension (card shadow, button lift). */
+.mile-task-icon {
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 30px; height: 30px; border-radius: 50%; color: var(--mile-accent-dark);
+  background: var(--mile-accent-pastel); margin-top: 1px;
+  box-shadow: inset 0 1px 2px rgba(138, 109, 31, 0.15), inset 0 -1px 0 rgba(255,255,255,0.7);
+}
+.mile-task-icon .material-symbols-outlined { font-size: 17px; }
+.mile-task-icon.done { background: var(--txn-green-pastel); color: var(--txn-green-dark); box-shadow: inset 0 1px 2px rgba(22,163,74,0.15), inset 0 -1px 0 rgba(255,255,255,0.7); }
+.mile-task-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
+.mile-task-edit-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.mile-task-edit-actions { display: flex; align-items: center; gap: 8px; }
+.mile-task-title { font-size: 13.5px; font-weight: 700; color: var(--mile-ink); overflow-wrap: anywhere; }
+.mile-task-title.done { color: var(--mile-muted); text-decoration: line-through; }
+.mile-task-desc { font-size: 11.5px; color: var(--mile-muted); font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.mile-task-btn {
+  flex-shrink: 0; font-size: 11.5px; font-weight: 700; white-space: nowrap;
+  color: #fff; background: var(--mile-accent-dark); border: none;
+  border-radius: 999px; padding: 8px 14px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+  box-shadow: 0 2px 5px rgba(138, 109, 31, 0.3);
+  transition: transform 0.1s, box-shadow 0.1s;
+}
+.mile-task-btn .material-symbols-outlined { font-size: 15px; }
+.mile-task-btn.done { color: var(--txn-green-dark); background: var(--txn-green-pastel); box-shadow: none; }
+.mile-task-btn:active { transform: translateY(1px); box-shadow: 0 1px 2px rgba(138, 109, 31, 0.2); }
+
+.mile-add-task-row { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
+.mile-add-task-row .add-input { flex: 1; }
+.mile-add-task-btn {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 12px; border: none;
+  background: var(--mile-accent-dark); color: #fff; cursor: pointer;
+}
+.mile-add-task-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.mile-template-row { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 10px; }
+.mile-template-row .mile-template-inputs { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.mile-template-row .add-input { flex: 1; }
+.mile-template-remove {
+  flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: 50%; border: none; margin-top: 2px;
+  background: rgba(138, 109, 31, 0.08); color: var(--mile-muted); cursor: pointer;
+}
+.mile-template-add {
+  display: flex; align-items: center; gap: 4px; background: none; border: none;
+  color: var(--mile-accent-dark); font-size: 12.5px; font-weight: 700; cursor: pointer; padding: 4px 0;
+}
+.mile-template-add .material-symbols-outlined { font-size: 16px; }
+
+.mile-template-picker { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+/* Previously the one tappable element in the module with no shadow AND no :active state
+   at all — every other tappable surface here has both. */
+.mile-template-card {
+  flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  width: 76px; padding: 10px 6px; background: var(--mile-accent-pastel);
+  border: none; border-radius: 14px; cursor: pointer; text-align: center;
+  box-shadow: 0 2px 6px rgba(138, 109, 31, 0.15), inset 0 1px 0 rgba(255,255,255,0.6);
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.mile-template-card:active { transform: translateY(1px) scale(0.97); box-shadow: 0 1px 2px rgba(138, 109, 31, 0.15); }
+.mile-template-icon { font-size: 20px; }
+.mile-template-title { font-size: 10px; font-weight: 700; color: var(--mile-accent-dark); line-height: 1.25; }
+
+.mile-fab {
+  position: fixed; right: 20px; bottom: 90px;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--mile-accent), var(--mile-accent-dark));
+  color: #fff; border: none;
+  box-shadow: 0 2px 4px rgba(138, 109, 31, 0.25), 0 8px 24px rgba(138, 109, 31, 0.35), inset 0 1px 0 rgba(255,255,255,0.3);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 40; transition: transform 0.1s, box-shadow 0.1s;
+}
+.mile-fab .material-symbols-outlined { font-size: 26px; }
+.mile-fab:active { transform: translateY(2px) scale(0.97); box-shadow: 0 1px 2px rgba(138, 109, 31, 0.3); }
 
 /* ── Browsing activity screen (indigo/blue palette, parent-only) ──────────── */
 .browse-screen .material-symbols-outlined {

@@ -1,4 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
+import { LineChart } from '@mui/x-charts/LineChart'
+import { PieChart } from '@mui/x-charts/PieChart'
+import { ThemeProvider, createTheme } from '@mui/material/styles'
 import { getCategoryMeta, OVERALL_BUDGET_CATEGORY, hasRealTime } from '../utils/txnMeta'
 import { detectRecurring } from '../utils/recurringDetection'
 
@@ -398,16 +401,12 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
     return recurringByUser[activeUser] || { groups: [], totalMonthly: 0 }
   }, [recurringByUser, activeUser])
 
-  const donutGradient = useMemo(() => {
-    if (!categoryStats.categories.length) return null
-    let cumulative = 0
-    const stops = categoryStats.categories.map(c => {
-      const from = cumulative
-      cumulative += c.pct
-      return `${c.color} ${from}% ${cumulative}%`
-    })
-    return `conic-gradient(${stops.join(', ')})`
-  }, [categoryStats.categories])
+  // Spending Categories is an MUI X Charts PieChart — mirrors TransactionPanel.jsx's
+  // own conversion (see that file for the equivalent self-view chart).
+  const categoryPieData = useMemo(
+    () => categoryStats.categories.map((c, i) => ({ id: i, label: `${c.label} · ${c.pct}%`, value: c.amount, color: c.color })),
+    [categoryStats.categories]
+  )
 
   // Daily trend + quick-glance stats across the selected period
   const trendData = useMemo(() => {
@@ -454,15 +453,20 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
     return { buckets, bucketMax, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate }
   }, [displayed, period, start, end, totalDebit, totalCredit])
 
-  // SVG polyline points for the spending-trend line chart — same viewBox convention as
-  // TransactionPanel's version, kept separate since the two screens' bucket data differ.
-  const trendLine = useMemo(() => {
-    const { buckets, bucketMax } = trendData
+  // Spending vs Income Trend is an MUI X Charts LineChart — mirrors TransactionPanel.jsx.
+  const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+  const shortDateLabel = (key) => {
+    const [, mo, da] = key.split('-')
+    return `${parseInt(da, 10)} ${MONTH_SHORT[parseInt(mo, 10) - 1]}`
+  }
+  const trendChartData = useMemo(() => {
+    const { buckets } = trendData
     if (buckets.length < 2) return null
-    const stepX = 100 / (buckets.length - 1)
-    const toY = (v) => 36 - (v / bucketMax) * 32
-    const toPoints = (key) => buckets.map((b, i) => `${(i * stepX).toFixed(2)},${toY(b[key]).toFixed(2)}`).join(' ')
-    return { debit: toPoints('debit'), credit: toPoints('credit') }
+    return {
+      labels: buckets.map(b => shortDateLabel(b.key)),
+      debit: buckets.map(b => b.debit),
+      credit: buckets.map(b => b.credit),
+    }
   }, [trendData])
 
   return (
@@ -718,46 +722,37 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
           )}
 
           {showCharts && (
+          <ThemeProvider theme={createTheme({ palette: { primary: { main: '#e0345c' } } })}>
           <div className="txn-charts-grid">
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending Categories</h3>
-              {categoryStats.categories.length === 0 ? (
+              {categoryPieData.length === 0 ? (
                 <p className="txn-donut-empty">No spending recorded for this period.</p>
               ) : (
-                <div className="txn-donut-body">
-                  <div className="txn-donut-ring" style={{ background: donutGradient }}>
-                    <div className="txn-donut-hole">
-                      <span className="material-symbols-outlined">pie_chart</span>
-                    </div>
-                  </div>
-                  <div className="txn-donut-legend">
-                    {categoryStats.categories.map(c => (
-                      <div key={c.id} className="txn-donut-legend-item">
-                        <span className="txn-donut-dot" style={{ background: c.color }} />
-                        <span className="txn-donut-legend-name">{c.label}</span>
-                        <span className="txn-donut-legend-pct">{c.pct}%</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <PieChart
+                  series={[{ data: categoryPieData, innerRadius: 45, paddingAngle: 2, cornerRadius: 4 }]}
+                  height={200}
+                  slotProps={{ legend: { direction: 'vertical', position: { vertical: 'middle', horizontal: 'end' } } }}
+                />
               )}
             </div>
 
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending vs Income Trend</h3>
-              {!trendLine ? (
+              {!trendChartData ? (
                 <p className="txn-donut-empty">Not enough data yet.</p>
               ) : (
-                <>
-                  <svg className="txn-line-chart" viewBox="0 0 100 40" preserveAspectRatio="none">
-                    <polyline className="txn-line-chart-line txn-line-chart-line--credit" points={trendLine.credit} />
-                    <polyline className="txn-line-chart-line txn-line-chart-line--debit" points={trendLine.debit} />
-                  </svg>
-                  <div className="txn-trend-legend">
-                    <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-rose)' }} />Spent</span>
-                    <span><span className="txn-trend-legend-dot" style={{ background: 'var(--txn-green)' }} />Received</span>
-                  </div>
-                </>
+                <LineChart
+                  xAxis={[{ data: trendChartData.labels.map((_, i) => i), scaleType: 'point', valueFormatter: (i) => trendChartData.labels[i] }]}
+                  yAxis={[{ valueFormatter: (v) => formatINRCompact(v) }]}
+                  series={[
+                    { data: trendChartData.debit, area: true, color: '#e0345c', label: 'Spent' },
+                    { data: trendChartData.credit, color: '#16a34a', label: 'Received' },
+                  ]}
+                  height={200}
+                  margin={{ top: 8, right: 8, bottom: 24, left: 48 }}
+                  grid={{ horizontal: true }}
+                />
               )}
             </div>
 
@@ -810,6 +805,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
               </div>
             )}
           </div>
+          </ThemeProvider>
           )}
         </div>
 

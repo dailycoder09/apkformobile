@@ -11,6 +11,9 @@ import AdminTransactionView from './components/AdminTransactionView'
 import AdminBrowsingView from './components/AdminBrowsingView'
 import AdminCallLogView from './components/AdminCallLogView'
 import TransactionPanel from './components/TransactionPanel'
+import KhatabookPanel from './components/KhatabookPanel'
+import MilestonePanel from './components/MilestonePanel'
+import AdminMilestoneView from './components/AdminMilestoneView'
 import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
 import NamazTracker from './components/NamazTracker'
@@ -95,6 +98,9 @@ function getPinFromUrl() {
 // reconnect would itself be a bug (e.g. blasting stale audio/location on resume).
 const DURABLE_MSG_TYPES = new Set([
   'transaction_add', 'transaction_update', 'transaction_delete', 'transaction_delete_all',
+  'ledger_contact_add', 'ledger_contact_update', 'ledger_contact_delete',
+  'ledger_entry_add', 'ledger_entry_update', 'ledger_entry_delete',
+  'milestone_goal_add', 'milestone_goal_update', 'milestone_goal_delete', 'milestone_checkin_set',
 ])
 
 export default function App() {
@@ -469,6 +475,12 @@ export default function App() {
               : null
           ) : module === 'namaz' ? (
             <NamazTracker />
+          ) : module === 'khatabook' ? (
+            <KhatabookPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+          ) : module === 'milestone' ? (
+            session.role === 'admin'
+              ? <AdminMilestoneView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+              : <MilestonePanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
           ) : module === 'profile' ? (
             session.role === 'admin'
               ? null

@@ -868,6 +868,14 @@ wss.on('connection', (ws, req) => {
         return
       }
 
+      // ── Admin commands ── milestones (read-only parent view) ────
+      if (meta.role === 'admin' && msg.type === 'milestone_data_get') {
+        const goals = store.getList(store.TABLES.MILESTONE_GOALS, msg.userId)
+        const tasks = store.getList(store.TABLES.MILESTONE_TASKS, msg.userId)
+        send(ws, { type: 'milestone_data', userId: msg.userId, goals, tasks })
+        return
+      }
+
       // ── Admin commands ── browsing activity ─────────
       if (meta.role === 'admin' && msg.type === 'browsing_get') {
         const list = store.getList(store.TABLES.BROWSING_HISTORY, msg.userId)
@@ -983,6 +991,139 @@ wss.on('connection', (ws, req) => {
           store.deleteAllForOwner(store.TABLES.TRANSACTIONS, uid)
           broadcastToAdmins({ type: 'transactions_cleared', userId: uid })
           send(ws, { type: 'transactions_cleared', userId: uid })
+          return
+        }
+
+        // Khatabook — a personal ledger of informal money lent to / borrowed from people,
+        // separate from bank-statement transactions above. Self-service only (no admin
+        // broadcast — not surfaced to a parent's view, unlike transactions/budgets).
+
+        // Self-fetch — bundles contacts + entries in one reply since the panel always
+        // needs both to render (mirrors transactions_get's self-fetch pattern above).
+        if (msg.type === 'ledger_data_get') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const contacts = store.getList(store.TABLES.LEDGER_CONTACTS, uid)
+          const entries = store.getList(store.TABLES.LEDGER_ENTRIES, uid)
+          send(ws, { type: 'ledger_data', contacts, entries })
+          return
+        }
+
+        if (msg.type === 'ledger_contact_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const contact = { ...msg.contact }
+          store.appendItem(store.TABLES.LEDGER_CONTACTS, uid, contact)
+          return
+        }
+
+        if (msg.type === 'ledger_contact_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.updateItem(store.TABLES.LEDGER_CONTACTS, uid, msg.contact?.id, { ...msg.contact })
+          return
+        }
+
+        // Deleting a contact cascades to its entries — the generic per-table CRUD
+        // helpers have no FK awareness, so the cascade is done explicitly here.
+        if (msg.type === 'ledger_contact_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.deleteItem(store.TABLES.LEDGER_CONTACTS, uid, msg.id)
+          const entries = store.getList(store.TABLES.LEDGER_ENTRIES, uid)
+          entries.filter(e => e.contactId === msg.id).forEach(e => store.deleteItem(store.TABLES.LEDGER_ENTRIES, uid, e.id))
+          return
+        }
+
+        if (msg.type === 'ledger_entry_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const entry = { ...msg.entry }
+          store.appendItem(store.TABLES.LEDGER_ENTRIES, uid, entry)
+          return
+        }
+
+        if (msg.type === 'ledger_entry_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.updateItem(store.TABLES.LEDGER_ENTRIES, uid, msg.entry?.id, { ...msg.entry })
+          return
+        }
+
+        if (msg.type === 'ledger_entry_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.deleteItem(store.TABLES.LEDGER_ENTRIES, uid, msg.id)
+          return
+        }
+
+        // Milestone tracker — a goal with a target period, planned out as one or more
+        // named tasks per day (e.g. "Complete Module 4", "Practice Quiz" on Day 8), each
+        // independently checkable. Unlike Khatabook, this DOES broadcast to admins (parent
+        // view mirrors AdminTransactionView.jsx), since the user explicitly wants a parent
+        // to be able to see progress on things like a child's study goal.
+
+        if (msg.type === 'milestone_data_get') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const goals = store.getList(store.TABLES.MILESTONE_GOALS, uid)
+          const tasks = store.getList(store.TABLES.MILESTONE_TASKS, uid)
+          send(ws, { type: 'milestone_data', userId: uid, goals, tasks })
+          return
+        }
+
+        if (msg.type === 'milestone_goal_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const goal = { ...msg.goal }
+          store.appendItem(store.TABLES.MILESTONE_GOALS, uid, goal)
+          broadcastToAdmins({ type: 'milestone_goal_new', goal, fromUserId: uid, fromUserName: meta.name })
+          return
+        }
+
+        if (msg.type === 'milestone_goal_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const goal = store.updateItem(store.TABLES.MILESTONE_GOALS, uid, msg.goal?.id, { ...msg.goal })
+          if (!goal) return
+          broadcastToAdmins({ type: 'milestone_goal_updated', goal, fromUserId: uid })
+          return
+        }
+
+        // Deleting a goal cascades to its tasks — the generic per-table CRUD helpers have
+        // no FK awareness, so the cascade is done explicitly here (same pattern as
+        // ledger_contact_delete above).
+        if (msg.type === 'milestone_goal_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.deleteItem(store.TABLES.MILESTONE_GOALS, uid, msg.id)
+          const tasks = store.getList(store.TABLES.MILESTONE_TASKS, uid)
+          tasks.filter(t => t.goalId === msg.id).forEach(t => store.deleteItem(store.TABLES.MILESTONE_TASKS, uid, t.id))
+          broadcastToAdmins({ type: 'milestone_goal_deleted', id: msg.id, fromUserId: uid })
+          return
+        }
+
+        if (msg.type === 'milestone_task_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const task = { ...msg.task }
+          store.appendItem(store.TABLES.MILESTONE_TASKS, uid, task)
+          broadcastToAdmins({ type: 'milestone_task_new', task, fromUserId: uid })
+          return
+        }
+
+        // Bulk insert — used when planning a goal's daily tasks upfront at creation (a
+        // task template applied across every day of the period can mean dozens of rows
+        // at once; sending them one message each would be needlessly chatty).
+        if (msg.type === 'milestone_tasks_bulk_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const tasks = Array.isArray(msg.tasks) ? msg.tasks : []
+          tasks.forEach(t => store.appendItem(store.TABLES.MILESTONE_TASKS, uid, t))
+          broadcastToAdmins({ type: 'milestone_tasks_bulk_new', tasks, fromUserId: uid })
+          return
+        }
+
+        if (msg.type === 'milestone_task_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const task = store.updateItem(store.TABLES.MILESTONE_TASKS, uid, msg.task?.id, { ...msg.task })
+          if (!task) return
+          broadcastToAdmins({ type: 'milestone_task_updated', task, fromUserId: uid })
+          return
+        }
+
+        if (msg.type === 'milestone_task_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const deleted = store.deleteItem(store.TABLES.MILESTONE_TASKS, uid, msg.id)
+          if (!deleted) return
+          broadcastToAdmins({ type: 'milestone_task_deleted', id: msg.id, fromUserId: uid })
           return
         }
 

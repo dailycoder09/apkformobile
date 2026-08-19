@@ -40,6 +40,22 @@ const NAV_ITEMS = [
     ),
   },
   {
+    value: 'khatabook',
+    key: 'khatabook',
+    label: 'Khatabook',
+    icon: (
+      <path d="M4 5.5c2-1 5-1 7.5 1.2v10.8c-2.5-2-5.5-2-7.5-1V5.5ZM19.5 5.5c-2-1-5-1-7.5 1.2v10.8c2.5-2 5.5-2 7.5-1V5.5Z" />
+    ),
+  },
+  {
+    value: 'milestone',
+    key: 'milestone',
+    label: 'Milestones',
+    icon: (
+      <path d="M6 4v16M6 4h11l-2.5 4L17 12H6" />
+    ),
+  },
+  {
     value: 'profile',
     key: 'profile',
     label: 'Profile',
