@@ -681,6 +681,19 @@ button { font-family: inherit; cursor: pointer; }
   flex-shrink: 0;
 }
 .namaz-hero-gear .material-symbols-outlined { font-size: 15px; }
+
+.namaz-fab {
+  position: fixed; right: 20px; bottom: 90px;
+  width: 56px; height: 56px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--namaz-gold), var(--namaz-gold-dark));
+  color: #fff; border: none;
+  box-shadow: 0 2px 4px rgba(138, 109, 31, 0.25), 0 8px 24px rgba(138, 109, 31, 0.35), inset 0 1px 0 rgba(255,255,255,0.3);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 40; transition: transform 0.1s, box-shadow 0.1s;
+}
+.namaz-fab .material-symbols-outlined { font-size: 26px; }
+.namaz-fab:active { transform: translateY(2px) scale(0.97); box-shadow: 0 1px 2px rgba(138, 109, 31, 0.3); }
+
 .namaz-hero-heading {
   position: relative;
   font-size: 19px;
@@ -1651,6 +1664,30 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--namaz-muted);
 }
 .duas-script-toggle button.active { background: var(--namaz-gold); color: #fff; }
+
+.duas-speed-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--namaz-bg-from);
+  border-radius: 999px;
+  padding: 3px 3px 3px 10px;
+  margin: 0 0 10px;
+}
+.duas-speed-icon { font-size: 15px; color: var(--namaz-muted); flex-shrink: 0; }
+.duas-speed-btn {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--namaz-muted);
+}
+.duas-speed-btn.active { background: var(--namaz-gold); color: #fff; }
 
 .duas-settings-hint { font-size: 13px; color: var(--namaz-muted); margin-bottom: 10px; }
 

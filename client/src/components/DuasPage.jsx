@@ -2,13 +2,22 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 
 const QURAN_API = 'https://api.alquran.cloud/v1'
 
+const PLAYBACK_SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2]
+
 // Shared recitation-audio player: only one ayah plays at a time, and
 // auto-advances to the next ayah in the list when one finishes (like a real
 // recitation player), via a `getNext(key)` resolver the caller supplies.
+// Playback speed is user-adjustable and remembered across sessions.
 function useAyahAudioPlayer() {
   const audioRef = useRef(null)
   const getNextRef = useRef(null)
   const [playingKey, setPlayingKey] = useState(null)
+  const [playbackRate, setPlaybackRateState] = useState(() => {
+    const stored = Number(localStorage.getItem('quran-playback-rate'))
+    return PLAYBACK_SPEEDS.includes(stored) ? stored : 1
+  })
+  const playbackRateRef = useRef(playbackRate)
+  playbackRateRef.current = playbackRate
 
   function playKey(key, url) {
     if (audioRef.current) {
@@ -17,6 +26,7 @@ function useAyahAudioPlayer() {
     }
     if (!url) { setPlayingKey(null); return }
     const audio = new Audio(url)
+    audio.playbackRate = playbackRateRef.current
     audio.addEventListener('ended', () => {
       const next = getNextRef.current?.(key)
       if (next?.url) playKey(next.key, next.url)
@@ -38,9 +48,15 @@ function useAyahAudioPlayer() {
     playKey(key, url)
   }
 
+  function setPlaybackRate(rate) {
+    setPlaybackRateState(rate)
+    localStorage.setItem('quran-playback-rate', String(rate))
+    if (audioRef.current) audioRef.current.playbackRate = rate
+  }
+
   useEffect(() => () => audioRef.current?.pause(), [])
 
-  return { playingKey, toggleAudio }
+  return { playingKey, toggleAudio, playbackRate, setPlaybackRate }
 }
 
 function AudioButton({ playing, onClick }) {
@@ -48,6 +64,24 @@ function AudioButton({ playing, onClick }) {
     <button className="duas-audio-btn" onClick={onClick} aria-label={playing ? 'Pause recitation' : 'Play recitation'}>
       <span className="material-symbols-outlined">{playing ? 'pause_circle' : 'play_circle'}</span>
     </button>
+  )
+}
+
+function SpeedControl({ rate, onChange }) {
+  return (
+    <div className="duas-speed-control">
+      <span className="material-symbols-outlined duas-speed-icon">speed</span>
+      {PLAYBACK_SPEEDS.map((s) => (
+        <button
+          key={s}
+          type="button"
+          className={`duas-speed-btn${rate === s ? ' active' : ''}`}
+          onClick={() => onChange(s)}
+        >
+          {s}×
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -310,7 +344,7 @@ function QuranTab() {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [scriptMode, setScriptMode] = useState('indopak') // 'uthmani' | 'indopak' — Indo-Pak by default
   const [indopakUnavailable, setIndopakUnavailable] = useState(false)
-  const { playingKey, toggleAudio } = useAyahAudioPlayer()
+  const { playingKey, toggleAudio, playbackRate, setPlaybackRate } = useAyahAudioPlayer()
   const ayahCardRefs = useRef({})
   const searchCardRefs = useRef({})
   const scrollTimerRef = useRef(null)
@@ -487,6 +521,7 @@ function QuranTab() {
           <button className={scriptMode === 'uthmani' ? 'active' : ''} onClick={() => changeScript('uthmani')}>Uthmani</button>
           <button className={scriptMode === 'indopak' ? 'active' : ''} onClick={() => changeScript('indopak')}>Indo-Pak</button>
         </div>
+        <SpeedControl rate={playbackRate} onChange={setPlaybackRate} />
         {scriptMode === 'indopak' && indopakUnavailable && (
           <p className="duas-disclaimer">Indo-Pak script isn't configured on the server yet — showing Uthmani instead.</p>
         )}
@@ -544,6 +579,7 @@ function QuranTab() {
           onChange={(e) => setSearchQuery(e.target.value)}
         />
       </div>
+      <SpeedControl rate={playbackRate} onChange={setPlaybackRate} />
 
       {searchQuery.trim().length >= 3 ? (
         <div className="duas-list">

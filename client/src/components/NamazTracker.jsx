@@ -817,9 +817,6 @@ export default function NamazTracker() {
                       <span className="material-symbols-outlined namaz-hero-loc-icon">location_on</span>
                       {location?.city || 'Current location'}
                     </button>
-                    <button className="namaz-hero-gear" onClick={() => setShowDuas(true)} aria-label="Duas">
-                      <span className="material-symbols-outlined">menu_book</span>
-                    </button>
                     <button className="namaz-hero-gear" onClick={() => setShowSettings((v) => !v)} aria-label="Prayer settings">
                       <span className="material-symbols-outlined">settings</span>
                     </button>
@@ -1393,6 +1390,10 @@ export default function NamazTracker() {
         <p className="namaz-hadith-text">"{todayQuote.text}"</p>
         <span className="namaz-hadith-ref">{todayQuote.ref}</span>
       </div>
+
+      <button className="namaz-fab" onClick={() => setShowDuas(true)} aria-label="Read Quran & Duas">
+        <span className="material-symbols-outlined">menu_book</span>
+      </button>
     </div>
   )
 }
