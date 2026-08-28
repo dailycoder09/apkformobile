@@ -114,220 +114,422 @@ async function fetchArabicText(verseKey) {
 const HADITH_CDN = 'https://cdn.jsdelivr.net/gh/fawazahmed0/hadith-api@1'
 const PAGE_SIZE = 20
 
-const DUA_CATEGORIES = [
-  {
-    key: 'after-prayer',
-    title: 'After Prayer',
-    icon: 'mosque',
-    duas: [
-      {
-        arabic: 'أَسْتَغْفِرُ اللَّهَ (×٣)',
-        transliteration: 'Astaghfirullah — (repeat 3 times)',
-        translation: 'I seek forgiveness from Allah.',
-        source: 'Sahih Muslim, Book of Mosques and Places of Prayer — narrated by Thawban (RA)',
-      },
-      {
-        arabic: 'اللَّهُمَّ أَنْتَ السَّلاَمُ وَمِنْكَ السَّلاَمُ تَبَارَكْتَ يَا ذَا الْجَلاَلِ وَالإِكْرَامِ',
-        transliteration: 'Allahumma antas-salamu wa minkas-salam, tabarakta ya dhal-jalali wal-ikram.',
-        translation: 'O Allah, You are Peace and from You comes peace. Blessed are You, O Owner of majesty and honor.',
-        source: 'Sahih Muslim, Book of Mosques and Places of Prayer — narrated by Thawban (RA), same hadith as above',
-      },
-      {
-        arabic: 'سُبْحَانَ اللَّهِ (×٣٣) — الْحَمْدُ لِلَّهِ (×٣٣) — اللَّهُ أَكْبَرُ (×٣٤)',
-        transliteration: 'SubhanAllah (33×), Alhamdulillah (33×), Allahu Akbar (34×).',
-        translation: 'Glory be to Allah — All praise is for Allah — Allah is the Greatest.',
-        source: 'Sahih al-Bukhari, Book of Adhan, and Sahih Muslim, Book of Mosques — narrated by Abu Hurairah (RA)',
-      },
-      {
-        arabic: null,
-        quranRefs: ['2:255'],
-        transliteration: 'Ayat al-Kursi',
-        translation: 'Quran 2:255 — widely recommended after each obligatory prayer.',
-        source: "Quran 2:255 (Surah al-Baqarah), Hafs 'an Asim riwayah — the same text whether printed in Uthmani or Indo-Pak script, in every mus-haf found in Masjid al-Haram and Masjid an-Nabawi",
-      },
-    ],
-  },
-  {
-    key: 'morning',
-    title: 'Morning Adhkar',
-    icon: 'wb_twilight',
-    duas: [
-      {
-        arabic: 'اللَّهُمَّ أَنْتَ رَبِّي لاَ إِلَهَ إِلاَّ أَنْتَ، خَلَقْتَنِي وَأَنَا عَبْدُكَ، وَأَنَا عَلَى عَهْدِكَ وَوَعْدِكَ مَا اسْتَطَعْتُ، أَعُوذُ بِكَ مِنْ شَرِّ مَا صَنَعْتُ، أَبُوءُ لَكَ بِنِعْمَتِكَ عَلَيَّ، وَأَبُوءُ بِذَنْبِي فَاغْفِرْ لِي فَإِنَّهُ لاَ يَغْفِرُ الذُّنُوبَ إِلاَّ أَنْتَ',
-        transliteration: "Allahumma anta Rabbi la ilaha illa anta, khalaqtani wa ana 'abduka, wa ana 'ala 'ahdika wa wa'dika mastata'tu, a'udhu bika min sharri ma sana'tu, abu'u laka bini'matika 'alayya, wa abu'u bidhanbi faghfir li fa'innahu la yaghfirudh-dhunuba illa ant.",
-        translation: "O Allah, You are my Lord, none has the right to be worshipped except You. You created me and I am Your servant, and I am faithful to my covenant and promise as much as I can. I seek refuge in You from the evil of what I have done. I acknowledge Your favor upon me, and I acknowledge my sin, so forgive me, for none forgives sins except You.",
-        source: 'Sahih al-Bukhari — "Sayyidul Istighfar" (the master supplication for forgiveness)',
-      },
-      {
-        arabic: 'أَصْبَحْنَا وَأَصْبَحَ الْمُلْكُ لِلَّهِ، وَالْحَمْدُ لِلَّهِ',
-        transliteration: 'Asbahna wa asbahal-mulku lillah, walhamdu lillah.',
-        translation: 'We have entered the morning and with it all dominion belongs to Allah, and all praise is for Allah.',
-        source: 'Sahih Muslim',
-      },
-    ],
-  },
-  {
-    key: 'evening',
-    title: 'Evening Adhkar',
-    icon: 'nights_stay',
-    duas: [
-      {
-        arabic: 'أَمْسَيْنَا وَأَمْسَى الْمُلْكُ لِلَّهِ، وَالْحَمْدُ لِلَّهِ',
-        transliteration: 'Amsayna wa amsal-mulku lillah, walhamdu lillah.',
-        translation: 'We have entered the evening and with it all dominion belongs to Allah, and all praise is for Allah.',
-        source: 'Sahih Muslim',
-      },
-    ],
-  },
-  {
-    key: 'daily-life',
-    title: 'Daily Life',
-    icon: 'home',
-    duas: [
-      {
-        arabic: 'بِسْمِ اللَّهِ',
-        transliteration: 'Bismillah',
-        translation: 'In the name of Allah. (Before eating)',
-        source: 'Sunan Abi Dawud',
-      },
-      {
-        arabic: 'الْحَمْدُ لِلَّهِ الَّذِي أَطْعَمَنِي هَذَا وَرَزَقَنِيهِ مِنْ غَيْرِ حَوْلٍ مِنِّي وَلاَ قُوَّةٍ',
-        transliteration: "Alhamdulillahil-ladhi at'amani hadha wa razaqanihi min ghayri hawlin minni wa la quwwah.",
-        translation: 'Praise be to Allah who has fed me this and provided it for me without any might or power on my part. (After eating)',
-        source: 'Sunan Abi Dawud, Jami at-Tirmidhi',
-      },
-      {
-        arabic: 'بِاسْمِكَ اللَّهُمَّ أَمُوتُ وَأَحْيَا',
-        transliteration: 'Bismika Allahumma amutu wa ahya.',
-        translation: 'In Your name, O Allah, I die and I live. (Before sleeping)',
-        source: 'Sahih al-Bukhari',
-      },
-      {
-        arabic: 'الْحَمْدُ لِلَّهِ الَّذِي أَحْيَانَا بَعْدَ مَا أَمَاتَنَا وَإِلَيْهِ النُّشُورُ',
-        transliteration: "Alhamdulillahil-ladhi ahyana ba'da ma amatana wa ilayhin-nushur.",
-        translation: 'Praise be to Allah who gave us life after having taken it from us, and unto Him is the resurrection. (Upon waking)',
-        source: 'Sahih al-Bukhari',
-      },
-      {
-        arabic: 'بِسْمِ اللَّهِ وَلَجْنَا، وَبِسْمِ اللَّهِ خَرَجْنَا، وَعَلَى رَبِّنَا تَوَكَّلْنَا',
-        transliteration: "Bismillahi walajna, wa bismillahi kharajna, wa 'ala Rabbina tawakkalna.",
-        translation: 'In the name of Allah we enter, and in the name of Allah we leave, and upon our Lord we place our trust. (Entering home)',
-        source: 'Sunan Abi Dawud',
-      },
-      {
-        arabic: 'بِسْمِ اللَّهِ تَوَكَّلْتُ عَلَى اللَّهِ وَلاَ حَوْلَ وَلاَ قُوَّةَ إِلاَّ بِاللَّهِ',
-        transliteration: "Bismillah, tawakkaltu 'alallah, wa la hawla wa la quwwata illa billah.",
-        translation: 'In the name of Allah, I place my trust in Allah, and there is no might nor power except with Allah. (Leaving home)',
-        source: 'Sunan Abi Dawud, Jami at-Tirmidhi',
-      },
-      {
-        arabic: 'اللَّهُمَّ افْتَحْ لِي أَبْوَابَ رَحْمَتِكَ',
-        transliteration: 'Allahumma iftah li abwaba rahmatik.',
-        translation: 'O Allah, open the gates of Your mercy for me. (Entering the masjid)',
-        source: 'Sahih Muslim',
-      },
-      {
-        arabic: 'اللَّهُمَّ إِنِّي أَسْأَلُكَ مِنْ فَضْلِكَ',
-        transliteration: 'Allahumma inni as-aluka min fadlik.',
-        translation: 'O Allah, I ask You from Your bounty. (Leaving the masjid)',
-        source: 'Sahih Muslim',
-      },
-      {
-        arabic: null,
-        quranRefs: ['43:13', '43:14'],
-        transliteration: 'Travel dua',
-        translation: 'Glory be to Him who has subjected this to us, and we could never have accomplished it by ourselves. And to our Lord we shall return. (as recited by the Prophet ﷺ when setting out on a journey)',
-        source: 'Sahih Muslim; Quran 43:13-14',
-      },
-    ],
-  },
-]
+const DUAS_API = 'https://ummahapi.com/api/duas'
+
+// UmmahAPI's dua "source" field cites hadith collections with a specific Book:Hadith
+// number (e.g. "Sahih Al-Bukhari 11:113") — checked one of these against sunnah.com's
+// real book numbering and it did not match any known edition (Invocations is Book 75
+// or 80 everywhere, never Book 11), so these specific numbers can't be trusted. Strip
+// them and show only the collection name. Quran citations (e.g. "Quran 1:2") are left
+// alone — Surah:Ayah numbering is universal and not subject to this problem.
+function cleanDuaSource(source) {
+  if (!source) return source
+  return source
+    .split(',')
+    .map((part) => {
+      const trimmed = part.trim()
+      if (/quran/i.test(trimmed)) return trimmed
+      return trimmed.replace(/\s+\d+:\d+\s*$/, '')
+    })
+    .join(', ')
+}
+
+// Icons for UmmahAPI's 27 dua category ids (see /api/duas/categories) — falls back to
+// a generic icon for any category id not listed here (e.g. if the API adds more later).
+const DUA_CATEGORY_ICONS = {
+  morning: 'wb_twilight', evening: 'nights_stay', wudu: 'water_drop', prayer: 'mosque',
+  after_prayer: 'mosque', sleep: 'bedtime', food: 'restaurant', travel: 'flight',
+  home: 'home', masjid: 'mosque', distress: 'sentiment_stressed', forgiveness: 'volunteer_activism',
+  illness: 'healing', weather: 'cloud', knowledge: 'school', parents: 'family_restroom',
+  guidance: 'explore', gratitude: 'favorite', protection: 'shield', dhikr: 'self_improvement',
+  marriage: 'favorite', hajj: 'location_on', grief: 'sentiment_very_dissatisfied',
+  children: 'child_care', business: 'payments', night_prayer: 'dark_mode', quran_recitation: 'auto_stories',
+}
 
 const TABS = [
   { key: 'dua', label: 'Dua', icon: 'volunteer_activism' },
   { key: 'hadees', label: 'Hadees', icon: 'menu_book' },
   { key: 'quran', label: 'Quran', icon: 'auto_stories' },
+  { key: 'names', label: 'Names', icon: 'badge' },
+  { key: 'hadith2', label: 'Hadith DB', icon: 'travel_explore' },
 ]
 
-// ── Dua tab (curated compilation, unchanged) ────────────────────────────
-function DuaTab() {
-  const [openCategory, setOpenCategory] = useState(DUA_CATEGORIES[0].key)
-  const [quranVerses, setQuranVerses] = useState({})
-  const { playingKey, toggleAudio } = useAyahAudioPlayer()
+const HADITH_API = 'https://ummahapi.com/api/hadith'
+const HADITH_PAGE_SIZE = 20
 
-  async function fetchAyah(ref) {
-    const [arabic, en, hi, tr, au] = await Promise.all([
-      fetchArabicText(ref).catch(() => null),
-      fetch(`${QURAN_API}/ayah/${ref}/en.sahih`).then((r) => r.json()).catch(() => null),
-      fetch(`${QURAN_API}/ayah/${ref}/hi.hindi`).then((r) => r.json()).catch(() => null),
-      fetch(`${QURAN_API}/ayah/${ref}/en.transliteration`).then((r) => r.json()).catch(() => null),
-      fetch(`${QURAN_API}/ayah/${ref}/ar.alafasy`).then((r) => r.json()).catch(() => null),
-    ])
-    return { arabic, translation: en?.data?.text, hindi: hi?.data?.text, transliteration: tr?.data?.text, audio: au?.data?.audio }
+// ── Hadith DB tab — a second, separate hadith browser on UmmahAPI (alongside the
+// existing Hadees tab's fawazahmed0/chapter-based one), so both can be compared side
+// by side. Adds full-text search, a random-hadith button, Arabic text and Sahih/Hasan
+// grading — none of which the chapter-based tab has — at the cost of no chapter/topic
+// browsing (UmmahAPI's hadith data is flat, numbered straight through each collection).
+function HadithApiTab() {
+  const [collections, setCollections] = useState([])
+  const [collection, setCollection] = useState('bukhari')
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState(null)
+  const [searchStatus, setSearchStatus] = useState('idle')
+  const [page, setPage] = useState(1)
+  const [browse, setBrowse] = useState({ hadiths: [], total_pages: 1 })
+  const [browseStatus, setBrowseStatus] = useState('loading')
+  const [randomHadith, setRandomHadith] = useState(null)
+  const [randomStatus, setRandomStatus] = useState('idle')
+
+  useEffect(() => {
+    fetch(`${HADITH_API}/collections`)
+      .then((r) => r.json())
+      .then((json) => setCollections(json?.data?.collections || []))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 3) { setSearchResults(null); return }
+    setSearchStatus('loading')
+    const t = setTimeout(() => {
+      fetch(`${HADITH_API}/search?q=${encodeURIComponent(q)}&collection=${collection}&limit=20`)
+        .then((r) => r.json())
+        .then((json) => { setSearchResults(json?.data?.hadiths || []); setSearchStatus('idle') })
+        .catch(() => setSearchStatus('error'))
+    }, 350)
+    return () => clearTimeout(t)
+  }, [query, collection])
+
+  useEffect(() => {
+    if (query.trim().length >= 3) return
+    setBrowseStatus('loading')
+    fetch(`${HADITH_API}/${collection}?page=${page}&limit=${HADITH_PAGE_SIZE}`)
+      .then((r) => r.json())
+      .then((json) => setBrowse({
+        hadiths: json?.data?.hadiths || [],
+        total_pages: json?.data?.total_pages || 1,
+      }))
+      .catch(() => {})
+      .finally(() => setBrowseStatus('idle'))
+  }, [collection, page, query])
+
+  function selectCollection(key) {
+    setCollection(key)
+    setPage(1)
+    setRandomHadith(null)
+  }
+
+  function loadRandom() {
+    setRandomStatus('loading')
+    fetch(`${HADITH_API}/random?collection=${collection}`)
+      .then((r) => r.json())
+      .then((json) => { setRandomHadith(json?.data || null); setRandomStatus('idle') })
+      .catch(() => setRandomStatus('error'))
+  }
+
+  const showingSearch = query.trim().length >= 3
+  const list = showingSearch ? searchResults : browse.hadiths
+  const status = showingSearch ? searchStatus : browseStatus
+
+  return (
+    <div>
+      <div className="duas-collection-chips">
+        {collections.map((c) => (
+          <button
+            key={c.key}
+            className={`duas-collection-chip${collection === c.key ? ' active' : ''}`}
+            onClick={() => selectCollection(c.key)}
+          >
+            {c.name}
+          </button>
+        ))}
+      </div>
+
+      <div className="duas-search">
+        <span className="material-symbols-outlined">search</span>
+        <input
+          type="text"
+          placeholder={`Search ${collections.find((c) => c.key === collection)?.name || 'hadith'}…`}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      {!showingSearch && (
+        <button className="duas-load-more" onClick={loadRandom} disabled={randomStatus === 'loading'}>
+          🎲 Random hadith from this collection
+        </button>
+      )}
+
+      {randomHadith && !showingSearch && (
+        <div className="duas-card">
+          <p className="duas-arabic">{randomHadith.arabic}</p>
+          <p className="duas-translation">{randomHadith.english}</p>
+          <p className="duas-source">{randomHadith.collection_name} #{randomHadith.hadithnumber}{randomHadith.grade ? ` · ${randomHadith.grade}` : ''}</p>
+        </div>
+      )}
+
+      <div className="duas-list">
+        {status === 'loading' && <p className="duas-disclaimer">Loading…</p>}
+        {status === 'error' && <p className="duas-disclaimer">Couldn't reach the hadith service — check your connection.</p>}
+        {status === 'idle' && list?.length === 0 && (
+          <p className="duas-disclaimer">{showingSearch ? `No hadith found for "${query.trim()}".` : 'No hadith found.'}</p>
+        )}
+        {list?.map((h) => (
+          <div key={h.id} className="duas-card">
+            {h.arabic && <p className="duas-arabic">{h.arabic}</p>}
+            <p className="duas-translation">{h.english}</p>
+            <p className="duas-source">{h.collection_name} #{h.hadithnumber}{h.grade ? ` · ${h.grade}` : ''}</p>
+          </div>
+        ))}
+      </div>
+
+      {!showingSearch && browse.total_pages > 1 && (
+        <div className="duas-names-pager">
+          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
+          <span>Page {page} / {browse.total_pages}</span>
+          <button disabled={page >= browse.total_pages} onClick={() => setPage((p) => p + 1)}>Next</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const NAMES_API = 'https://ummahapi.com/api/names'
+const NAMES_PAGE_SIZE = 20
+
+// ── Names tab — live from UmmahAPI (210 Islamic names, meaning/origin/gender), same
+// no-signup/CORS-open source as the Dua tab. Search takes priority over browsing;
+// clearing the query goes back to the paginated browse list.
+function NamesTab() {
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState(null)
+  const [searchStatus, setSearchStatus] = useState('idle')
+  const [gender, setGender] = useState('') // '' | 'male' | 'female'
+  const [page, setPage] = useState(1)
+  const [browse, setBrowse] = useState({ names: [], total: 0, total_pages: 1 })
+  const [browseStatus, setBrowseStatus] = useState('loading')
+
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 2) { setSearchResults(null); return }
+    setSearchStatus('loading')
+    const t = setTimeout(() => {
+      fetch(`${NAMES_API}/search?q=${encodeURIComponent(q)}&limit=30`)
+        .then((r) => r.json())
+        .then((json) => { setSearchResults(json?.data?.names || []); setSearchStatus('idle') })
+        .catch(() => setSearchStatus('error'))
+    }, 300)
+    return () => clearTimeout(t)
+  }, [query])
+
+  useEffect(() => {
+    if (query.trim().length >= 2) return
+    setBrowseStatus('loading')
+    const genderParam = gender ? `&gender=${gender}` : ''
+    fetch(`${NAMES_API}?page=${page}&limit=${NAMES_PAGE_SIZE}${genderParam}`)
+      .then((r) => r.json())
+      .then((json) => setBrowse({
+        names: json?.data?.names || [],
+        total: json?.data?.total || 0,
+        total_pages: json?.data?.total_pages || 1,
+      }))
+      .catch(() => {})
+      .finally(() => setBrowseStatus('idle'))
+  }, [page, gender, query])
+
+  const showingSearch = query.trim().length >= 2
+  const list = showingSearch ? searchResults : browse.names
+  const status = showingSearch ? searchStatus : browseStatus
+
+  return (
+    <div>
+      <div className="duas-search">
+        <span className="material-symbols-outlined">search</span>
+        <input
+          type="text"
+          placeholder="Search names by meaning or spelling"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      {!showingSearch && (
+        <div className="duas-script-toggle">
+          <button className={gender === '' ? 'active' : ''} onClick={() => { setGender(''); setPage(1) }}>All</button>
+          <button className={gender === 'male' ? 'active' : ''} onClick={() => { setGender('male'); setPage(1) }}>Boys</button>
+          <button className={gender === 'female' ? 'active' : ''} onClick={() => { setGender('female'); setPage(1) }}>Girls</button>
+        </div>
+      )}
+
+      <div className="duas-list">
+        {status === 'loading' && <p className="duas-disclaimer">Loading…</p>}
+        {status === 'error' && <p className="duas-disclaimer">Couldn't reach the names service — check your connection.</p>}
+        {status === 'idle' && list?.length === 0 && (
+          <p className="duas-disclaimer">{showingSearch ? `No names found for "${query.trim()}".` : 'No names found.'}</p>
+        )}
+        {list?.map((n) => (
+          <div key={n.id} className="duas-card">
+            <p className="duas-arabic">{n.arabic}</p>
+            <p className="duas-translit">{n.name} <span className="duas-source">· {n.gender === 'male' ? 'Boy' : n.gender === 'female' ? 'Girl' : n.gender}</span></p>
+            <p className="duas-translation">{n.meaning}</p>
+            {n.note && <p className="duas-translation duas-translation--hindi">{n.note}</p>}
+            <p className="duas-source">{n.origin}{n.root ? ` · root ${n.root}` : ''}</p>
+          </div>
+        ))}
+      </div>
+
+      {!showingSearch && browse.total_pages > 1 && (
+        <div className="duas-names-pager">
+          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Prev</button>
+          <span>Page {page} / {browse.total_pages}</span>
+          <button disabled={page >= browse.total_pages} onClick={() => setPage((p) => p + 1)}>Next</button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Dua tab — live from UmmahAPI (126 duas across 27 categories, no signup/key
+// required, CORS-open). Categories load up front; each category's duas load lazily
+// on first expand and are cached in state so re-opening doesn't refetch. No audio or
+// Hindi translation is available from this source (unlike the Quran tab's per-ayah data).
+function DuaTab() {
+  const [categories, setCategories] = useState([])
+  const [categoriesStatus, setCategoriesStatus] = useState('loading')
+  const [openCategory, setOpenCategory] = useState(null)
+  const [duasByCategory, setDuasByCategory] = useState({})
+  const [categoryStatus, setCategoryStatus] = useState({})
+  const [query, setQuery] = useState('')
+  const [searchResults, setSearchResults] = useState(null)
+  const [searchStatus, setSearchStatus] = useState('idle')
+  const [randomDua, setRandomDua] = useState(null)
+  const [randomStatus, setRandomStatus] = useState('idle')
+
+  function loadCategory(id) {
+    setCategoryStatus((s) => ({ ...s, [id]: 'loading' }))
+    fetch(`${DUAS_API}/category/${id}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setDuasByCategory((prev) => ({ ...prev, [id]: json?.data?.duas || [] }))
+        setCategoryStatus((s) => ({ ...s, [id]: 'idle' }))
+      })
+      .catch(() => setCategoryStatus((s) => ({ ...s, [id]: 'error' })))
   }
 
   useEffect(() => {
-    let cancelled = false
-    const refs = ['2:255', '43:13', '43:14']
-    refs.forEach((ref) => {
-      fetchAyah(ref).then((data) => {
-        if (!cancelled) setQuranVerses((prev) => ({ ...prev, [ref]: data }))
+    fetch(`${DUAS_API}/categories`)
+      .then((r) => r.json())
+      .then((json) => {
+        const list = json?.data?.categories || []
+        setCategories(list)
+        setCategoriesStatus('idle')
+        if (list[0]) { setOpenCategory(list[0].id); loadCategory(list[0].id) }
       })
-    })
-    return () => { cancelled = true }
-  }, [])
+      .catch(() => setCategoriesStatus('error'))
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  function quranTextFor(dua) {
-    if (!dua.quranRefs) return null
-    const parts = dua.quranRefs.map((ref) => quranVerses[ref]).filter(Boolean)
-    if (parts.length !== dua.quranRefs.length) return null
-    return {
-      arabic: parts.map((p) => p.arabic).join(' '),
-      translation: parts.map((p) => p.translation).join(' '),
-      hindi: parts.map((p) => p.hindi).join(' '),
-      transliteration: parts.map((p) => p.transliteration).join(' '),
-      audio: parts[0]?.audio,
-    }
+  useEffect(() => {
+    const q = query.trim()
+    if (q.length < 3) { setSearchResults(null); return }
+    setSearchStatus('loading')
+    const t = setTimeout(() => {
+      fetch(`${DUAS_API}/search?q=${encodeURIComponent(q)}`)
+        .then((r) => r.json())
+        .then((json) => { setSearchResults(json?.data?.results || []); setSearchStatus('idle') })
+        .catch(() => setSearchStatus('error'))
+    }, 350)
+    return () => clearTimeout(t)
+  }, [query])
+
+  function toggleCategory(id) {
+    setOpenCategory((prev) => (prev === id ? null : id))
+    if (!duasByCategory[id] && categoryStatus[id] !== 'loading') loadCategory(id)
   }
 
+  function loadRandomDua() {
+    setRandomStatus('loading')
+    fetch(`${DUAS_API}/random`)
+      .then((r) => r.json())
+      .then((json) => { setRandomDua(json?.data || null); setRandomStatus('idle') })
+      .catch(() => setRandomStatus('error'))
+  }
+
+  if (categoriesStatus === 'loading') return <p className="duas-disclaimer">Loading categories…</p>
+  if (categoriesStatus === 'error') return <p className="duas-disclaimer">Couldn't load duas — check your connection.</p>
+
+  const showingSearch = query.trim().length >= 3
+
   return (
-    <div className="duas-categories">
-      {DUA_CATEGORIES.map((cat) => {
-        const isOpen = openCategory === cat.key
+    <div>
+      <div className="duas-search">
+        <span className="material-symbols-outlined">search</span>
+        <input
+          type="text"
+          placeholder="Search duas by title, meaning or translation"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      {!showingSearch && (
+        <button className="duas-load-more" onClick={loadRandomDua} disabled={randomStatus === 'loading'}>
+          🎲 Random dua
+        </button>
+      )}
+
+      {randomDua && !showingSearch && (
+        <div className="duas-card">
+          <p className="duas-arabic">{randomDua.arabic}</p>
+          <p className="duas-translit">{randomDua.transliteration}</p>
+          <p className="duas-translation">{randomDua.translation}</p>
+          <p className="duas-source">{cleanDuaSource(randomDua.source)}{randomDua.repeat > 1 ? ` — repeat ${randomDua.repeat}×` : ''}</p>
+        </div>
+      )}
+
+      {showingSearch ? (
+        <div className="duas-list">
+          {searchStatus === 'loading' && <p className="duas-disclaimer">Searching…</p>}
+          {searchStatus === 'error' && <p className="duas-disclaimer">Couldn't reach the duas service — check your connection.</p>}
+          {searchStatus === 'idle' && searchResults?.length === 0 && (
+            <p className="duas-disclaimer">No duas found for "{query.trim()}".</p>
+          )}
+          {searchResults?.map((dua) => (
+            <div key={dua.id} className="duas-card">
+              <p className="duas-arabic">{dua.arabic}</p>
+              <p className="duas-translit">{dua.transliteration}</p>
+              <p className="duas-translation">{dua.translation}</p>
+              <p className="duas-source">{cleanDuaSource(dua.source)}{dua.repeat > 1 ? ` — repeat ${dua.repeat}×` : ''}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+      <div className="duas-categories">
+      {categories.map((cat) => {
+        const isOpen = openCategory === cat.id
+        const duas = duasByCategory[cat.id]
+        const status = categoryStatus[cat.id]
         return (
-          <div key={cat.key} className="duas-category">
-            <button className="duas-category-toggle" onClick={() => setOpenCategory(isOpen ? null : cat.key)}>
-              <span className="duas-category-icon"><span className="material-symbols-outlined">{cat.icon}</span></span>
-              <span className="duas-category-title">{cat.title}</span>
+          <div key={cat.id} className="duas-category">
+            <button className="duas-category-toggle" onClick={() => toggleCategory(cat.id)}>
+              <span className="duas-category-icon"><span className="material-symbols-outlined">{DUA_CATEGORY_ICONS[cat.id] || 'volunteer_activism'}</span></span>
+              <span className="duas-category-title">{cat.name}</span>
               <span className={`material-symbols-outlined duas-category-chevron${isOpen ? ' open' : ''}`}>expand_more</span>
             </button>
 
             {isOpen && (
               <div className="duas-list">
-                {cat.duas.map((dua, i) => {
-                  const fetched = quranTextFor(dua)
-                  const arabic = fetched?.arabic || dua.arabic
-                  const translation = fetched?.translation || dua.translation
-                  const translit = fetched?.transliteration || dua.transliteration
-                  const audioKey = `${cat.key}-${i}`
-                  return (
-                    <div key={i} className={`duas-card${playingKey === audioKey ? ' duas-card--playing' : ''}`}>
-                      {fetched?.audio && (
-                        <AudioButton playing={playingKey === audioKey} onClick={() => toggleAudio(audioKey, fetched.audio)} />
-                      )}
-                      {arabic && <p className="duas-arabic">{arabic}</p>}
-                      <p className="duas-translit">{translit}</p>
-                      <p className="duas-translation">{translation}</p>
-                      {fetched?.hindi && <p className="duas-translation duas-translation--hindi">{fetched.hindi}</p>}
-                      <p className="duas-source">{dua.source}</p>
-                    </div>
-                  )
-                })}
+                {status === 'loading' && <p className="duas-disclaimer">Loading…</p>}
+                {status === 'error' && <p className="duas-disclaimer">Couldn't load this category.</p>}
+                {duas?.map((dua) => (
+                  <div key={dua.id} className="duas-card">
+                    <p className="duas-arabic">{dua.arabic}</p>
+                    <p className="duas-translit">{dua.transliteration}</p>
+                    <p className="duas-translation">{dua.translation}</p>
+                    <p className="duas-source">{cleanDuaSource(dua.source)}{dua.repeat > 1 ? ` — repeat ${dua.repeat}×` : ''}</p>
+                  </div>
+                ))}
               </div>
             )}
           </div>
         )
       })}
+      </div>
+      )}
     </div>
   )
 }
@@ -787,6 +989,8 @@ export default function DuasPage({ onBack }) {
       {activeTab === 'dua' && <DuaTab />}
       {activeTab === 'quran' && <QuranTab />}
       {activeTab === 'hadees' && <HadeesTab />}
+      {activeTab === 'names' && <NamesTab />}
+      {activeTab === 'hadith2' && <HadithApiTab />}
     </div>
   )
 }

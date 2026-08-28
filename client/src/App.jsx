@@ -18,7 +18,8 @@ import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
 import NamazTracker from './components/NamazTracker'
 import ProfilePage from './components/ProfilePage'
-import TourPage from './components/TourPage'
+import TourPage, { ModuleTourDetail, MODULE_TOURS } from './components/TourPage'
+import ThemePicker from './components/ThemePicker'
 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
 const IS_NATIVE = Capacitor.isNativePlatform()
@@ -442,6 +443,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <ThemePicker />
       {updateInfo && (
         <UpdateBanner apkUrl={updateInfo.apkUrl} onDismiss={() => setUpdateInfo(null)} />
       )}
@@ -477,6 +479,13 @@ export default function App() {
           ) : module === 'namaz' ? (
             <NamazTracker />
           ) : module === 'khatabook' ? (
+            <ModuleTourDetail
+              tour={MODULE_TOURS.khatabook}
+              onBack={() => setModule(null)}
+              backLabel="Home"
+              onOpen={() => setModule('khatabook-app')}
+            />
+          ) : module === 'khatabook-app' ? (
             <KhatabookPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
           ) : module === 'milestone' ? (
             session.role === 'admin'

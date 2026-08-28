@@ -1,9 +1,24 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import confetti from 'canvas-confetti'
-import { LineChart } from '@mui/x-charts/LineChart'
-import { PieChart } from '@mui/x-charts/PieChart'
-import { ThemeProvider, createTheme } from '@mui/material/styles'
-import { computeGoalStats, computeHomeStats } from '../utils/milestoneStats'
+import {
+  Area, AreaChart, Bar as RechartsBar, BarChart, CartesianGrid, Cell, Pie, PieChart,
+  ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from 'recharts'
+import { computeGoalStats, computeMilestoneStats, computeGlobalBadges } from '../utils/milestoneStats'
+import { PageShell, Tile, TileLabel, Stat, Bar } from './PageShell'
+import { Celebrate, Badge3D } from './Celebrate'
+import MilestoneCalendarAgenda from './MilestoneCalendarAgenda'
+
+// Recharts tooltip styling shared by every chart on this page, matching the reference's
+// own `tip` constant exactly (khata.tsx / milestones.tsx both define the same object).
+const tip = {
+  contentStyle: {
+    borderRadius: 12,
+    border: '1px solid var(--color-border)',
+    background: 'var(--color-popover)',
+    fontSize: 12,
+  },
+}
 
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -12,10 +27,9 @@ function vibrate(pattern) {
   navigator.vibrate?.(pattern)
 }
 
-// Animates a number from 0 to `target` on mount/change — used for the hero ring and the
-// home stat strip so key numbers "count up" rather than snapping in, a small satisfying
-// touch used across well-reviewed habit apps. Skips straight to the target when the user
-// has requested reduced motion (feedback stays, motion doesn't).
+// Animates a number from 0 to `target` on mount/change — used for the hero ring so the
+// headline number "counts up" rather than snapping in. Skips straight to the target when
+// the user has requested reduced motion (feedback stays, motion doesn't).
 function useCountUp(target, duration = 600) {
   const [value, setValue] = useState(prefersReducedMotion() ? target : 0)
   useEffect(() => {
@@ -45,8 +59,8 @@ function istMidnight(ms) {
   const s = new Date(ms + IST_OFFSET_MS)
   return Date.UTC(s.getUTCFullYear(), s.getUTCMonth(), s.getUTCDate()) - IST_OFFSET_MS
 }
-function formatDate(ms) {
-  return new Date(ms).toLocaleDateString('en-IN', { timeZone: IST_TZ, day: 'numeric', month: 'short' })
+function istDateInputToMs(dateStr) {
+  return new Date(`${dateStr}T00:00:00+05:30`).getTime()
 }
 
 const PERIOD_OPTIONS = [
@@ -56,7 +70,7 @@ const PERIOD_OPTIONS = [
   { key: 'custom', label: 'Custom', days: null },
 ]
 
-// Pre-built goal presets so a new milestone doesn't have to start from a blank form —
+// Pre-built goal presets so a new goal doesn't have to start from a blank form —
 // onboarding research shows pre-built templates measurably lower time-to-value versus a
 // blank canvas. Task text is modeled on real program structures (30-day bodyweight
 // challenges, Duolingo's daily-quest sizing, spaced-repetition study plans,
@@ -125,53 +139,50 @@ const QUOTES = [
   "You don't have to be great to start, but you have to start to be great.",
   'Progress, not perfection.',
 ]
-// Stable per-goal (not re-randomized on every render) — a cheap string hash picks a
-// consistent index for a given goal id.
-function quoteFor(goalId) {
+// Stable per-milestone (not re-randomized on every render) — a cheap string hash picks a
+// consistent index for a given id.
+function quoteFor(id) {
   let h = 0
-  for (let i = 0; i < goalId.length; i++) h = (h * 31 + goalId.charCodeAt(i)) >>> 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
   return QUOTES[h % QUOTES.length]
 }
 
-// A small curated palette (not per-category, just per-goal identity) so a list of
-// several goals reads as distinct at a glance — list-card research recommendation:
-// low-volume, high-identity lists (1-10 goals) justify a controlled per-item color
-// signal, unlike a high-volume flat task list.
-const GOAL_ACCENTS = ['#c9a227', '#2a8f7f', '#c15b3c', '#5b6fc9', '#a34a8f']
-function accentFor(goalId) {
-  let h = 0
-  for (let i = 0; i < goalId.length; i++) h = (h * 31 + goalId.charCodeAt(i) * 7) >>> 0
-  return GOAL_ACCENTS[h % GOAL_ACCENTS.length]
-}
-
 const EMPTY_GOAL_FORM = { title: '', description: '', periodKey: 'week', customDays: '', templates: [{ title: '', description: '' }] }
+const EMPTY_MILESTONE_FORM = { id: null, title: '', description: '', day: '1', total: '30' }
+const EMPTY_TASK_FORM = { id: null, goalId: '', title: '', description: '', date: '' }
+
+const UNCATEGORIZED_ID = '__uncategorized__'
 
 export default function MilestonePanel({ session, sendMsg, addListener, onHome }) {
+  const [milestones, setMilestones] = useState([])
   const [goals, setGoals] = useState([])
   const [tasks, setTasks] = useState([])
-  const [selectedGoalId, setSelectedGoalId] = useState(null)
-  const [selectedDayKey, setSelectedDayKey] = useState(null)
-  const [newTaskTitle, setNewTaskTitle] = useState('')
-  const [editingTaskId, setEditingTaskId] = useState(null)
-  const [editTaskForm, setEditTaskForm] = useState({ title: '', description: '' })
+  const [activeMilestoneId, setActiveMilestoneId] = useState(null)
+  const [openGoals, setOpenGoals] = useState({})
   const [showArchived, setShowArchived] = useState(false)
-  const [showAnalytics, setShowAnalytics] = useState(false)
 
   const [goalSheetOpen, setGoalSheetOpen] = useState(false)
   const [goalForm, setGoalForm] = useState(EMPTY_GOAL_FORM)
+
+  const [milestoneSheetOpen, setMilestoneSheetOpen] = useState(false)
+  const [milestoneForm, setMilestoneForm] = useState(EMPTY_MILESTONE_FORM)
+
+  const [taskSheetOpen, setTaskSheetOpen] = useState(null) // null | 'add' | 'edit'
+  const [taskForm, setTaskForm] = useState(EMPTY_TASK_FORM)
 
   // Celebration state — a task id currently mid-micro-burst, and a "just unlocked" badge
   // toast. Both are ephemeral UI-only state, cleared on their own timers.
   const [burstTaskId, setBurstTaskId] = useState(null)
   const [badgeToast, setBadgeToast] = useState(null)
-  // Badges already seen per goal, so opening a goal that already has "First Step" from a
-  // past session doesn't re-announce it — only a badge newly crossed during this viewing
-  // triggers the toast. Seeded when a goal is opened (see openGoalDetail).
-  const seenBadgesRef = useRef({})
+  const [cheer, setCheer] = useState({ n: 0, msg: '' })
+  const seenGlobalBadgesRef = useRef(null)
+  const seenCompletedGoalsRef = useRef(null)
+  const seenCompletedMilestonesRef = useRef(null)
 
   useEffect(() => {
     return addListener((msg) => {
       if (msg.type === 'milestone_data') {
+        setMilestones(msg.milestones || [])
         setGoals(msg.goals || [])
         setTasks(msg.tasks || [])
       }
@@ -183,159 +194,168 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Archived goals are kept (full history intact) but tucked out of the default list
-  // and out of the home stat strip — a toggle reveals them without deleting anything.
-  const visibleGoals = useMemo(() => goals.filter(g => g.status !== 'archived'), [goals])
-  const archivedGoals = useMemo(() => goals.filter(g => g.status === 'archived'), [goals])
-  const sortedGoals = useMemo(
-    () => [...visibleGoals].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
-    [visibleGoals]
-  )
-  const sortedArchivedGoals = useMemo(
-    () => [...archivedGoals].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)),
-    [archivedGoals]
-  )
-
-  // Thin stat strip shown above the goal list (home-screen research: lead with the
-  // actionable list, not a heavy dashboard — a one-line strip is as far as a "hero"
-  // element should go here). "On track" = today's tasks are either not due yet or
-  // already all done, i.e. the goal isn't currently behind.
-  const homeStats = useMemo(() => computeHomeStats(visibleGoals, tasks), [visibleGoals, tasks])
-
-  const selectedGoal = goals.find(g => g.id === selectedGoalId) || null
-  const selectedStats = useMemo(
-    () => selectedGoal ? computeGoalStats(selectedGoal, tasks) : null,
-    [selectedGoal, tasks]
-  )
-  const animatedDayCount = useCountUp(selectedStats?.daysElapsed ?? 0)
-  const heroAccent = selectedGoal ? accentFor(selectedGoal.id) : null
-
-  // "Meteors" celebratory accent — sparse, only while an active streak is running, and
-  // memoized per-goal so positions don't reshuffle on every unrelated re-render.
-  const meteors = useMemo(() => {
-    const count = Math.min(selectedStats?.currentStreak || 0, 4)
-    return Array.from({ length: count }, () => ({ left: 10 + Math.random() * 70, delay: Math.random() * 4.5 }))
-  }, [selectedGoal?.id, selectedStats?.currentStreak])
-
-  // Completion Trend uses MUI X Charts' LineChart (a real time-series chart component) —
-  // everything else in this module stays hand-rolled CSS/SVG. `trendData` just reshapes
-  // dailyCompletion into the two parallel arrays LineChart wants; MUI owns the actual
-  // path/curve math (and, unlike the earlier hand-rolled version, correctly avoids
-  // overshoot since it uses monotone interpolation internally, not a naive spline).
-  const trendData = useMemo(() => {
-    const pts = selectedStats?.dailyCompletion || []
-    if (pts.length < 2) return null
-    return { x: pts.map((_, i) => i), y: pts.map(p => p.pct) }
-  }, [selectedStats?.dailyCompletion])
-
-  // Overall task completion as a pie — a different lens than the trend/weekday charts
-  // (those are over time; this is the single "how much is actually done" snapshot).
-  const completionPieData = useMemo(() => {
-    if (!selectedStats || selectedStats.totalTasks === 0) return null
-    const remaining = selectedStats.totalTasks - selectedStats.completedTasks
-    return [
-      { id: 0, label: 'Done', value: selectedStats.completedTasks, color: heroAccent },
-      { id: 1, label: 'Remaining', value: remaining, color: '#e5ddc8' },
-    ]
-  }, [selectedStats, heroAccent])
-
-  // Real month-grid calendar for longer goals (>14 days) — a flat horizontal strip
-  // works fine for a short goal (fits on one glance), but for month/year-length goals
-  // users think in "did I do this in August vs September" terms, which only a proper
-  // calendar with week rows and month boundaries can show (see research: GitHub-style
-  // strips can't represent real month boundaries cleanly). Short goals keep the strip.
-  const [calendarMonth, setCalendarMonth] = useState(null)
-  const useCalendarGrid = (selectedStats?.totalDays ?? 0) > 14
-
-  const calendarCells = useMemo(() => {
-    if (!calendarMonth || !selectedStats) return []
-    const year = calendarMonth.getFullYear()
-    const month = calendarMonth.getMonth()
-    const firstWeekday = new Date(year, month, 1).getDay()
-    const daysInMonth = new Date(year, month + 1, 0).getDate()
-    const dayMap = {}
-    selectedStats.days.forEach(d => { dayMap[d.key] = d })
-    const cells = []
-    for (let i = 0; i < firstWeekday; i++) cells.push(null)
-    for (let day = 1; day <= daysInMonth; day++) {
-      // Built from calendar components directly (not through a Date->ms->IST-key
-      // round trip) — sidesteps the exact timezone-drift bug already fixed elsewhere
-      // in this app (see istDateKey usage), since y/m/d here are already civil dates.
-      const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-      cells.push({ date: new Date(year, month, day), key, day: dayMap[key] || null })
+  // Goals created before Milestones existed have no milestoneId — grouped into a
+  // client-only fallback "My Goals" bucket (never sent to the server) so old data stays
+  // visible instead of silently disappearing.
+  const orphanGoals = useMemo(() => goals.filter(g => !g.milestoneId), [goals])
+  const syntheticMilestone = useMemo(() => {
+    if (!orphanGoals.length) return null
+    return {
+      id: UNCATEGORIZED_ID, title: 'My Goals', description: 'Goals from before milestones existed.',
+      startDate: Math.min(...orphanGoals.map(g => g.startDate || Date.now())), durationDays: 365,
+      archived: false, synthetic: true,
     }
-    return cells
-  }, [calendarMonth, selectedStats])
+  }, [orphanGoals])
+  const combinedMilestones = useMemo(
+    () => [...milestones, ...(syntheticMilestone ? [syntheticMilestone] : [])],
+    [milestones, syntheticMilestone]
+  )
 
-  function goToCalMonth(delta) {
-    setCalendarMonth(prev => {
-      const d = new Date(prev)
-      d.setMonth(d.getMonth() + delta)
-      return d
-    })
-  }
-  const calAtGoalStart = selectedGoal && calendarMonth
-    && calendarMonth.getFullYear() === new Date(selectedGoal.startDate).getFullYear()
-    && calendarMonth.getMonth() === new Date(selectedGoal.startDate).getMonth()
-  const calAtGoalEnd = selectedGoal && calendarMonth && (() => {
-    const end = new Date(selectedGoal.startDate + (selectedGoal.durationDays - 1) * 86400000)
-    return calendarMonth.getFullYear() === end.getFullYear() && calendarMonth.getMonth() === end.getMonth()
-  })()
-
-  // Auto-flip a goal to 'completed' the moment every planned task is checked off — a
-  // one-time transition, guarded so it only fires while the goal is still 'active'. Also
-  // the trigger point for the full celebration moment (confetti + vibration) — the
-  // biggest of the three celebration tiers, reserved for genuinely completing a goal.
   useEffect(() => {
-    if (selectedGoal && selectedStats?.isComplete && selectedGoal.status === 'active') {
-      const updated = { ...selectedGoal, status: 'completed' }
-      setGoals(prev => prev.map(g => g.id === updated.id ? updated : g))
-      sendMsg({ type: 'milestone_goal_update', goal: updated })
+    if (activeMilestoneId == null && combinedMilestones.length) setActiveMilestoneId(combinedMilestones[0].id)
+  }, [combinedMilestones, activeMilestoneId])
+
+  const activeMilestone = combinedMilestones.find(m => m.id === activeMilestoneId) || combinedMilestones[0] || null
+
+  // For the synthetic bucket, `goals` itself has no matching milestoneId — remap a copy
+  // just for stats purposes so computeMilestoneStats' internal filter still finds them.
+  const goalsForActiveStats = activeMilestone?.synthetic
+    ? orphanGoals.map(g => ({ ...g, milestoneId: activeMilestone.id }))
+    : goals
+
+  const activeMilestoneStats = useMemo(
+    () => activeMilestone ? computeMilestoneStats(activeMilestone, goalsForActiveStats, tasks) : null,
+    [activeMilestone, goalsForActiveStats, tasks]
+  )
+
+  const activeGoals = useMemo(() => {
+    const list = activeMilestone?.synthetic
+      ? orphanGoals.filter(g => g.status !== 'archived')
+      : goals.filter(g => g.milestoneId === activeMilestone?.id && g.status !== 'archived')
+    return [...list].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  }, [goals, orphanGoals, activeMilestone])
+
+  const activeArchivedGoals = useMemo(() => {
+    const list = activeMilestone?.synthetic
+      ? orphanGoals.filter(g => g.status === 'archived')
+      : goals.filter(g => g.milestoneId === activeMilestone?.id && g.status === 'archived')
+    return [...list].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+  }, [goals, orphanGoals, activeMilestone])
+
+  const animatedRingPct = useCountUp(activeMilestoneStats?.completionPct ?? 0)
+
+  const globalBadges = useMemo(() => computeGlobalBadges(combinedMilestones, goals, tasks), [combinedMilestones, goals, tasks])
+
+  // Overall numbers across every real goal (not just the active milestone's).
+  const overall = useMemo(() => {
+    let bestStreak = 0, totalTasksAll = 0, totalDoneAll = 0, totalGoalsAchieved = 0
+    goals.forEach(g => {
+      const s = computeGoalStats(g, tasks)
+      bestStreak = Math.max(bestStreak, s.longestStreak)
+      totalTasksAll += s.totalTasks
+      totalDoneAll += s.completedTasks
+      if (s.isComplete) totalGoalsAchieved++
+    })
+    const completionRate = totalTasksAll ? Math.round((totalDoneAll / totalTasksAll) * 100) : 0
+    return { bestStreak, totalTasksAll, totalDoneAll, totalGoalsAchieved, completionRate }
+  }, [goals, tasks])
+
+  // Real daily-completion trend for the active milestone — merges every child goal's own
+  // dailyCompletion series (from computeGoalStats) by date, averaging same-day points
+  // across goals rather than the reference's static demo series.
+  const trendData = useMemo(() => {
+    if (!activeGoals.length) return null
+    const byDate = {}
+    activeGoals.forEach(g => {
+      computeGoalStats(g, tasks).dailyCompletion.forEach(d => {
+        if (!byDate[d.key]) byDate[d.key] = { sum: 0, count: 0, date: d.date }
+        byDate[d.key].sum += d.pct
+        byDate[d.key].count += 1
+      })
+    })
+    const points = Object.values(byDate).sort((a, b) => a.date - b.date).map(d => Math.round(d.sum / d.count))
+    if (points.length < 2) return null
+    return points.map((pct, i) => ({ d: `Day ${i + 1}`, pct }))
+  }, [activeGoals, tasks])
+
+  const breakdownData = useMemo(() => {
+    if (!activeMilestoneStats) return null
+    const done = activeMilestoneStats.todayDone
+    const remaining = Math.max(0, activeMilestoneStats.todayTotal - done)
+    return [
+      { id: 0, label: 'Done', value: Math.max(done, 0.001), color: 'var(--color-gold)' },
+      { id: 1, label: 'Remaining', value: Math.max(remaining, 0.001), color: 'var(--color-secondary)' },
+    ]
+  }, [activeMilestoneStats])
+
+  const goalChartData = useMemo(() => activeGoals.map(g => {
+    const s = computeGoalStats(g, tasks)
+    const today = s.days.find(d => d.isToday)
+    const todayPct = today && today.tasks.length ? Math.round((today.tasks.filter(t => t.done).length / today.tasks.length) * 100) : 0
+    return { name: g.title.length > 12 ? `${g.title.slice(0, 12)}…` : g.title, goal: s.completionPct, tasks: todayPct }
+  }), [activeGoals, tasks])
+
+  const perMilestoneChartData = useMemo(() => combinedMilestones.map(m => {
+    const gfs = m.synthetic ? orphanGoals.map(g => ({ ...g, milestoneId: m.id })) : goals
+    const s = computeMilestoneStats(m, gfs, tasks)
+    return { name: m.title.split(' ')[0], progress: s.completionPct, motivation: s.motivationScore }
+  }), [combinedMilestones, goals, orphanGoals, tasks])
+
+  // Auto-flip a goal to 'completed' + celebrate the moment every planned task is checked
+  // off — diffs against a "seen complete" ref so it only fires once per fresh completion,
+  // not on every unrelated re-render (same pattern as the badge-toast watcher below).
+  useEffect(() => {
+    const completedNow = new Set(goals.filter(g => computeGoalStats(g, tasks).isComplete).map(g => g.id))
+    if (seenCompletedGoalsRef.current === null) { seenCompletedGoalsRef.current = completedNow; return }
+    const seen = seenCompletedGoalsRef.current
+    const freshId = [...completedNow].find(id => !seen.has(id))
+    if (freshId) {
+      const goal = goals.find(g => g.id === freshId)
+      if (goal && goal.status !== 'completed') {
+        const updated = { ...goal, status: 'completed' }
+        setGoals(prev => prev.map(g => g.id === updated.id ? updated : g))
+        sendMsg({ type: 'milestone_goal_update', goal: updated })
+      }
       if (!prefersReducedMotion()) {
         confetti({ particleCount: 140, spread: 90, origin: { y: 0.6 }, colors: ['#c9a227', '#8a6d1f', '#16a34a'] })
       }
       vibrate([15, 40, 15, 40, 30])
+      setCheer({ n: Date.now(), msg: `Goal achieved — ${goal?.title ?? ''}! 🎯` })
     }
+    seenCompletedGoalsRef.current = completedNow
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStats?.isComplete])
+  }, [goals, tasks])
 
-  // Watches the selected goal's badges and announces any newly crossed one with a toast
-  // + micro-burst + vibration — badges already earned before this goal was opened don't
-  // re-announce (seeded in openGoalDetail below).
   useEffect(() => {
-    if (!selectedGoal || !selectedStats) return
-    const seen = seenBadgesRef.current[selectedGoal.id] || new Set()
-    const fresh = selectedStats.badges.find(b => !seen.has(b.id))
+    const completedNow = new Set(combinedMilestones.filter(m => {
+      const gfs = m.synthetic ? orphanGoals.map(g => ({ ...g, milestoneId: m.id })) : goals
+      return computeMilestoneStats(m, gfs, tasks).isComplete
+    }).map(m => m.id))
+    if (seenCompletedMilestonesRef.current === null) { seenCompletedMilestonesRef.current = completedNow; return }
+    const seen = seenCompletedMilestonesRef.current
+    const freshId = [...completedNow].find(id => !seen.has(id))
+    if (freshId) {
+      const m = combinedMilestones.find(x => x.id === freshId)
+      setCheer({ n: Date.now(), msg: `Milestone complete — ${m?.title ?? ''}! 🏆` })
+    }
+    seenCompletedMilestonesRef.current = completedNow
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [combinedMilestones, goals, tasks])
+
+  // Watches the 6 global badges and announces any newly-earned one with a toast — badges
+  // already earned before this session don't re-announce (seeded on first data load).
+  useEffect(() => {
+    const earnedIds = new Set(globalBadges.filter(b => b.earned).map(b => b.id))
+    if (seenGlobalBadgesRef.current === null) { seenGlobalBadgesRef.current = earnedIds; return }
+    const seen = seenGlobalBadgesRef.current
+    const fresh = globalBadges.find(b => b.earned && !seen.has(b.id))
     if (fresh) {
-      seenBadgesRef.current[selectedGoal.id] = new Set([...seen, ...selectedStats.badges.map(b => b.id)])
       setBadgeToast(fresh)
       vibrate([10, 30, 10])
       setTimeout(() => setBadgeToast(null), 2600)
     }
-  }, [selectedGoal, selectedStats])
-
-  function openGoalDetail(id) {
-    setSelectedGoalId(id)
-    setSelectedDayKey(istDateKey(Date.now()))
-    setNewTaskTitle('')
-    setShowAnalytics(false)
-    const goal = goals.find(g => g.id === id)
-    if (goal) {
-      seenBadgesRef.current[id] = new Set(computeGoalStats(goal, tasks).badges.map(b => b.id))
-      // Open the calendar on whichever month contains "today" if the goal is currently
-      // active and today falls inside it, otherwise the goal's start month.
-      const todayMid = istMidnight(Date.now())
-      const startMid = istMidnight(goal.startDate)
-      const endMid = startMid + (goal.durationDays - 1) * 86400000
-      setCalendarMonth(new Date(todayMid >= startMid && todayMid <= endMid ? todayMid : startMid))
-    }
-  }
-
-  function selectDay(day) {
-    if (day.isFuture) return
-    setSelectedDayKey(day.key)
-    setNewTaskTitle('')
-  }
+    seenGlobalBadgesRef.current = earnedIds
+  }, [globalBadges])
 
   function openAddGoal() {
     setGoalForm(EMPTY_GOAL_FORM)
@@ -374,7 +394,8 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
       title, description: goalForm.description.trim(),
       periodType: goalForm.periodKey, durationDays, startDate,
       createdAt: Date.now(), status: 'active',
-      // One streak-freeze "grace" per goal — see computeGoalStats above.
+      milestoneId: activeMilestone?.synthetic ? null : (activeMilestone?.id ?? null),
+      // One streak-freeze "grace" per goal — see computeGoalStats.
       freezesTotal: 1, freezesUsed: [],
     }
     // Plan every day upfront: each task template gets its own row on every day of the
@@ -393,6 +414,7 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
     setTasks(prev => [...newTasks, ...prev])
     sendMsg({ type: 'milestone_goal_add', goal })
     if (newTasks.length) sendMsg({ type: 'milestone_tasks_bulk_add', tasks: newTasks })
+    setOpenGoals(o => ({ ...o, [goal.id]: true }))
     setGoalSheetOpen(false)
   }
 
@@ -400,17 +422,14 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
     setGoals(prev => prev.filter(g => g.id !== id))
     setTasks(prev => prev.filter(t => t.goalId !== id))
     sendMsg({ type: 'milestone_goal_delete', id })
-    if (selectedGoalId === id) setSelectedGoalId(null)
   }
 
   // Archiving (vs. deleting) keeps the goal + its full history around for reference —
-  // just tucked out of the default list view and out of the home stat strip's "on
-  // track" count, rather than gone for good.
+  // just tucked out of the active list, rather than gone for good.
   function archiveGoal(goal) {
     const updated = { ...goal, status: 'archived' }
     setGoals(prev => prev.map(g => g.id === goal.id ? updated : g))
     sendMsg({ type: 'milestone_goal_update', goal: updated })
-    setSelectedGoalId(null)
   }
 
   function unarchiveGoal(goal) {
@@ -430,7 +449,7 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
       id: Math.random().toString(36).slice(2),
       title: goal.title, description: goal.description,
       periodType: goal.periodType, durationDays: goal.durationDays, startDate,
-      createdAt: Date.now(), status: 'active',
+      createdAt: Date.now(), status: 'active', milestoneId: goal.milestoneId ?? null,
       freezesTotal: 1, freezesUsed: [],
     }
     const newTasks = []
@@ -446,6 +465,47 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
     setTasks(prev => [...newTasks, ...prev])
     sendMsg({ type: 'milestone_goal_add', goal: newGoal })
     if (newTasks.length) sendMsg({ type: 'milestone_tasks_bulk_add', tasks: newTasks })
+  }
+
+  function openAddMilestone() {
+    setMilestoneForm(EMPTY_MILESTONE_FORM)
+    setMilestoneSheetOpen(true)
+  }
+
+  function openEditMilestone(m) {
+    const stats = computeMilestoneStats(m, goals, tasks)
+    setMilestoneForm({ id: m.id, title: m.title, description: m.description || '', day: String(Math.max(1, stats.daysElapsed)), total: String(m.durationDays) })
+    setMilestoneSheetOpen(true)
+  }
+
+  function submitMilestone() {
+    const title = milestoneForm.title.trim()
+    if (!title) return
+    const day = Math.max(1, parseInt(milestoneForm.day, 10) || 1)
+    const total = Math.max(day, parseInt(milestoneForm.total, 10) || day)
+    const startDate = istMidnight(Date.now()) - (day - 1) * 86400000
+    if (milestoneForm.id) {
+      const updated = { id: milestoneForm.id, title, description: milestoneForm.description.trim(), startDate, durationDays: total, archived: false }
+      setMilestones(prev => prev.map(m => m.id === updated.id ? { ...m, ...updated } : m))
+      sendMsg({ type: 'milestone_milestone_update', milestone: updated })
+    } else {
+      const milestone = { id: Math.random().toString(36).slice(2), title, description: milestoneForm.description.trim(), startDate, durationDays: total, createdAt: Date.now(), archived: false }
+      setMilestones(prev => [milestone, ...prev])
+      sendMsg({ type: 'milestone_milestone_add', milestone })
+      setActiveMilestoneId(milestone.id)
+      setCheer({ n: Date.now(), msg: `Milestone "${title}" started!` })
+    }
+    setMilestoneSheetOpen(false)
+  }
+
+  function deleteMilestone(id) {
+    if (id === UNCATEGORIZED_ID) return
+    setMilestones(prev => prev.filter(m => m.id !== id))
+    const childGoalIds = goals.filter(g => g.milestoneId === id).map(g => g.id)
+    setGoals(prev => prev.filter(g => g.milestoneId !== id))
+    setTasks(prev => prev.filter(t => !childGoalIds.includes(t.goalId)))
+    sendMsg({ type: 'milestone_milestone_delete', id })
+    if (activeMilestoneId === id) setActiveMilestoneId(null)
   }
 
   function toggleTask(task) {
@@ -466,20 +526,7 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
   function deleteTask(id) {
     setTasks(prev => prev.filter(t => t.id !== id))
     sendMsg({ type: 'milestone_task_delete', id })
-  }
-
-  function startEditTask(task) {
-    setEditingTaskId(task.id)
-    setEditTaskForm({ title: task.title, description: task.description || '' })
-  }
-
-  function saveEditTask(task) {
-    const title = editTaskForm.title.trim()
-    if (!title) return
-    const updated = { ...task, title, description: editTaskForm.description.trim() }
-    setTasks(prev => prev.map(t => t.id === task.id ? updated : t))
-    sendMsg({ type: 'milestone_task_update', task: updated })
-    setEditingTaskId(null)
+    setTaskSheetOpen(null)
   }
 
   function useFreeze(goal, dayKey) {
@@ -488,437 +535,444 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
     sendMsg({ type: 'milestone_goal_update', goal: updated })
   }
 
-  function addDayTask() {
-    const title = newTaskTitle.trim()
-    if (!title || !selectedGoal || !selectedDayKey) return
-    const task = {
-      id: Math.random().toString(36).slice(2),
-      goalId: selectedGoal.id, date: istMidnight(new Date(`${selectedDayKey}T00:00:00+05:30`).getTime()),
-      title, done: false, createdAt: Date.now(),
-    }
-    setTasks(prev => [task, ...prev])
-    sendMsg({ type: 'milestone_task_add', task })
-    setNewTaskTitle('')
+  function openAddTaskFor(dateMs, goalId) {
+    setTaskForm({ ...EMPTY_TASK_FORM, date: istDateKey(dateMs), goalId: goalId || activeGoals[0]?.id || '' })
+    setTaskSheetOpen('add')
   }
 
-  const selectedDay = selectedStats?.days.find(d => d.key === selectedDayKey) || null
+  function openEditTaskSheet(task) {
+    setTaskForm({ id: task.id, goalId: task.goalId, title: task.title, description: task.description || '', date: istDateKey(task.date) })
+    setTaskSheetOpen('edit')
+  }
+
+  function submitTaskSheet() {
+    const title = taskForm.title.trim()
+    if (!title || !taskForm.goalId) return
+    const dateMs = taskForm.date ? istMidnight(istDateInputToMs(taskForm.date)) : istMidnight(Date.now())
+    if (taskForm.id) {
+      const updated = { id: taskForm.id, goalId: taskForm.goalId, title, description: taskForm.description.trim(), date: dateMs, done: false }
+      setTasks(prev => prev.map(t => t.id === updated.id ? { ...t, ...updated, done: t.done } : t))
+      sendMsg({ type: 'milestone_task_update', task: { ...updated, done: tasks.find(t => t.id === updated.id)?.done ?? false } })
+    } else {
+      const task = { id: Math.random().toString(36).slice(2), goalId: taskForm.goalId, title, description: taskForm.description.trim(), date: dateMs, done: false, createdAt: Date.now() }
+      setTasks(prev => [task, ...prev])
+      sendMsg({ type: 'milestone_task_add', task })
+    }
+    setTaskSheetOpen(null)
+  }
 
   return (
-    <div className="mile-screen">
-      <div className="mile-header">
-        <button
-          className="mile-home-btn"
-          onClick={() => selectedGoalId ? setSelectedGoalId(null) : onHome()}
-          aria-label={selectedGoalId ? 'Back to goals' : 'Home'}
-        >
-          <span className="material-symbols-outlined">arrow_back</span>
-        </button>
-        {/* The goal's own title is already the headline inside its hero card below —
-            repeating it here too just duplicated the same line twice on screen. */}
-        <span className="mile-title">Milestones</span>
-      </div>
-
-      {badgeToast && (
-        <div className="mile-badge-toast" role="status">
-          <span className="material-symbols-outlined mile-badge-toast-icon">{badgeToast.icon}</span>
-          <span>{badgeToast.label} unlocked!</span>
-        </div>
-      )}
-
-      <div className="mile-body">
-        {!selectedGoal ? (
-          <>
-          {homeStats && (
-            <div className="mile-stat-strip">
-              <span><span className="material-symbols-outlined mile-inline-icon">local_fire_department</span> {homeStats.longestActiveStreak}-day best active streak</span>
-              <span className="mile-stat-strip-dot">•</span>
-              <span>{homeStats.onTrack}/{homeStats.total} goals on track today</span>
+    <div className="mile-screen surface-sand relative h-full font-sans">
+      <PageShell
+        eyebrow="Module 04"
+        title="Milestones"
+        lead="Every milestone breaks into goals, and every goal gets its own daily tasks. Tick them off and celebrate each win."
+        onHome={onHome}
+        action={
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const lines = combinedMilestones.map(m => {
+                  const gfs = m.synthetic ? orphanGoals.map(g => ({ ...g, milestoneId: m.id })) : goals
+                  const s = computeMilestoneStats(m, gfs, tasks)
+                  return `• ${m.title} — ${s.completionPct}% (day ${s.daysElapsed}/${s.totalDays})`
+                })
+                const text = `My milestones\n${lines.join('\n')}`
+                navigator.clipboard?.writeText(text)
+                setCheer({ n: Date.now(), msg: 'Progress summary copied!' })
+              }}
+              className="inline-flex items-center gap-1.5 rounded-2xl border border-border bg-card px-4 py-2.5 text-sm font-semibold transition-colors hover:bg-secondary"
+            >
+              <span className="material-symbols-outlined text-lg">share</span> Share
+            </button>
+            <div className="tile-static px-5 py-3 text-right">
+              <p className="num text-2xl font-extrabold">{combinedMilestones.length}</p>
+              <p className="text-[11px] text-muted-foreground">active milestones</p>
             </div>
-          )}
-          <div className="mile-list-card">
-            {sortedGoals.length === 0 ? (
-              <div className="mile-empty">
-                <span className="material-symbols-outlined mile-empty-icon">flag</span>
-                <p>No goals yet</p>
-                <p className="mile-empty-sub">Tap + to set your first milestone</p>
-              </div>
-            ) : sortedGoals.map((g, idx) => {
-              const stats = computeGoalStats(g, tasks)
-              const accent = accentFor(g.id)
-              const today = stats.days.find(d => d.isToday)
-              const dueToday = today && today.tasks.length > 0 && !today.allDone
-              return (
-                <div key={g.id} className="mile-goal-row" style={{ '--i': idx, '--goal-accent': accent }} onClick={() => openGoalDetail(g.id)}>
-                  <div className="mile-ring" style={{ background: `conic-gradient(${accent} ${stats.completionPct * 3.6}deg, rgba(58,42,46,0.08) 0deg)` }}>
-                    <div className="mile-ring-hole">{stats.completionPct}%</div>
-                  </div>
-                  <div className="mile-goal-info">
-                    <span className="mile-goal-title">
-                      {g.title}
-                      {g.status === 'completed' && <span className="material-symbols-outlined mile-inline-icon done">check_circle</span>}
-                      {g.status === 'archived' && <span className="mile-archived-tag">Archived</span>}
-                      {dueToday && <span className="mile-due-dot" title="Due today" />}
-                    </span>
-                    <span className="mile-goal-sub">
-                      Day {stats.daysElapsed}/{stats.totalDays}
-                      {stats.currentStreak > 0 && <> · <span className="material-symbols-outlined mile-inline-icon">local_fire_department</span>{stats.currentStreak}</>}
-                    </span>
-                  </div>
-                  <div className="mile-goal-row-actions">
-                    <button
-                      className="mile-row-delete"
-                      onClick={(e) => { e.stopPropagation(); duplicateGoal(g) }}
-                      aria-label="Duplicate goal"
-                      title="Start again from today"
-                    >
-                      <span className="material-symbols-outlined">content_copy</span>
-                    </button>
-                    <button
-                      className="mile-row-delete"
-                      onClick={(e) => { e.stopPropagation(); deleteGoal(g.id) }}
-                      aria-label="Delete goal"
-                    >
-                      <span className="material-symbols-outlined">delete</span>
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
+          </div>
+        }
+      >
+        <Celebrate show={cheer.n > 0} message={cheer.msg} key={cheer.n} />
+
+        {badgeToast && (
+          // top-20 (not top-4/top-6, which the shared <Celebrate> banner above already
+          // occupies) — a milestone/goal completion and a badge unlock often fire in the
+          // same instant, and both toasts sharing one row rendered as illegible overlapping
+          // text.
+          <div role="status" className="animate-fade-in fixed left-1/2 top-20 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[image:var(--gradient-gold)] px-5 py-2.5 text-sm font-semibold text-white shadow-[var(--shadow-glow)]">
+            <span className="material-symbols-outlined text-lg">{badgeToast.icon}</span>
+            <span>{badgeToast.label} unlocked!</span>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 gap-4 stagger md:grid-cols-6">
+          <div className="col-span-1 grid grid-cols-1 gap-4 self-start sm:grid-cols-2 md:col-span-2">
+            <Stat label="Best streak" value={`${overall.bestStreak}d`} tone="warning" icon={<span className="material-symbols-outlined text-base">local_fire_department</span>} hint="Longest running goal" />
+            <Stat label="Tasks done" value={`${overall.totalDoneAll}`} tone="success" icon={<span className="material-symbols-outlined text-base">task_alt</span>} hint={`${overall.completionRate}% completion`} />
+            <Stat label="Goals achieved" value={`${overall.totalGoalsAchieved}`} tone="gold" icon={<span className="material-symbols-outlined text-base">emoji_events</span>} hint={`${activeMilestoneStats?.goalsCompleted ?? 0}/${activeMilestoneStats?.goalsCount ?? 0} in this milestone`} />
+            <Stat label="Today's tasks" value={`${activeMilestoneStats?.todayDone ?? 0}/${activeMilestoneStats?.todayTotal ?? 0}`} tone="gold" icon={<span className="material-symbols-outlined text-base">checklist</span>} hint={activeMilestone?.title ?? '—'} />
           </div>
 
-          {archivedGoals.length > 0 && (
-            <div className="mile-archived-section">
-              <button type="button" className="mile-archived-toggle" onClick={() => setShowArchived(v => !v)}>
-                <span className="material-symbols-outlined">{showArchived ? 'expand_less' : 'expand_more'}</span>
-                {showArchived ? 'Hide' : 'Show'} archived ({archivedGoals.length})
+          <Tile className="col-span-1 md:col-span-4">
+            <div className="flex items-center justify-between gap-3">
+              <TileLabel>Milestones</TileLabel>
+              <button
+                type="button"
+                onClick={openAddMilestone}
+                className="flex h-8 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3.5 text-xs font-semibold text-accent-foreground transition-opacity hover:opacity-90"
+              >
+                <span className="material-symbols-outlined text-sm">add</span> New milestone
               </button>
-              {showArchived && (
-                <div className="mile-list-card">
-                  {sortedArchivedGoals.map(g => {
-                    const stats = computeGoalStats(g, tasks)
-                    return (
-                      <div key={g.id} className="mile-goal-row mile-goal-row--archived" onClick={() => openGoalDetail(g.id)}>
-                        <div className="mile-ring" style={{ background: `conic-gradient(var(--mile-muted) ${stats.completionPct * 3.6}deg, rgba(58,42,46,0.06) 0deg)` }}>
-                          <div className="mile-ring-hole">{stats.completionPct}%</div>
+            </div>
+            <ul className="mt-4 space-y-2">
+              {combinedMilestones.map(m => {
+                const selected = m.id === activeMilestone?.id
+                const gfs = m.synthetic ? orphanGoals.map(g => ({ ...g, milestoneId: m.id })) : goals
+                const s = computeMilestoneStats(m, gfs, tasks)
+                return (
+                  <li key={m.id}>
+                    <div className={`flex w-full items-start gap-3 rounded-2xl border p-4 text-left transition-all duration-300 hover:-translate-y-0.5 ${
+                      selected ? 'border-gold/40 bg-gold-soft shadow-[var(--shadow-glow)]' : 'border-border bg-secondary/40'
+                    }`}>
+                      <button onClick={() => setActiveMilestoneId(m.id)} className="min-w-0 flex-1 text-left">
+                        <p className="flex items-center gap-1.5 truncate text-sm font-bold">
+                          <span className="truncate">{m.title}</span>
+                          {s.isComplete && <span className="material-symbols-outlined shrink-0 text-base text-gold">emoji_events</span>}
+                        </p>
+                        <p className="num mt-0.5 text-xs text-muted-foreground">
+                          Day {s.daysElapsed} of {s.totalDays} · {s.completionPct}% · {s.goalsCount} goals · {s.tasksCompleted}/{s.tasksTotal} tasks
+                        </p>
+                        <div className="mt-2.5">
+                          <Bar value={s.completionPct} tone="gold" />
                         </div>
-                        <div className="mile-goal-info">
-                          <span className="mile-goal-title">{g.title} <span className="mile-archived-tag">Archived</span></span>
-                          <span className="mile-goal-sub">Day {stats.daysElapsed}/{stats.totalDays}</span>
-                        </div>
-                        <button
-                          className="mile-row-delete"
-                          onClick={(e) => { e.stopPropagation(); deleteGoal(g.id) }}
-                          aria-label="Delete goal"
-                        >
-                          <span className="material-symbols-outlined">delete</span>
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
+                      </button>
+                      {!m.synthetic && (
+                        <span className="flex shrink-0 items-center gap-1">
+                          <button
+                            aria-label={`Edit ${m.title}`}
+                            onClick={() => openEditMilestone(m)}
+                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+                          >
+                            <span className="material-symbols-outlined text-lg">edit</span>
+                          </button>
+                          <button
+                            aria-label={`Delete ${m.title}`}
+                            onClick={() => deleteMilestone(m.id)}
+                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
+                          >
+                            <span className="material-symbols-outlined text-lg">delete</span>
+                          </button>
+                        </span>
+                      )}
+                    </div>
+                  </li>
+                )
+              })}
+              {combinedMilestones.length === 0 && (
+                <li className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                  No milestones yet — start your first one.
+                </li>
               )}
+            </ul>
+          </Tile>
+
+          {activeMilestone && activeMilestoneStats && (
+            <div className="tile grain col-span-1 flex flex-col items-center justify-center p-8 text-center md:col-span-6">
+              <div className="relative grid size-44 shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(var(--color-gold) ${animatedRingPct * 3.6}deg, var(--color-secondary) 0deg)` }}>
+                <div className="grid size-36 place-items-center rounded-full bg-card">
+                  <p className="num text-5xl font-extrabold text-gradient-gold">{animatedRingPct}%</p>
+                  <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+                    {activeMilestoneStats.goalsCompleted}/{activeMilestoneStats.goalsCount} goals
+                  </p>
+                </div>
+              </div>
+              <span className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-gold-soft px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-gold">
+                <span className="material-symbols-outlined text-sm">auto_awesome</span> Active Milestone
+              </span>
+              <h2 className="font-display mt-3 text-2xl font-extrabold">{activeMilestone.title}</h2>
+              {activeMilestone.description && <p className="mt-2 max-w-md text-sm text-muted-foreground">{activeMilestone.description}</p>}
+              <p className="mt-4 flex items-start gap-2 text-xs italic text-muted-foreground">
+                <span className="material-symbols-outlined mt-0.5 shrink-0 text-sm text-gold">format_quote</span>
+                {quoteFor(activeMilestone.id)}
+              </p>
             </div>
           )}
-          </>
-        ) : (
-          <>
-            <div className="mile-summary-card">
-              <div className="mile-card-toolbar">
-                <button type="button" className="mile-toolbar-btn" onClick={() => duplicateGoal(selectedGoal)} aria-label="Duplicate goal" title="Start again from today">
-                  <span className="material-symbols-outlined">content_copy</span>
-                </button>
-                {selectedGoal.status === 'archived' ? (
-                  <button type="button" className="mile-toolbar-btn" onClick={() => unarchiveGoal(selectedGoal)} aria-label="Unarchive goal" title="Unarchive">
-                    <span className="material-symbols-outlined">unarchive</span>
-                  </button>
-                ) : (
-                  <button type="button" className="mile-toolbar-btn" onClick={() => archiveGoal(selectedGoal)} aria-label="Archive goal" title="Archive">
-                    <span className="material-symbols-outlined">archive</span>
-                  </button>
-                )}
-                <button type="button" className="mile-toolbar-btn danger" onClick={() => deleteGoal(selectedGoal.id)} aria-label="Delete goal" title="Delete">
-                  <span className="material-symbols-outlined">delete</span>
-                </button>
+
+          <Tile className="col-span-1 md:col-span-2">
+            <TileLabel>Motivation Score</TileLabel>
+            <p className="num mt-3 text-4xl font-extrabold text-gradient-gold">
+              {activeMilestoneStats?.motivationScore ?? 0}<span className="text-base text-muted-foreground">/100</span>
+            </p>
+            <div className="mt-4">
+              <Bar value={activeMilestoneStats?.motivationScore ?? 0} tone="gold" />
+            </div>
+            <p className="mt-4 text-xs text-muted-foreground">Live score from goal progress and how many daily tasks you ticked today.</p>
+          </Tile>
+
+          <Tile className="col-span-1 md:col-span-2">
+            <TileLabel>Completion Trend</TileLabel>
+            <div className="mt-4 h-[170px]">
+              {!trendData ? (
+                <p className="mt-8 text-center text-sm text-muted-foreground">Check back tomorrow to see your trend.</p>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={trendData}>
+                    <defs>
+                      <linearGradient id="msTrend" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="var(--color-gold)" stopOpacity={0.6} />
+                        <stop offset="100%" stopColor="var(--color-gold)" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <Tooltip {...tip} formatter={(v) => `${v}%`} />
+                    <Area type="monotone" dataKey="pct" stroke="var(--color-gold)" strokeWidth={2.5} fill="url(#msTrend)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </Tile>
+
+          <Tile className="col-span-1 md:col-span-2">
+            <TileLabel>Today's Breakdown</TileLabel>
+            <div className="mt-2 h-[170px]">
+              {!breakdownData ? (
+                <p className="mt-8 text-center text-sm text-muted-foreground">No tasks planned yet.</p>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Tooltip {...tip} />
+                    <Pie data={breakdownData} dataKey="value" innerRadius={44} outerRadius={66} paddingAngle={4} stroke="none">
+                      <Cell fill="var(--color-gold)" />
+                      <Cell fill="var(--color-secondary)" />
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+            <p className="num text-center text-xs text-muted-foreground">
+              {activeMilestoneStats?.todayDone ?? 0} done · {Math.max(0, (activeMilestoneStats?.todayTotal ?? 0) - (activeMilestoneStats?.todayDone ?? 0))} remaining
+            </p>
+          </Tile>
+
+          <Tile className="col-span-1 md:col-span-3">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-lg text-gold">target</span>
+              <TileLabel>Goal progress vs today's tasks</TileLabel>
+            </div>
+            <div className="mt-4 h-[220px]">
+              {goalChartData.length === 0 ? (
+                <p className="mt-8 text-center text-sm text-muted-foreground">No goals in this milestone yet.</p>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={goalChartData} barGap={6}>
+                    <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
+                    <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
+                    <YAxis domain={[0, 100]} tickLine={false} axisLine={false} width={34} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
+                    <Tooltip {...tip} formatter={(v) => `${v}%`} />
+                    <RechartsBar dataKey="goal" name="Goal %" radius={[8, 8, 0, 0]} fill="var(--chart-1)" barSize={18} />
+                    <RechartsBar dataKey="tasks" name="Today's tasks %" radius={[8, 8, 0, 0]} fill="var(--chart-2)" barSize={18} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+          </Tile>
+
+          <Tile className="col-span-1 md:col-span-3">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-lg text-gold">rocket_launch</span>
+              <TileLabel>Progress vs motivation by milestone</TileLabel>
+            </div>
+            <div className="mt-4 h-[220px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={perMilestoneChartData} barGap={6}>
+                  <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: 'var(--color-muted-foreground)' }} />
+                  <YAxis domain={[0, 100]} tickLine={false} axisLine={false} width={34} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
+                  <Tooltip {...tip} formatter={(v) => `${v}%`} />
+                  <RechartsBar dataKey="progress" name="Progress %" radius={[8, 8, 0, 0]} fill="var(--chart-1)" barSize={20} />
+                  <RechartsBar dataKey="motivation" name="Motivation %" radius={[8, 8, 0, 0]} fill="var(--chart-2)" barSize={20} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Tile>
+
+          <div className="col-span-1 md:col-span-6">
+            <MilestoneCalendarAgenda
+              goals={goals}
+              tasks={tasks}
+              onToggleTask={toggleTask}
+              onEditTask={openEditTaskSheet}
+              onDeleteTask={deleteTask}
+              onQuickAdd={(dateMs) => openAddTaskFor(dateMs)}
+            />
+          </div>
+
+          <Tile className="col-span-1 md:col-span-6">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-lg text-gold">flag</span>
+                <TileLabel>Goals &amp; Today's Tasks</TileLabel>
               </div>
-              <div className="mile-summary-hero">
-                {meteors.length > 0 && (
-                  <span className="mile-meteors" aria-hidden="true">
-                    {meteors.map((m, i) => (
-                      <i key={i} className="mile-meteor" style={{ left: `${m.left}%`, animationDelay: `${m.delay}s` }} />
-                    ))}
-                  </span>
-                )}
-                <div className="mile-ring-wrap">
-                  <div className="mile-ring-glow" />
-                  <div className="mile-ring mile-ring-lg" style={{ background: `conic-gradient(var(--txn-gold) ${animatedDayCount / selectedStats.totalDays * 360}deg, rgba(58,42,46,0.08) 0deg)` }}>
-                    <div className="mile-ring-hole mile-ring-hole-lg">
-                      <span className="mile-ring-day">{animatedDayCount}</span>
-                      <span className="mile-ring-of">of {selectedStats.totalDays} days</span>
+              <button
+                type="button"
+                disabled={!activeMilestone}
+                onClick={openAddGoal}
+                className="flex h-8 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3.5 text-xs font-semibold text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                <span className="material-symbols-outlined text-sm">add</span> Add goal
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {activeGoals.map(g => {
+                const open = openGoals[g.id] ?? true
+                const stats = computeGoalStats(g, tasks)
+                const today = stats.days.find(d => d.isToday)
+                const todayTasks = today?.tasks ?? []
+                return (
+                  <div key={g.id} className={`rounded-2xl border p-4 transition-all duration-300 ${stats.isComplete ? 'border-success/40 bg-success-soft' : 'border-border bg-secondary/40'}`}>
+                    <div className="flex items-start gap-3">
+                      <button onClick={() => setOpenGoals(o => ({ ...o, [g.id]: !open }))} className="min-w-0 flex-1 text-left">
+                        <p className="flex items-center gap-1.5 text-sm font-bold">
+                          <span className={`material-symbols-outlined shrink-0 text-base transition-transform ${open ? '' : '-rotate-90'}`}>expand_more</span>
+                          <span className="truncate">{g.title}</span>
+                          {stats.isComplete && <span className="material-symbols-outlined shrink-0 text-base text-gold">emoji_events</span>}
+                          {stats.freezesRemaining > 0 && (
+                            <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-card px-1.5 py-0.5 text-[10px] font-semibold text-foreground" title="Streak freezes protect your streak on a missed day">
+                              <span className="material-symbols-outlined text-xs">ac_unit</span>{stats.freezesRemaining}
+                            </span>
+                          )}
+                        </p>
+                        <p className="num mt-0.5 pl-5 text-xs text-muted-foreground">
+                          Day {stats.daysElapsed}/{stats.totalDays} · {stats.completionPct}% · {todayTasks.filter(t => t.done).length}/{todayTasks.length} tasks today
+                        </p>
+                        <div className="ml-5 mt-2.5">
+                          <Bar value={stats.completionPct} tone="gold" />
+                        </div>
+                      </button>
+                      <span className="flex shrink-0 items-center gap-1">
+                        <button onClick={() => duplicateGoal(g)} aria-label="Duplicate goal" title="Start again from today"
+                          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
+                          <span className="material-symbols-outlined text-base">content_copy</span>
+                        </button>
+                        {g.status === 'archived' ? (
+                          <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal" title="Unarchive"
+                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
+                            <span className="material-symbols-outlined text-base">unarchive</span>
+                          </button>
+                        ) : (
+                          <button onClick={() => archiveGoal(g)} aria-label="Archive goal" title="Archive"
+                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
+                            <span className="material-symbols-outlined text-base">archive</span>
+                          </button>
+                        )}
+                        <button onClick={() => deleteGoal(g.id)} aria-label={`Delete ${g.title}`}
+                          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
+                          <span className="material-symbols-outlined text-base">delete</span>
+                        </button>
+                      </span>
                     </div>
+
+                    {open && (
+                      <div className="mt-3 animate-fade-in space-y-2 border-t border-border pt-3">
+                        {g.description && <p className="text-xs text-muted-foreground">{g.description}</p>}
+                        {todayTasks.map(t => (
+                          <div key={t.id} className={`relative flex items-center gap-3 rounded-xl border p-3 transition-all duration-300 hover:-translate-y-0.5 ${t.done ? 'border-success/30 bg-success-soft' : 'border-border bg-card'}`}>
+                            <button onClick={() => toggleTask(t)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                              <span className={`grid size-6 shrink-0 place-items-center rounded-full border transition-colors ${t.done ? 'border-success bg-success text-white' : 'border-clay'}`}>
+                                {t.done && <span className="material-symbols-outlined text-sm">check</span>}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className={`block truncate text-sm font-semibold ${t.done ? 'text-muted-foreground line-through' : 'text-foreground'}`}>{t.title}</span>
+                                {t.description && <span className="block truncate text-xs text-muted-foreground">{t.description}</span>}
+                              </span>
+                            </button>
+                            <span className="flex shrink-0 items-center gap-1">
+                              <button aria-label="Edit task" onClick={() => openEditTaskSheet(t)}
+                                className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                                <span className="material-symbols-outlined text-base">edit</span>
+                              </button>
+                              <button aria-label="Delete task" onClick={() => deleteTask(t.id)}
+                                className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
+                                <span className="material-symbols-outlined text-base">delete</span>
+                              </button>
+                            </span>
+                          </div>
+                        ))}
+                        {todayTasks.length === 0 && (
+                          <p className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground">No daily tasks for today yet.</p>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => openAddTaskFor(Date.now(), g.id)}
+                          className="flex h-8 items-center gap-1 rounded-full bg-secondary px-3.5 text-xs font-semibold text-foreground transition-colors hover:bg-border"
+                        >
+                          <span className="material-symbols-outlined text-sm">add</span> Add daily task
+                        </button>
+                      </div>
+                    )}
                   </div>
-                </div>
-              </div>
-
-              <div className="mile-summary-status-row">
-                <span className={`mile-status-pill${selectedGoal.status === 'completed' ? ' complete' : ''}`}>
-                  {selectedGoal.status === 'archived' ? 'Archived' : selectedGoal.status === 'completed' ? 'Completed' : 'Active Challenge'}
-                </span>
-              </div>
-
-              {/* The goal title as a real headline, not just the small page-header label —
-                  this is the thing the whole card is about, it should read like it. */}
-              <h2 className="mile-summary-title">{selectedGoal.title}</h2>
-
-              <div className="mile-motivation-box">
-                <span className="mile-motivation-box-icon"><span className="material-symbols-outlined">local_fire_department</span></span>
-                <div>
-                  <span className="mile-motivation-label">Motivation Score</span>
-                  <span className="mile-motivation-val">{selectedStats.motivationScore}<span className="mile-motivation-max">/100</span></span>
-                </div>
-                <span className="mile-freeze-chip" title="Streak freezes protect your streak on a missed day">
-                  <span className="material-symbols-outlined mile-inline-icon">ac_unit</span> {selectedStats.freezesRemaining}
-                </span>
-              </div>
-
-              {selectedGoal.description && <p className="mile-summary-desc">{selectedGoal.description}</p>}
-              <p className="mile-quote">"{quoteFor(selectedGoal.id)}"</p>
-              {selectedStats.badges.length > 0 && (
-                <>
-                  <div className="mile-card-divider" />
-                  <div className="mile-badge-row">
-                    {selectedStats.badges.map(b => (
-                      <span key={b.id} className="mile-badge-chip lg"><span className="material-symbols-outlined mile-inline-icon">{b.icon}</span> {b.label}</span>
-                    ))}
-                  </div>
-                </>
+                )
+              })}
+              {activeMilestone && activeGoals.length === 0 && (
+                <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+                  No goals yet — add the first goal for this milestone.
+                </p>
               )}
             </div>
 
-            <div className="mile-list-card mile-heatmap-card">
-              <h3 className="mile-section-title">Progress Map</h3>
-              {!useCalendarGrid ? (
-                <div className="mile-heatmap-row">
-                  {selectedStats.days.map(d => (
-                    <button
-                      key={d.key}
-                      type="button"
-                      className={`mile-heatmap-cell${d.allDone ? ' done' : ''}${d.frozen ? ' frozen' : ''}${d.isFuture ? ' future' : ''}${d.key === selectedDayKey ? ' selected' : ''}${d.isToday ? ' today' : ''}`}
-                      onClick={() => selectDay(d)}
-                      disabled={d.isFuture}
-                      aria-label={`${formatDate(d.date)}: ${d.tasks.length} task(s), ${d.frozen ? 'streak frozen' : d.allDone ? 'all done' : 'in progress'}`}
-                    />
-                  ))}
-                </div>
-              ) : calendarMonth && (
-                <div className="mile-cal">
-                  <div className="mile-cal-header">
-                    <button className="mile-cal-nav" onClick={() => goToCalMonth(-1)} disabled={calAtGoalStart} aria-label="Previous month">‹</button>
-                    <span className="mile-cal-title">{calendarMonth.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</span>
-                    <button className="mile-cal-nav" onClick={() => goToCalMonth(1)} disabled={calAtGoalEnd} aria-label="Next month">›</button>
-                  </div>
-                  <div className="mile-cal-weekdays">
-                    {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => <span key={i} className="mile-cal-weekday">{d}</span>)}
-                  </div>
-                  <div className="mile-cal-grid">
-                    {calendarCells.map((cell, i) => {
-                      if (!cell) return <span key={`b${i}`} className="mile-cal-cell mile-cal-cell--blank" />
-                      const { date, key, day } = cell
-                      const isToday = key === istDateKey(Date.now())
-                      if (!day) {
-                        return (
-                          <span key={key} className="mile-cal-cell mile-cal-cell--outside">
-                            <span className="mile-cal-daynum">{date.getDate()}</span>
-                          </span>
-                        )
-                      }
-                      const total = day.tasks.length
-                      const done = day.tasks.filter(t => t.done).length
-                      const fillStyle = day.isFuture ? {} : day.allDone
-                        ? { background: heroAccent }
-                        : total > 0
-                          ? { background: `conic-gradient(${heroAccent} ${(done / total) * 360}deg, rgba(138,109,31,0.1) 0deg)` }
-                          : {}
+            {activeArchivedGoals.length > 0 && (
+              <div className="mt-4 border-t border-border pt-4">
+                <button type="button" onClick={() => setShowArchived(v => !v)} className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                  <span className="material-symbols-outlined text-base">{showArchived ? 'expand_less' : 'expand_more'}</span>
+                  {showArchived ? 'Hide' : 'Show'} archived ({activeArchivedGoals.length})
+                </button>
+                {showArchived && (
+                  <div className="mt-2 flex flex-col gap-2">
+                    {activeArchivedGoals.map(g => {
+                      const stats = computeGoalStats(g, tasks)
                       return (
-                        <button
-                          key={key} type="button"
-                          className={`mile-cal-cell${isToday ? ' mile-cal-cell--today' : ''}${day.isFuture ? ' mile-cal-cell--future' : ''}`}
-                          style={fillStyle}
-                          onClick={() => !day.isFuture && selectDay(day)}
-                          disabled={day.isFuture}
-                          aria-label={`${formatDate(date.getTime())}: ${total ? `${done}/${total} tasks done` : 'nothing planned'}`}
-                        >
-                          <span className="mile-cal-daynum" style={day.allDone ? { color: '#fff' } : {}}>{date.getDate()}</span>
-                          {day.frozen && <span className="material-symbols-outlined mile-cal-freeze">ac_unit</span>}
-                        </button>
+                        <div key={g.id} className="flex items-center gap-3 rounded-2xl border border-border bg-secondary/40 p-3 opacity-70">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-foreground">{g.title} <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Archived</span></p>
+                            <p className="text-xs text-muted-foreground">Day {stats.daysElapsed}/{stats.totalDays} · {stats.completionPct}%</p>
+                          </div>
+                          <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal"
+                            className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
+                            <span className="material-symbols-outlined text-base">unarchive</span>
+                          </button>
+                          <button onClick={() => deleteGoal(g.id)} aria-label="Delete goal"
+                            className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
+                            <span className="material-symbols-outlined text-base">delete</span>
+                          </button>
+                        </div>
                       )
                     })}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
+            )}
+          </Tile>
+
+          <Tile className="col-span-1 md:col-span-6">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-lg text-gold">military_tech</span>
+              <TileLabel>Achievement Badges</TileLabel>
             </div>
-
-            {selectedStats.dailyCompletion.length > 0 && (
-              <div className="mile-list-card mile-analytics-card">
-                <button type="button" className="mile-analytics-toggle" onClick={() => setShowAnalytics(v => !v)}>
-                  <span className="material-symbols-outlined">monitoring</span>
-                  Milestone Analytics
-                  <span className={`material-symbols-outlined mile-analytics-chevron${showAnalytics ? ' open' : ''}`}>expand_more</span>
-                </button>
-                {showAnalytics && (
-                  <ThemeProvider theme={createTheme({ palette: { primary: { main: heroAccent } } })}>
-                    <div className="mile-analytics-carousel">
-                      <div className="mile-chart-slide">
-                        <h3 className="mile-section-title">Completion Trend</h3>
-                        {!trendData ? (
-                          <p className="mile-empty-sub mile-focus-empty">Check back tomorrow to see your trend.</p>
-                        ) : (
-                          <LineChart
-                            key={selectedGoal.id}
-                            xAxis={[{ data: trendData.x, scaleType: 'point', valueFormatter: (i) => `Day ${i + 1}` }]}
-                            yAxis={[{ min: 0, max: 100 }]}
-                            series={[{ data: trendData.y, area: true, color: heroAccent, showMark: trendData.y.length <= 20, valueFormatter: (v) => `${v}%` }]}
-                            height={160}
-                            margin={{ top: 8, right: 8, bottom: 20, left: 28 }}
-                            grid={{ horizontal: true }}
-                          />
-                        )}
-                      </div>
-
-                      <div className="mile-chart-slide">
-                        <h3 className="mile-section-title">Completion Breakdown</h3>
-                        {!completionPieData ? (
-                          <p className="mile-empty-sub mile-focus-empty">No tasks planned yet.</p>
-                        ) : (
-                          <PieChart
-                            key={selectedGoal.id}
-                            series={[{ data: completionPieData, innerRadius: 45, paddingAngle: 2, cornerRadius: 4, arcLabel: (item) => `${item.value}` }]}
-                            height={160}
-                            slotProps={{ legend: { direction: 'horizontal', position: { vertical: 'bottom', horizontal: 'center' } } }}
-                          />
-                        )}
-                      </div>
-
-                      <div className="mile-chart-slide">
-                        <h3 className="mile-section-title">Best Days of the Week</h3>
-                        <div className="mile-bar-chart mile-bar-chart-week">
-                          {selectedStats.weekdayStats.map((w, i) => (
-                            <div key={w.day} className="mile-bar-col" title={`${w.day}: ${w.avgPct ?? 0}%`}>
-                              <div
-                                className={`mile-bar-fill${(w.avgPct ?? 0) >= 100 ? ' full' : ''}${w.avgPct != null && w.avgPct === Math.max(...selectedStats.weekdayStats.map(x => x.avgPct ?? 0)) && w.avgPct > 0 ? ' best' : ''}`}
-                                style={{ height: `${Math.max(4, w.avgPct ?? 0)}%`, '--i': i }}
-                              />
-                              <span className="mile-bar-label">{w.day}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </ThemeProvider>
-                )}
-              </div>
-            )}
-
-            {selectedDay && (
-              <div className="mile-list-card mile-focus-card">
-                <h3 className="mile-section-title">
-                  {selectedDay.isToday ? "Today's Focus" : `${formatDate(selectedDay.date)}'s Focus`}
-                </h3>
-
-                {selectedDay.frozen && (
-                  <div className="mile-freeze-banner"><span className="material-symbols-outlined mile-inline-icon">ac_unit</span> Streak freeze used — this day still counts toward your streak.</div>
-                )}
-                {!selectedDay.isFuture && !selectedDay.isToday && !selectedDay.frozen && !selectedDay.allDone
-                  && selectedDay.tasks.length > 0 && selectedStats.freezesRemaining > 0 && (
-                  <button type="button" className="mile-freeze-btn" onClick={() => useFreeze(selectedGoal, selectedDay.key)}>
-                    <span className="material-symbols-outlined mile-inline-icon">ac_unit</span> Use a Streak Freeze for this day
-                  </button>
-                )}
-
-                {selectedDay.tasks.length === 0 ? (
-                  <p className="mile-empty-sub mile-focus-empty">No tasks planned for this day yet.</p>
-                ) : selectedDay.tasks.map(t => (
-                  <div key={t.id} className={`mile-task-card${t.done ? ' done' : ''}`}>
-                    {burstTaskId === t.id && (
-                      <span className="mile-burst" aria-hidden="true">
-                        {Array.from({ length: 8 }).map((_, i) => (
-                          <i key={i} className="mile-burst-particle" style={{ '--i': i }} />
-                        ))}
-                      </span>
-                    )}
-                    {editingTaskId === t.id ? (
-                      <div className="mile-task-edit-body">
-                        <input
-                          className="add-input" type="text" placeholder="Task title" autoFocus
-                          value={editTaskForm.title}
-                          onChange={e => setEditTaskForm(f => ({ ...f, title: e.target.value }))}
-                        />
-                        <input
-                          className="add-input" type="text" placeholder="Description (optional)"
-                          value={editTaskForm.description}
-                          onChange={e => setEditTaskForm(f => ({ ...f, description: e.target.value }))}
-                        />
-                        <div className="mile-task-edit-actions">
-                          <button type="button" className="mile-task-btn" onClick={() => saveEditTask(t)} disabled={!editTaskForm.title.trim()}>Save</button>
-                          <button type="button" className="mile-template-remove" onClick={() => setEditingTaskId(null)} aria-label="Cancel">
-                            <span className="material-symbols-outlined">close</span>
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className={`mile-task-icon${t.done ? ' done' : ''}`}>
-                          <span className="material-symbols-outlined">{t.done ? 'task_alt' : 'radio_button_unchecked'}</span>
-                        </div>
-                        <div className="mile-task-body" onClick={() => !t.done && startEditTask(t)}>
-                          <span className={`mile-task-title${t.done ? ' done' : ''}`}>{t.title}</span>
-                          {t.description && <span className="mile-task-desc">{t.description}</span>}
-                        </div>
-                        <button
-                          type="button"
-                          className={`mile-task-btn${t.done ? ' done' : ''}`}
-                          onClick={() => toggleTask(t)}
-                        >
-                          <span className="material-symbols-outlined">{t.done ? 'check_circle' : 'radio_button_unchecked'}</span>
-                          {t.done ? 'Completed' : 'Mark as Done'}
-                        </button>
-                        <button className="mile-row-delete" onClick={() => deleteTask(t.id)} aria-label="Remove task">
-                          <span className="material-symbols-outlined">close</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
-                ))}
-
-                <div className="mile-add-task-row">
-                  <input
-                    className="add-input"
-                    type="text"
-                    placeholder="Add a task for this day…"
-                    value={newTaskTitle}
-                    onChange={e => setNewTaskTitle(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && addDayTask()}
-                  />
-                  <button className="mile-add-task-btn" onClick={addDayTask} disabled={!newTaskTitle.trim()} aria-label="Add task">
-                    <span className="material-symbols-outlined">add</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {!selectedGoal && (
-        <button className="mile-fab" onClick={openAddGoal} aria-label="Add goal">
-          <span className="material-symbols-outlined">add</span>
-        </button>
-      )}
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {globalBadges.map(b => (
+                <Badge3D key={b.id} title={b.label} hint={b.hint} earned={b.earned} icon={<span className="material-symbols-outlined text-lg">{b.icon}</span>} />
+              ))}
+            </div>
+          </Tile>
+        </div>
+      </PageShell>
 
       {goalSheetOpen && (
         <div className="add-txn-overlay" onClick={e => e.target === e.currentTarget && setGoalSheetOpen(false)}>
           <div className="add-txn-sheet">
             <div className="add-txn-header">
-              <span>New Milestone</span>
+              <span>Add Goal</span>
               <button className="add-txn-close" onClick={() => setGoalSheetOpen(false)}>
                 <span className="material-symbols-outlined">close</span>
               </button>
@@ -990,8 +1044,95 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
 
             <button className="add-txn-submit" onClick={submitGoal}
               disabled={!goalForm.title.trim() || (goalForm.periodKey === 'custom' && !(parseInt(goalForm.customDays, 10) > 0))}>
-              Start Milestone
+              Add Goal
             </button>
+          </div>
+        </div>
+      )}
+
+      {milestoneSheetOpen && (
+        <div className="add-txn-overlay" onClick={e => e.target === e.currentTarget && setMilestoneSheetOpen(false)}>
+          <div className="add-txn-sheet">
+            <div className="add-txn-header">
+              <span>{milestoneForm.id ? 'Edit Milestone' : 'New Milestone'}</span>
+              <button className="add-txn-close" onClick={() => setMilestoneSheetOpen(false)}>
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="add-field">
+              <label className="add-label">Title</label>
+              <input className="add-input" type="text" placeholder="e.g. Quran — One Page Daily"
+                value={milestoneForm.title} onChange={e => setMilestoneForm(f => ({ ...f, title: e.target.value }))} autoFocus />
+            </div>
+            <div className="add-field">
+              <label className="add-label">Description (optional)</label>
+              <input className="add-input" type="text" placeholder="Why this matters"
+                value={milestoneForm.description} onChange={e => setMilestoneForm(f => ({ ...f, description: e.target.value }))} />
+            </div>
+            <div className="add-field">
+              <label className="add-label">Current Day</label>
+              <input className="add-input" type="number" inputMode="numeric"
+                value={milestoneForm.day} onChange={e => setMilestoneForm(f => ({ ...f, day: e.target.value }))} />
+            </div>
+            <div className="add-field">
+              <label className="add-label">Total Days</label>
+              <input className="add-input" type="number" inputMode="numeric"
+                value={milestoneForm.total} onChange={e => setMilestoneForm(f => ({ ...f, total: e.target.value }))} />
+            </div>
+
+            <button className="add-txn-submit" onClick={submitMilestone} disabled={!milestoneForm.title.trim()}>
+              {milestoneForm.id ? 'Save Changes' : 'Start Milestone'}
+            </button>
+            {milestoneForm.id && (
+              <button className="add-txn-delete" onClick={() => { deleteMilestone(milestoneForm.id); setMilestoneSheetOpen(false) }}>
+                Delete Milestone
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {taskSheetOpen && (
+        <div className="add-txn-overlay" onClick={e => e.target === e.currentTarget && setTaskSheetOpen(null)}>
+          <div className="add-txn-sheet">
+            <div className="add-txn-header">
+              <span>{taskSheetOpen === 'edit' ? 'Edit Daily Task' : 'Add Daily Task'}</span>
+              <button className="add-txn-close" onClick={() => setTaskSheetOpen(null)}>
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <div className="add-field">
+              <label className="add-label">Task</label>
+              <input className="add-input" type="text" placeholder="e.g. Read one page" autoFocus
+                value={taskForm.title} onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))} />
+            </div>
+            <div className="add-field">
+              <label className="add-label">Description (optional)</label>
+              <input className="add-input" type="text" placeholder="A short reminder"
+                value={taskForm.description} onChange={e => setTaskForm(f => ({ ...f, description: e.target.value }))} />
+            </div>
+            <div className="add-field">
+              <label className="add-label">Goal</label>
+              <select className="add-input" value={taskForm.goalId} onChange={e => setTaskForm(f => ({ ...f, goalId: e.target.value }))}>
+                <option value="">Select a goal…</option>
+                {goals.map(g => <option key={g.id} value={g.id}>{g.title}</option>)}
+              </select>
+            </div>
+            <div className="add-field">
+              <label className="add-label">Date</label>
+              <input className="add-input" type="date" value={taskForm.date} onChange={e => setTaskForm(f => ({ ...f, date: e.target.value }))} />
+            </div>
+
+            <button className="add-txn-submit" onClick={submitTaskSheet} disabled={!taskForm.title.trim() || !taskForm.goalId}>
+              {taskSheetOpen === 'edit' ? 'Save Changes' : 'Add Task'}
+            </button>
+            {taskSheetOpen === 'edit' && (
+              <button className="add-txn-delete" onClick={() => deleteTask(taskForm.id)}>
+                Delete Task
+              </button>
+            )}
           </div>
         </div>
       )}

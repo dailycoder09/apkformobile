@@ -130,6 +130,21 @@ export function getHijriDate(date) {
   }
 }
 
+// Same Hijri conversion as getHijriDate, but as numeric {day, month, year} instead of
+// a formatted string — for matching a Gregorian date against a fixed Hijri (month, day)
+// event list (see NamazTracker's calendar event markers) rather than for display.
+export function getHijriParts(date) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-u-ca-islamic-umalqura', {
+      day: 'numeric', month: 'numeric', year: 'numeric',
+    }).formatToParts(date)
+    const get = (type) => Number(parts.find((p) => p.type === type)?.value)
+    return { day: get('day'), month: get('month'), year: get('year') }
+  } catch {
+    return null
+  }
+}
+
 export const CITY_PRESETS = [
   { city: 'Mumbai', lat: 19.076, lng: 72.8777, tz: 'Asia/Kolkata' },
   { city: 'Delhi', lat: 28.7041, lng: 77.1025, tz: 'Asia/Kolkata' },

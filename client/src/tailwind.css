@@ -47,6 +47,7 @@
   --animate-fade-up: fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
   --animate-fade-in: fade-in 0.5s ease-out both;
   --animate-float: float 7s ease-in-out infinite;
+  --animate-pop: pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
 
   /* Plain CSS variables (not a Tailwind "theme scale") - referenced via arbitrary-value
      utilities like bg-[image:var(--gradient-gold)] or shadow-[var(--shadow-glow)]. */
@@ -71,6 +72,15 @@
      here would let whichever stylesheet loads last silently win app-wide. Named distinctly
      and referenced directly in Dashboard.jsx's chart code instead. */
   --chart-border: oklch(0.9 0.014 85);
+
+  /* Page-background gradient stops for .surface-sand below. Fallback values only (match
+     the old hardcoded gradient exactly) - client/src/utils/theme.js's applyTheme()
+     overwrites these on :root at runtime, hue-shifted from the live theme, the same way
+     it overwrites --gradient-gold. Kept as plain vars (not --color-*) since they are
+     consumed directly by one utility, not part of the Tailwind color scale. */
+  --surface-1: oklch(0.99 0.008 92);
+  --surface-2: oklch(0.955 0.02 88);
+  --surface-3: oklch(0.94 0.03 76);
 }
 
 @keyframes fade-up {
@@ -84,6 +94,10 @@
 @keyframes float {
   0%, 100% { transform: translate3d(0, 0, 0); }
   50%      { transform: translate3d(0, -14px, 0); }
+}
+@keyframes pop {
+  0%   { opacity: 0; transform: scale(0.9); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 /* Shared tile surface - one definition, every hub tile uses it via className="tile ...". */
@@ -107,6 +121,17 @@
   .tile:hover { transform: none; }
 }
 
+/* Same surface as .tile but without the hover lift - for small static pills (e.g. a
+   PageShell header's action slot) that shouldn't visually invite a click/hover. */
+@utility tile-static {
+  border-radius: var(--radius-2xl);
+  background-color: var(--color-card);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 1px 2px oklch(0.4 0.03 75 / 0.05), 0 12px 30px -18px oklch(0.4 0.03 75 / 0.35);
+  position: relative;
+  overflow: hidden;
+}
+
 @utility grain {
   &::after {
     content: '';
@@ -120,11 +145,11 @@
 }
 
 @utility surface-sand {
-  background-image: linear-gradient(160deg, oklch(0.99 0.008 92) 0%, oklch(0.955 0.02 88) 55%, oklch(0.94 0.03 76) 100%);
+  background-image: linear-gradient(160deg, var(--surface-1) 0%, var(--surface-2) 55%, var(--surface-3) 100%);
 }
 
 @utility text-gradient-gold {
-  background-image: linear-gradient(135deg, oklch(0.82 0.11 92), oklch(0.66 0.13 74));
+  background-image: var(--gradient-gold);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

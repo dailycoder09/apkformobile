@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   getPrayerTimes, CITY_PRESETS, tzOffsetHoursFromZone,
-  CALC_METHODS, ASR_MADHABS, getQiblaBearing, getHijriDate,
+  CALC_METHODS, ASR_MADHABS, getQiblaBearing, getHijriDate, getHijriParts,
 } from '../utils/prayerTimes'
 import { notify, requestNotificationPermission } from '../App'
 import DuasPage from './DuasPage'
@@ -9,6 +9,10 @@ import DuasPage from './DuasPage'
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search'
 const STREAK_MILESTONES = [7, 30, 100]
 const CONFETTI_COLORS = ['#1f4d43', '#d97706', '#7c9a8e', '#f4c95d']
+const HIJRI_MONTHS = [
+  'Muharram', 'Safar', "Rabi' al-awwal", "Rabi' al-thani", 'Jumada al-awwal', 'Jumada al-thani',
+  'Rajab', "Sha'ban", 'Ramadan', 'Shawwal', "Dhu al-Qi'dah", "Dhu al-Hijjah",
+]
 
 const ANALYTICS_RANGES = [
   { key: 'week', label: 'This week', days: 7 },
@@ -531,6 +535,48 @@ export default function NamazTracker() {
     })
     return Math.max(longest, streak)
   }, [namazData, streak])
+
+  // Major Islamic events (Hijri month/day, fixed every year) — fetched once from
+  // UmmahAPI and matched locally against each calendar cell's Hijri date via
+  // getHijriParts, so no per-day network calls are needed.
+  const [islamicEvents, setIslamicEvents] = useState([])
+  const [nextIslamicEvent, setNextIslamicEvent] = useState(null)
+  useEffect(() => {
+    fetch('https://ummahapi.com/api/islamic-events')
+      .then((r) => r.json())
+      .then((json) => {
+        setIslamicEvents(json?.data?.events || [])
+        setNextIslamicEvent(json?.data?.next_event || null)
+      })
+      .catch(() => {})
+  }, [])
+  const islamicEventsByDay = useMemo(() => {
+    const map = {}
+    islamicEvents.forEach((e) => { map[`${e.month}-${e.day}`] = e })
+    return map
+  }, [islamicEvents])
+
+  // Auto-sliding card under the calendar, cycling through all Islamic events —
+  // advances on a timer but still swipeable, same scroll-tracked-dots idea as the
+  // hero carousel above (handleHeroScroll/heroPage) so manual swipes keep the dots in sync.
+  const eventCarouselRef = useRef(null)
+  const [eventSlide, setEventSlide] = useState(0)
+  useEffect(() => {
+    if (islamicEvents.length < 2) return
+    const timer = setInterval(() => {
+      const el = eventCarouselRef.current
+      if (!el) return
+      const next = (Math.round(el.scrollLeft / (el.clientWidth || 1)) + 1) % islamicEvents.length
+      el.scrollTo({ left: next * el.clientWidth, behavior: 'smooth' })
+      setEventSlide(next)
+    }, 4000)
+    return () => clearInterval(timer)
+  }, [islamicEvents.length])
+  function handleEventScroll() {
+    const el = eventCarouselRef.current
+    if (!el || !el.clientWidth) return
+    setEventSlide(Math.round(el.scrollLeft / el.clientWidth))
+  }
 
   const calendarDays = useMemo(() => {
     const year = calendarMonth.getFullYear()
@@ -1089,9 +1135,12 @@ export default function NamazTracker() {
               const dayData = namazData[cell.key] || {}
               const { ontime, kaza, total } = summarize(dayData)
               const isToday = cell.key === todayKey()
-              const tooltip = isFuture
-                ? ''
-                : `${cell.date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} — ${ontime} on time, ${kaza} kaza, ${5 - total} missed`
+              const hijriParts = getHijriParts(cell.date)
+              const event = hijriParts ? islamicEventsByDay[`${hijriParts.month}-${hijriParts.day}`] : null
+              const tooltip = [
+                isFuture ? '' : `${cell.date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} — ${ontime} on time, ${kaza} kaza, ${5 - total} missed`,
+                event ? event.name : '',
+              ].filter(Boolean).join(' — ')
               return (
                 <span
                   key={cell.key}
@@ -1099,6 +1148,7 @@ export default function NamazTracker() {
                   title={tooltip}
                 >
                   <span className="namaz-cal-daynum">{cell.date.getDate()}</span>
+                  {event && <span className="namaz-cal-event-dot" aria-label={event.name} />}
                   {!isFuture && (
                     <span className="namaz-cal-dots">
                       {PRAYERS.map((p) => {
@@ -1120,9 +1170,37 @@ export default function NamazTracker() {
             <span className="namaz-cal-legend-item"><span className="namaz-cal-pdot namaz-cal-pdot--ontime" /> On time</span>
             <span className="namaz-cal-legend-item"><span className="namaz-cal-pdot namaz-cal-pdot--kaza" /> Kaza</span>
             <span className="namaz-cal-legend-item"><span className="namaz-cal-pdot" /> Not marked</span>
+            <span className="namaz-cal-legend-item"><span className="namaz-cal-event-dot" /> Islamic event</span>
           </div>
+          {nextIslamicEvent && (
+            <p className="namaz-cal-next-event">
+              <span className="material-symbols-outlined">event</span>
+              Next: {nextIslamicEvent.name} — {nextIslamicEvent.hijri_date}
+            </p>
+          )}
         </div>
       </div>
+
+      {islamicEvents.length > 0 && (
+        <div className="namaz-section">
+          <h3 className="namaz-section-title">Islamic Events</h3>
+          <div className="namaz-events-carousel" ref={eventCarouselRef} onScroll={handleEventScroll}>
+            {islamicEvents.map((e, i) => (
+              <div key={i} className="namaz-events-slide">
+                <span className="namaz-events-icon"><span className="material-symbols-outlined">event</span></span>
+                <h4 className="namaz-events-name">{e.name}</h4>
+                <p className="namaz-events-date">{e.day} {HIJRI_MONTHS[e.month - 1]}</p>
+                <p className="namaz-events-desc">{e.description}</p>
+              </div>
+            ))}
+          </div>
+          <div className="namaz-events-dots">
+            {islamicEvents.map((_, i) => (
+              <span key={i} className={`namaz-events-dot${i === eventSlide ? ' active' : ''}`} />
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="namaz-toggle-row">
         <button className="namaz-analytics-toggle" onClick={() => setShowQada((v) => !v)}>

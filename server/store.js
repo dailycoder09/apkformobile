@@ -11,6 +11,7 @@ const TABLES = {
   CALL_LOGS: 'call_logs',
   LEDGER_CONTACTS: 'ledger_contacts',
   LEDGER_ENTRIES: 'ledger_entries',
+  MILESTONE_MILESTONES: 'milestone_milestones',
   MILESTONE_GOALS: 'milestone_goals',
   MILESTONE_TASKS: 'milestone_tasks',
 }
@@ -260,6 +261,7 @@ function setBudget(ownerUserId, category, monthlyLimit) {
 }
 
 module.exports = {
+  db,
   TABLES,
   getOrAssignUserId,
   getList,

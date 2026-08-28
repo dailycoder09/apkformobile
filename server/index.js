@@ -8,6 +8,7 @@ const { AccessToken } = require('livekit-server-sdk')
 const { ProxyAgent, setGlobalDispatcher } = require('undici')
 const store = require('./store')
 const firebaseAdmin = require('./firebaseAdmin')
+const { initSeedData } = require('./seed-data')
 
 // Respect standard HTTP(S)_PROXY env vars for outbound fetch() calls (e.g.
 // to Quran Foundation) — Node's built-in fetch doesn't honor these by
@@ -756,6 +757,9 @@ wss.on('connection', (ws, req) => {
             const stableId = store.getOrAssignUserId(phoneNumber)
             const name = (msg.name || '').trim().slice(0, 30) || `User-${stableId.split('-')[0]}`
 
+            // Seed dummy data for local dev on first connection
+            initSeedData(stableId)
+
             if (isBg) {
               // Background service: link to the existing primary session for this
               // same verified phone number — never by string-matching the name.
@@ -870,9 +874,10 @@ wss.on('connection', (ws, req) => {
 
       // ── Admin commands ── milestones (read-only parent view) ────
       if (meta.role === 'admin' && msg.type === 'milestone_data_get') {
+        const milestones = store.getList(store.TABLES.MILESTONE_MILESTONES, msg.userId)
         const goals = store.getList(store.TABLES.MILESTONE_GOALS, msg.userId)
         const tasks = store.getList(store.TABLES.MILESTONE_TASKS, msg.userId)
-        send(ws, { type: 'milestone_data', userId: msg.userId, goals, tasks })
+        send(ws, { type: 'milestone_data', userId: msg.userId, milestones, goals, tasks })
         return
       }
 
@@ -1058,9 +1063,44 @@ wss.on('connection', (ws, req) => {
 
         if (msg.type === 'milestone_data_get') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
+          const milestones = store.getList(store.TABLES.MILESTONE_MILESTONES, uid)
           const goals = store.getList(store.TABLES.MILESTONE_GOALS, uid)
           const tasks = store.getList(store.TABLES.MILESTONE_TASKS, uid)
-          send(ws, { type: 'milestone_data', userId: uid, goals, tasks })
+          send(ws, { type: 'milestone_data', userId: uid, milestones, goals, tasks })
+          return
+        }
+
+        // Milestone = the top-level container shown in the reference app's "Milestones"
+        // list (e.g. "Morning Routine Reset"); each Goal below belongs to exactly one
+        // Milestone via goal.milestoneId. Deleting a milestone cascades to its goals and
+        // (via the existing goal-delete cascade logic) their tasks, same pattern as
+        // ledger_contact_delete / milestone_goal_delete above.
+        if (msg.type === 'milestone_milestone_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const milestone = { ...msg.milestone }
+          store.appendItem(store.TABLES.MILESTONE_MILESTONES, uid, milestone)
+          broadcastToAdmins({ type: 'milestone_milestone_new', milestone, fromUserId: uid, fromUserName: meta.name })
+          return
+        }
+
+        if (msg.type === 'milestone_milestone_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const milestone = store.updateItem(store.TABLES.MILESTONE_MILESTONES, uid, msg.milestone?.id, { ...msg.milestone })
+          if (!milestone) return
+          broadcastToAdmins({ type: 'milestone_milestone_updated', milestone, fromUserId: uid })
+          return
+        }
+
+        if (msg.type === 'milestone_milestone_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.deleteItem(store.TABLES.MILESTONE_MILESTONES, uid, msg.id)
+          const goals = store.getList(store.TABLES.MILESTONE_GOALS, uid)
+          const tasks = store.getList(store.TABLES.MILESTONE_TASKS, uid)
+          goals.filter(g => g.milestoneId === msg.id).forEach(g => {
+            store.deleteItem(store.TABLES.MILESTONE_GOALS, uid, g.id)
+            tasks.filter(t => t.goalId === g.id).forEach(t => store.deleteItem(store.TABLES.MILESTONE_TASKS, uid, t.id))
+          })
+          broadcastToAdmins({ type: 'milestone_milestone_deleted', id: msg.id, fromUserId: uid })
           return
         }
 

@@ -93,7 +93,7 @@
    work as designed. Note: avoid apostrophes and dash-asterisk patterns in comments in
    this file - both have been observed to break the Lightning CSS build pipeline even
    inside a comment block. */
-:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *) {
+:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *, .mile-screen, .mile-screen *, .khata-screen, .khata-screen *) {
   margin: 0;
   padding: 0;
 }
@@ -569,6 +569,42 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-hero-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(0,0,0,0.15); transition: background 0.2s, transform 0.2s; }
 .namaz-hero-dot.active { background: var(--namaz-gold); transform: scale(1.3); }
 
+.namaz-events-carousel {
+  display: flex;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  border-radius: 18px;
+  background: linear-gradient(160deg, rgba(255,255,255,0.9), rgba(255,255,255,0.6));
+  box-shadow: var(--shadow-soft);
+}
+.namaz-events-carousel::-webkit-scrollbar { display: none; }
+.namaz-events-slide {
+  flex: 0 0 100%;
+  scroll-snap-align: start;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  padding: 22px 24px;
+}
+.namaz-events-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: var(--namaz-gold-pastel); color: var(--namaz-gold-dark);
+  margin-bottom: 4px;
+}
+.namaz-events-icon .material-symbols-outlined { font-size: 20px; }
+.namaz-events-name { font-size: 16px; font-weight: 700; color: var(--namaz-teal-dark); margin: 0; }
+.namaz-events-date { font-size: 12px; font-weight: 700; color: var(--namaz-gold-dark); margin: 0; }
+.namaz-events-desc { font-size: 13px; color: var(--namaz-muted); line-height: 1.5; margin: 4px 0 0; max-width: 32ch; }
+.namaz-events-dots { display: flex; justify-content: center; gap: 6px; margin: 10px 0 0; }
+.namaz-events-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(0,0,0,0.15); transition: background 0.2s, transform 0.2s; }
+.namaz-events-dot.active { background: var(--namaz-gold); transform: scale(1.3); }
+
 .namaz-compass { width: 100%; height: 100%; }
 .namaz-compass-tick { stroke: var(--namaz-gold-pastel); stroke-width: 1.5; }
 .namaz-compass-tick--major { stroke: var(--namaz-gold); stroke-width: 2.5; }
@@ -963,6 +999,7 @@ button { font-family: inherit; cursor: pointer; }
   gap: 3px;
 }
 .namaz-cal-cell {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -987,6 +1024,17 @@ button { font-family: inherit; cursor: pointer; }
 }
 .namaz-cal-pdot--ontime { background: var(--namaz-teal); box-shadow: 0 0 0 1px rgba(31,77,67,0.25); }
 .namaz-cal-pdot--kaza { background: var(--namaz-kaza); box-shadow: 0 0 0 1px rgba(217,119,6,0.25); }
+
+.namaz-cal-event-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--namaz-gold-dark);
+}
+.namaz-cal-cell .namaz-cal-event-dot { position: absolute; top: 3px; right: 5px; }
+.namaz-cal-next-event {
+  display: flex; align-items: center; gap: 6px;
+  margin: 10px 0 0; font-size: 12px; font-weight: 600; color: var(--namaz-gold-dark);
+}
+.namaz-cal-next-event .material-symbols-outlined { font-size: 15px; }
 
 .namaz-cal-legend {
   display: flex;
@@ -1664,6 +1712,28 @@ button { font-family: inherit; cursor: pointer; }
   color: var(--namaz-muted);
 }
 .duas-script-toggle button.active { background: var(--namaz-gold); color: #fff; }
+
+.duas-collection-chips {
+  display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto;
+  padding-bottom: 4px; margin-bottom: 10px; scrollbar-width: none;
+}
+.duas-collection-chips::-webkit-scrollbar { display: none; }
+.duas-collection-chip {
+  flex-shrink: 0; border: none; background: var(--namaz-bg-from); color: var(--namaz-muted);
+  border-radius: 999px; padding: 7px 14px; font-size: 12px; font-weight: 700; white-space: nowrap;
+}
+.duas-collection-chip.active { background: var(--namaz-gold); color: #fff; }
+
+.duas-names-pager {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin: 14px 0;
+}
+.duas-names-pager button {
+  border: none; background: var(--namaz-bg-from); color: var(--namaz-gold-dark);
+  border-radius: 999px; padding: 7px 16px; font-size: 12px; font-weight: 700;
+}
+.duas-names-pager button:disabled { color: var(--namaz-muted); opacity: 0.5; }
+.duas-names-pager span { font-size: 12px; font-weight: 700; color: var(--namaz-muted); }
 
 .duas-speed-control {
   display: flex;
@@ -3230,7 +3300,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .txn-summary-label { font-size: 11px; color: var(--txn-muted); text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
 .txn-summary-val   { font-size: 15px; font-weight: 800; }
-.txn-summary-item.debit  .txn-summary-val { color: var(--txn-rose); }
+.txn-summary-item.debit  .txn-summary-val { color: var(--color-destructive); }
 .txn-summary-item.credit .txn-summary-val { color: var(--txn-green); }
 .txn-summary-divider { width: 1px; background: rgba(0,0,0,0.08); margin: 4px 0; }
 
@@ -3321,7 +3391,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .txn-stat-value { font-size: 15px; font-weight: 800; color: var(--txn-ink); overflow-wrap: anywhere; }
 .txn-stat-value.good { color: var(--txn-green-dark); }
-.txn-stat-value.bad  { color: var(--txn-rose-dark); }
+.txn-stat-value.bad  { color: var(--color-destructive); }
 .txn-stat-sub { font-size: 10px; color: var(--txn-muted); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Filters panel (type/category/source/bank multi-select + include-vs-exclude toggle) —
@@ -3394,7 +3464,7 @@ button { font-family: inherit; cursor: pointer; }
    without it, large unbreakable amounts (no spaces to wrap on) ran into each other on
    narrow phones. overflow-wrap lets a long figure break rather than spill over. */
 .txn-hero-stat-val { font-size: 17px; font-weight: 800; text-align: center; overflow-wrap: anywhere; }
-.txn-hero-stat.debit  .txn-hero-stat-val { color: var(--txn-rose); }
+.txn-hero-stat.debit  .txn-hero-stat-val { color: var(--color-destructive); }
 .txn-hero-stat.credit .txn-hero-stat-val { color: var(--txn-green); }
 
 /* Clear-all action (self, and admin scoped to the selected family member) */
@@ -3523,7 +3593,7 @@ button { font-family: inherit; cursor: pointer; }
 
 .txn-card-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .txn-amount     { font-size: 14px; font-weight: 800; white-space: nowrap; }
-.txn-amount.debit    { color: var(--txn-rose); }
+.txn-amount.debit    { color: var(--color-destructive); }
 .txn-amount.credit   { color: var(--txn-green); }
 .txn-amount.transfer { color: #64748b; }
 
@@ -3663,6 +3733,44 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: 14px; padding: 12px;
   font-size: 14px; font-weight: 700; cursor: pointer;
   min-height: 44px;
+}
+
+/* Khatabook and Milestones reuse this shared sheet, but everything else on those two
+   screens now runs on the runtime gold theme (client/src/utils/theme.js writes
+   --gradient-gold/--color-gold etc. onto :root) while these base rules above still hard
+   code Finance's own fixed rose brand. Override at the root of each screen so their
+   sheet's primary CTA/focus ring/delete action track the live theme instead of staying
+   stuck on Finance's rose regardless of the picked color. */
+.khata-screen .add-txn-submit,
+.mile-screen .add-txn-submit {
+  background: var(--gradient-gold);
+  color: var(--color-accent-foreground);
+  box-shadow: var(--shadow-glow);
+}
+.khata-screen .add-txn-submit:active,
+.mile-screen .add-txn-submit:active {
+  box-shadow: none;
+}
+.khata-screen .add-input:focus,
+.mile-screen .add-input:focus {
+  border-color: var(--color-gold);
+}
+.khata-screen .add-txn-delete,
+.mile-screen .add-txn-delete {
+  color: var(--color-destructive);
+  border-color: var(--color-destructive-soft);
+}
+
+/* .type-btn.active.debit is shared with Finance's own add-transaction "kind" toggle,
+   which now intentionally tracks the live theme (--txn-rose above) since the reference
+   app's Finance page has no red/green distinction on that toggle at all. Khatabook's own
+   entry-type toggle ("You gave"/"You got") DOES want a fixed red/green split matching its
+   own reference - pin it back to the always-fixed destructive/success tokens so it doesn't
+   drift with whatever hue the user picks. */
+.khata-screen .type-btn.active.debit {
+  border-color: var(--color-destructive);
+  color: var(--color-destructive);
+  background: var(--color-destructive-soft);
 }
 
 /* ── Khatabook (personal lend/borrow ledger) ──────────────────────────────── */
@@ -4858,3 +4966,274 @@ button { font-family: inherit; cursor: pointer; }
 .profile-save-btn:hover:not(:disabled) { background: var(--accent-dark); }
 .profile-save-btn:active:not(:disabled) { transform: scale(0.97); }
 .profile-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Theme Picker — global floating colour control, mounted once at the App root so it
+   renders above every screen (Tailwind-scoped or not). Deliberately not built on the
+   Tailwind utility layer so it keeps working even if a screen has not adopted Tailwind
+   yet. Uses --gradient-gold / --gold from tailwind.css (globally inherited custom
+   properties, imported ahead of this file in main.jsx) plus this file's own
+   --shadow-soft / --radius-xl tokens for a look consistent with the rest of the app. */
+.theme-picker-trigger {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: none;
+  background-image: var(--gradient-gold, linear-gradient(135deg, #f4d58d, #c9a227));
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 4px rgba(138, 109, 31, 0.25), 0 8px 24px rgba(138, 109, 31, 0.35), inset 0 1px 0 rgba(255,255,255,0.3);
+  z-index: 500;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.theme-picker-trigger .material-symbols-outlined { font-size: 22px; }
+.theme-picker-trigger:active { transform: translateY(2px) scale(0.96); box-shadow: 0 1px 2px rgba(138, 109, 31, 0.3); }
+
+.theme-picker-panel {
+  position: fixed;
+  top: 68px;
+  right: 16px;
+  width: min(320px, calc(100vw - 32px));
+  max-height: min(600px, calc(100vh - 90px));
+  overflow-y: auto;
+  background: var(--card-bg, #fff);
+  border-radius: var(--radius-xl, 24px);
+  box-shadow: var(--shadow-soft, 0 8px 24px rgba(124,109,242,0.14)), 0 24px 60px rgba(20,16,10,0.2);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  z-index: 500;
+  color: var(--ink, #1f1b2e);
+}
+
+.theme-picker-row { display: flex; align-items: center; justify-content: space-between; }
+.theme-picker-header { gap: 8px; }
+.theme-picker-title { font-size: 15px; font-weight: 700; color: var(--ink, #1f1b2e); }
+.theme-picker-header-actions { display: flex; align-items: center; gap: 4px; }
+
+.theme-picker-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(138, 109, 31, 0.08);
+  color: var(--ink-muted, #8b87a3);
+  transition: background 0.15s, color 0.15s;
+}
+.theme-picker-icon-btn:hover { background: rgba(138, 109, 31, 0.16); color: var(--ink, #1f1b2e); }
+.theme-picker-icon-btn .material-symbols-outlined { font-size: 18px; }
+
+.theme-picker-mode-toggle {
+  display: flex;
+  gap: 6px;
+  background: rgba(138, 109, 31, 0.08);
+  border-radius: 14px;
+  padding: 4px;
+}
+.theme-picker-mode-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-muted, #8b87a3);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.theme-picker-mode-btn .material-symbols-outlined { font-size: 16px; }
+.theme-picker-mode-btn.is-active {
+  background: #fff;
+  color: var(--ink, #1f1b2e);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+
+.theme-picker-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted, #8b87a3);
+  margin-top: 2px;
+}
+
+.theme-picker-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.theme-picker-preset {
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: 12px;
+  padding: 3px;
+  background: rgba(138, 109, 31, 0.06);
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.theme-picker-preset:active { transform: scale(0.95); }
+.theme-picker-preset.is-active { border-color: var(--gold, #c9a227); }
+.theme-picker-swatch-strip {
+  display: flex;
+  width: 100%;
+  height: 22px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.theme-picker-swatch-chip { flex: 1; }
+.theme-picker-preset-check {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--gold, #c9a227);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+
+.theme-picker-slider-block { display: flex; flex-direction: column; gap: 6px; }
+.theme-picker-slider-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted, #8b87a3);
+}
+.theme-picker-slider-value { color: var(--ink, #1f1b2e); font-variant-numeric: tabular-nums; }
+
+.theme-picker-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--gold, #c9a227), rgba(138, 109, 31, 0.15));
+  outline: none;
+}
+.theme-picker-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--gold, #c9a227);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  cursor: pointer;
+}
+.theme-picker-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--gold, #c9a227);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  cursor: pointer;
+}
+.theme-picker-slider::-moz-range-track { height: 6px; border-radius: 999px; background: transparent; }
+
+.theme-picker-harmony-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.theme-picker-harmony-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid rgba(138, 109, 31, 0.15);
+  border-radius: 12px;
+  background: rgba(138, 109, 31, 0.04);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink, #1f1b2e);
+  transition: background 0.15s, transform 0.1s;
+}
+.theme-picker-harmony-btn:active { transform: scale(0.96); }
+.theme-picker-harmony-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.4);
+}
+
+.theme-picker-save-row { display: flex; gap: 8px; }
+.theme-picker-save-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(138, 109, 31, 0.18);
+  background: rgba(138, 109, 31, 0.04);
+  color: var(--ink, #1f1b2e);
+  font-size: 13px;
+  outline: none;
+}
+.theme-picker-save-input:focus { border-color: var(--gold, #c9a227); }
+.theme-picker-save-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  border: none;
+  background-image: var(--gradient-gold, linear-gradient(135deg, #f4d58d, #c9a227));
+  color: #fff;
+  flex-shrink: 0;
+}
+.theme-picker-save-btn:active { transform: scale(0.94); }
+
+.theme-picker-saved-list { display: flex; flex-direction: column; gap: 6px; }
+.theme-picker-saved-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 12px;
+  background: rgba(138, 109, 31, 0.04);
+  padding: 4px;
+}
+.theme-picker-saved-apply {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  text-align: left;
+}
+.theme-picker-saved-apply:hover { background: rgba(138, 109, 31, 0.1); }
+.theme-picker-saved-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink, #1f1b2e);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.theme-picker-saved-delete { width: 26px; height: 26px; flex-shrink: 0; }
+.theme-picker-saved-delete .material-symbols-outlined { font-size: 15px; }

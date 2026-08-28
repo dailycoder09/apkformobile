@@ -121,3 +121,92 @@ export function computeHomeStats(visibleGoals, tasks) {
   })
   return { longestActiveStreak, onTrack, total: visibleGoals.length }
 }
+
+// Four top-of-page stat tiles (Best streak / Tasks done / Goals achieved / Today's
+// tasks) — a superset of computeHomeStats aimed at the redesigned dashboard-style
+// header rather than the one-line strip. "Best streak" is the longest streak ever
+// reached by any goal (not the current one), matching how a habit app usually brags
+// about its record rather than today's live count.
+export function computeOverallStats(visibleGoals, tasks) {
+  let bestStreak = 0, tasksDone = 0, goalsAchieved = 0, todayDone = 0, todayTotal = 0
+  visibleGoals.forEach(g => {
+    const s = computeGoalStats(g, tasks)
+    bestStreak = Math.max(bestStreak, s.longestStreak)
+    tasksDone += s.completedTasks
+    if (s.isComplete) goalsAchieved++
+    const today = s.days.find(d => d.isToday)
+    if (today) { todayTotal += today.tasks.length; todayDone += today.tasks.filter(t => t.done).length }
+  })
+  return { bestStreak, tasksDone, goalsAchieved, todayDone, todayTotal }
+}
+
+// A Milestone has its own independent start/duration ring, sitting above its child
+// Goals — same day-counting approach as computeGoalStats, applied to the milestone's own
+// range, with completion/streak numbers rolled up from whichever goals belong to it.
+export function computeMilestoneStats(milestone, goals, tasks) {
+  const childGoals = goals.filter(g => g.milestoneId === milestone.id)
+
+  const totalDays = milestone.durationDays
+  const startMid = istMidnight(milestone.startDate)
+  const todayMid = istMidnight(Date.now())
+  const daysElapsed = Math.max(0, Math.min(totalDays, Math.floor((todayMid - startMid) / 86400000) + 1))
+
+  let tasksTotal = 0, tasksCompleted = 0, goalsCompleted = 0, bestStreak = 0, todayDone = 0, todayTotal = 0
+  childGoals.forEach(g => {
+    const s = computeGoalStats(g, tasks)
+    tasksTotal += s.totalTasks
+    tasksCompleted += s.completedTasks
+    if (s.isComplete) goalsCompleted++
+    bestStreak = Math.max(bestStreak, s.longestStreak)
+    const today = s.days.find(d => d.isToday)
+    if (today) { todayTotal += today.tasks.length; todayDone += today.tasks.filter(t => t.done).length }
+  })
+
+  const completionPct = tasksTotal ? Math.round((tasksCompleted / tasksTotal) * 100) : 0
+
+  return {
+    childGoals,
+    goalsCount: childGoals.length,
+    goalsCompleted,
+    tasksTotal,
+    tasksCompleted,
+    completionPct,
+    daysElapsed,
+    totalDays,
+    bestStreak,
+    motivationScore: Math.min(100, Math.round(completionPct * 0.7 + bestStreak * 5)),
+    todayDone,
+    todayTotal,
+    isComplete: tasksTotal > 0 && completionPct >= 100,
+  }
+}
+
+// App-wide achievement badges — unlike BADGE_DEFS above (per-goal), these are evaluated
+// across every milestone/goal/task in the app at once, so `check` takes the full three
+// collections rather than one goal's stats object.
+export const GLOBAL_BADGE_DEFS = [
+  { id: 'starter', label: 'Starter', icon: 'flag', hint: 'Create your first milestone', check: (milestones) => milestones.length >= 1 },
+  { id: 'task_slayer', label: 'Task slayer', icon: 'check_circle', hint: 'Tick 5 daily tasks', check: (milestones, goals, tasks) => tasks.filter(t => t.done).length >= 5 },
+  { id: 'goal_getter', label: 'Goal getter', icon: 'flag_circle', hint: 'Complete a full goal', check: (milestones, goals, tasks) => goals.some(g => computeGoalStats(g, tasks).isComplete) },
+  {
+    id: 'perfect_day',
+    label: 'Perfect day',
+    icon: 'celebration',
+    hint: 'Finish every task in this milestone',
+    check: (milestones, goals, tasks) => {
+      const byDay = {}
+      tasks.forEach(t => {
+        const key = istDateKey(t.date)
+        if (!byDay[key]) byDay[key] = []
+        byDay[key].push(t)
+      })
+      return Object.values(byDay).some(dayTasks => dayTasks.length > 0 && dayTasks.every(t => t.done))
+    },
+  },
+  { id: 'milestone_master', label: 'Milestone master', icon: 'military_tech', hint: 'Complete an entire milestone', check: (milestones, goals, tasks) => milestones.some(m => computeMilestoneStats(m, goals, tasks).isComplete) },
+  { id: 'consistency_king', label: 'Consistency king', icon: 'emoji_events', hint: '80%+ overall task completion', check: (milestones, goals, tasks) => tasks.length > 0 && tasks.filter(t => t.done).length / tasks.length >= 0.8 },
+]
+
+export function computeGlobalBadges(milestones, goals, tasks) {
+  return GLOBAL_BADGE_DEFS.map(b => ({ ...b, earned: b.check(milestones, goals, tasks) }))
+}
