@@ -1,21 +1,11 @@
 import { useState, useEffect, useMemo } from 'react'
-import {
-  Area, AreaChart, Bar as RechartsBar, BarChart, CartesianGrid, Cell, Pie, PieChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis,
-} from 'recharts'
-import { PageShell, Tile, TileLabel, Stat, Bar } from './PageShell'
-import { Celebrate, Badge3D } from './Celebrate'
-
-// Recharts tooltip styling shared by every chart on this page — same `tip` constant as
-// MilestonePanel.jsx / the reference app's khata.tsx.
-const tip = {
-  contentStyle: {
-    borderRadius: 12,
-    border: '1px solid var(--color-border)',
-    background: 'var(--color-popover)',
-    fontSize: 12,
-  },
-}
+import { PageShell } from './PageShell'
+import { Celebrate } from './Celebrate'
+import SwipeCarousel from './SwipeCarousel'
+import KhatabookEntriesSection from './KhatabookEntriesSection'
+import KhatabookAnalyticsSection from './KhatabookAnalyticsSection'
+import KhatabookContactPage from './KhatabookContactPage'
+import { formatINR, formatShortDate } from '../utils/khataFormat'
 
 // Same "don't trust the browser's own timezone" pattern already used in TransactionPanel.jsx
 // / AdminTransactionView.jsx / MilestonePanel.jsx — duplicated rather than shared, matching
@@ -34,27 +24,6 @@ function istMonthStartMinus(ms, n) {
   const s = new Date(ms + IST_OFFSET_MS)
   return Date.UTC(s.getUTCFullYear(), s.getUTCMonth() - n, 1) - IST_OFFSET_MS
 }
-function formatINR(n) {
-  return '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
-function formatDate(ms) {
-  return new Date(ms).toLocaleDateString('en-IN', { timeZone: IST_TZ, day: 'numeric', month: 'short', year: 'numeric' })
-}
-// Short form (no year) for compact contexts — the accounts list's "last activity" line and
-// chart axis labels, where a full date would just wrap/clip.
-function formatShortDate(ms) {
-  return new Date(ms).toLocaleDateString('en-IN', { timeZone: IST_TZ, day: 'numeric', month: 'short' })
-}
-// Abbreviated ₹ form for cramped chart-axis ticks (e.g. ₹1.2k, ₹3.4L) — formatINR's full
-// "₹1,234.56" is too wide for a 48px-wide YAxis.
-function formatINRCompact(n) {
-  const v = Number(n)
-  const abs = Math.abs(v)
-  if (abs >= 100000) return '₹' + (v / 100000).toFixed(1) + 'L'
-  if (abs >= 1000) return '₹' + (v / 1000).toFixed(1) + 'k'
-  return '₹' + Math.round(v)
-}
-
 // --color-success / --color-destructive are static tokens straight from tailwind.css's
 // @theme block — applyTheme() (utils/theme.js) only ever rewrites --color-gold, the
 // --chart-1..5 scale, and the light/dark neutrals at runtime, never these two. Hardcoding
@@ -70,10 +39,17 @@ const EMPTY_ENTRY_FORM = { id: null, type: 'gave', amount: '', note: '', date: '
 // bank-statement-driven Finance screen. Self-service only: contacts/entries are arbitrary
 // free-text people, not linked to real FamilyWatch accounts, and this data is never
 // surfaced to a parent's admin view (unlike transactions/budgets).
-export default function KhatabookPanel({ session, sendMsg, addListener, onHome }) {
+export default function KhatabookPanel({ session, sendMsg, addListener, onHome, onProfileOpen }) {
   const [contacts, setContacts] = useState([])
   const [entries, setEntries] = useState([])
   const [selectedContactId, setSelectedContactId] = useState(null)
+
+  // Mobile-only navigation flag: true only when a contact row was actually tapped in the
+  // Accounts/History list (see openContactPage below). Deliberately NOT derived from
+  // `selectedContact` alone — that value falls back to the most-recently-created contact
+  // even before the user has tapped anything, which would make the dedicated contact page
+  // appear on first load instead of only on an explicit tap.
+  const [contactPageOpen, setContactPageOpen] = useState(false)
 
   const [contactSheetOpen, setContactSheetOpen] = useState(false)
   const [contactForm, setContactForm] = useState(EMPTY_CONTACT_FORM)
@@ -241,6 +217,18 @@ export default function KhatabookPanel({ session, sendMsg, addListener, onHome }
     if (selectedContactId === id) setSelectedContactId(null)
   }
 
+  // Mobile-only: tapping a contact row in Accounts/History navigates to the dedicated
+  // contact-detail page (KhatabookContactPage) instead of the old inline "select + jump
+  // straight into Add Entry" flow — the page itself now owns the one-tap Add Entry action.
+  function openContactPage(id) {
+    setSelectedContactId(id)
+    setContactPageOpen(true)
+  }
+
+  function closeContactPage() {
+    setContactPageOpen(false)
+  }
+
   function openAddEntry() {
     setEntryForm({ ...EMPTY_ENTRY_FORM, date: istDateKey(Date.now()) })
     setEntrySheetMode('add')
@@ -308,8 +296,13 @@ export default function KhatabookPanel({ session, sendMsg, addListener, onHome }
         lead="Track money you lend and borrow — add, edit and settle every rupee, with analytics and badges for clean books."
         onHome={selectedContact ? () => setSelectedContactId(null) : onHome}
         back={true}
+        session={session}
+        sendMsg={sendMsg}
+        addListener={addListener}
+        showProfile
+        onProfileOpen={onProfileOpen}
         action={
-          <div className="tile-static shrink-0 px-5 py-3 text-right">
+          <div className="tile-static hidden shrink-0 px-5 py-3 text-right sm:block">
             <p className={`num text-2xl font-extrabold ${netPosition >= 0 ? 'text-success' : 'text-destructive'}`}>
               {netPosition < 0 ? '−' : ''}{formatINR(Math.abs(netPosition))}
             </p>
@@ -319,312 +312,130 @@ export default function KhatabookPanel({ session, sendMsg, addListener, onHome }
       >
         <Celebrate show={cheer.n > 0} message={cheer.msg} key={cheer.n} />
 
-        <div className="stagger grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Stat
-            label="You'll Get"
-            value={formatINR(totals.youllGet)}
-            hint={`${positiveCount} contact${positiveCount !== 1 ? 's' : ''}`}
-            tone="success"
-            icon={<span className="material-symbols-outlined text-base">call_received</span>}
-          />
-          <Stat
-            label="You'll Pay"
-            value={formatINR(totals.youllPay)}
-            hint={`${negativeCount} contact${negativeCount !== 1 ? 's' : ''}`}
-            tone="danger"
-            icon={<span className="material-symbols-outlined text-base">call_made</span>}
-          />
-          <Stat
-            label="Contacts"
-            value={String(contacts.length)}
-            hint={`${settledCount} settled`}
-            tone="gold"
-            icon={<span className="material-symbols-outlined text-base">group</span>}
-          />
+        {/* Mobile: two swipeable pages (entries, then analytics) so the screen isn't one
+            long scroll. Desktop: both sections stacked, unchanged from before the split —
+            same two components either way, so there's nothing to fall out of sync.
+            When contactPageOpen is true (a contact row was tapped), the dedicated
+            KhatabookContactPage replaces the whole carousel here — not a third carousel
+            page (confusing swipe semantics) and not an inline section stacked below it. */}
+        {/* 140px = PageShell's mobile header height through BottomNav. This is a real magic
+            number tied to PageShell's current mobile header height — if that header's height
+            changes again, re-measure with Playwright (carouselTop/navTop getBoundingClientRect)
+            rather than guessing, both directions of this number being wrong are visible bugs
+            (dead gap above the nav, or the carousel overlapping/hiding behind it). Re-measured
+            after CornerMenu moved from a floating fixed trigger (pt-16 header, 184px) to
+            mounting inline in PageShell's header row (pt-6 header) — that migration shrank the
+            header by 44px but this value was missed at the time, leaving a 44px dead gap above
+            BottomNav on this page until caught during the Journal module build. */}
+        <div className="md:hidden" style={{ height: 'calc(100dvh - 140px)' }}>
+          {contactPageOpen && selectedContact ? (
+            <KhatabookContactPage
+              contact={selectedContact}
+              balance={selectedBalance}
+              entries={selectedEntries}
+              onBack={closeContactPage}
+              onAddEntry={openAddEntry}
+              onEditEntry={openEditEntry}
+              onEditContact={() => openEditContact(selectedContact)}
+            />
+          ) : (
+            <SwipeCarousel hintNext="Swipe left for analytics →" hintPrev="Swipe right for entries →">
+              <KhatabookEntriesSection
+                totals={totals}
+                positiveCount={positiveCount}
+                negativeCount={negativeCount}
+                contacts={contacts}
+                settledCount={settledCount}
+                sortedContacts={sortedContacts}
+                balances={balances}
+                entries={entries}
+                selectedContact={selectedContact}
+                setSelectedContactId={setSelectedContactId}
+                selectedEntries={selectedEntries}
+                selectedBalance={selectedBalance}
+                openAddContact={openAddContact}
+                openEditContact={openEditContact}
+                deleteContact={deleteContact}
+                openAddEntry={openAddEntry}
+                openEditEntry={openEditEntry}
+                deleteEntry={deleteEntry}
+                onOpenContactPage={openContactPage}
+              />
+              <KhatabookAnalyticsSection
+                settleScore={settleScore}
+                settledCount={settledCount}
+                contacts={contacts}
+                entries={entries}
+                totals={totals}
+                pieData={pieData}
+                selectedContact={selectedContact}
+                selectedBalance={selectedBalance}
+                balanceFlow={balanceFlow}
+                topContacts={topContacts}
+                sixMonthTrend={sixMonthTrend}
+                badges={badges}
+              />
+            </SwipeCarousel>
+          )}
         </div>
 
-        {/* Accounts list — always visible, independent of whether a contact is selected,
-            so tapping between people below doesn't require navigating away and back. */}
-        <Tile className="mt-4">
-          <div className="flex items-center justify-between gap-3">
-            <TileLabel>Accounts</TileLabel>
-            <button
-              type="button"
-              onClick={openAddContact}
-              className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3 text-xs font-semibold text-white transition-opacity hover:opacity-90"
-            >
-              <span className="material-symbols-outlined text-base">add</span> Add contact
-            </button>
-          </div>
-
-          <div className="mt-3 flex flex-col gap-2">
-            {sortedContacts.length === 0 ? (
-              <div className="flex flex-col items-center gap-2 py-10 text-center">
-                <span className="material-symbols-outlined text-4xl text-muted-foreground">group_off</span>
-                <p className="font-semibold text-foreground">No contacts yet</p>
-                <p className="text-sm text-muted-foreground">Tap Add contact for someone you lend to or borrow from</p>
-              </div>
-            ) : sortedContacts.map(c => {
-              const bal = balances[c.id] || 0
-              const contactEntries = entries.filter(e => e.contactId === c.id)
-              const lastEntry = contactEntries.reduce((latest, e) => (!latest || e.date > latest.date) ? e : latest, null)
-              const selected = c.id === selectedContact?.id
-              return (
-                <div
-                  key={c.id}
-                  className={`flex items-center gap-2 rounded-2xl border p-3 transition-colors ${selected ? 'border-gold/40 bg-gold-soft' : 'border-border bg-secondary/40'}`}
-                >
-                  <button type="button" onClick={() => setSelectedContactId(c.id)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                    <span className="grid size-10 shrink-0 place-items-center rounded-full bg-card text-sm font-bold text-foreground">
-                      {c.name.charAt(0).toUpperCase()}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-semibold text-foreground">{c.name}</span>
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {lastEntry ? `${formatShortDate(lastEntry.date)} · ${contactEntries.length} ${contactEntries.length !== 1 ? 'entries' : 'entry'}` : 'No entries yet'}
-                      </span>
-                    </span>
-                    <span className={`num shrink-0 text-sm font-bold ${bal > 0 ? 'text-success' : bal < 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
-                      {bal === 0 ? 'Settled' : formatINR(Math.abs(bal))}
-                    </span>
-                  </button>
-                  <span className="flex shrink-0 items-center gap-0.5">
-                    <button
-                      type="button"
-                      aria-label={`Edit ${c.name}`}
-                      onClick={() => openEditContact(c)}
-                      className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-                    >
-                      <span className="material-symbols-outlined text-lg">edit</span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Delete ${c.name}`}
-                      onClick={() => deleteContact(c.id)}
-                      className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
-                    >
-                      <span className="material-symbols-outlined text-lg">delete</span>
-                    </button>
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </Tile>
-
-        {/* Contact detail — only appears once a contact is selected from the list above. */}
-        {selectedContact && (
-          <Tile className="mt-4">
-            <div className="flex items-center gap-3">
-              <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-[image:var(--gradient-gold)] text-base font-extrabold text-white">
-                {selectedContact.name.charAt(0).toUpperCase()}
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-base font-bold text-foreground">{selectedContact.name}</p>
-                {(selectedContact.phone || selectedContact.note) && (
-                  <p className="truncate text-xs text-muted-foreground">
-                    {[selectedContact.phone, selectedContact.note].filter(Boolean).join(' · ')}
-                  </p>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={openAddEntry}
-                className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-secondary px-3 text-xs font-semibold text-foreground transition-colors hover:bg-secondary/70"
-              >
-                <span className="material-symbols-outlined text-base">add</span> Add entry
-              </button>
-            </div>
-
-            <div className="mt-4 rounded-2xl bg-secondary p-5 text-center">
-              <p className={`num text-3xl font-extrabold ${selectedBalance > 0 ? 'text-success' : selectedBalance < 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
-                {formatINR(Math.abs(selectedBalance))}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {selectedBalance === 0 ? 'all settled' : selectedBalance > 0 ? 'they owe you' : 'you owe them'}
-              </p>
-            </div>
-
-            <div className="mt-3 flex flex-col divide-y divide-border">
-              {selectedEntries.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 py-10 text-center">
-                  <span className="material-symbols-outlined text-4xl text-muted-foreground">receipt_long</span>
-                  <p className="font-semibold text-foreground">No entries yet</p>
-                  <p className="text-sm text-muted-foreground">Tap Add entry to log money given or received</p>
-                </div>
-              ) : selectedEntries.map(e => (
-                <div key={e.id} className="flex items-center gap-3 py-3">
-                  <span className={`grid size-9 shrink-0 place-items-center rounded-xl ${e.type === 'gave' ? 'bg-destructive-soft text-destructive' : 'bg-success-soft text-success'}`}>
-                    <span className="material-symbols-outlined text-lg">{e.type === 'gave' ? 'call_made' : 'call_received'}</span>
-                  </span>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-foreground">{e.type === 'gave' ? 'You gave' : 'You got'}</p>
-                    <p className="truncate text-xs text-muted-foreground">{[e.note, formatDate(e.date)].filter(Boolean).join(' · ')}</p>
-                  </div>
-                  <p className={`num shrink-0 text-sm font-bold ${e.type === 'gave' ? 'text-destructive' : 'text-success'}`}>
-                    {e.type === 'gave' ? '−' : '+'}{formatINR(e.amount)}
-                  </p>
-                  <span className="flex shrink-0 items-center gap-0.5">
-                    <button
-                      type="button"
-                      aria-label="Edit entry"
-                      onClick={() => openEditEntry(e)}
-                      className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                    >
-                      <span className="material-symbols-outlined text-lg">edit</span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="Delete entry"
-                      onClick={() => deleteEntry(e.id)}
-                      className="grid size-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
-                    >
-                      <span className="material-symbols-outlined text-lg">delete</span>
-                    </button>
-                  </span>
-                </div>
-              ))}
-            </div>
-          </Tile>
+        {/* Floating "Add contact" — mobile only, matching Finance's txn-fab geometry
+            (fixed, bottom-right, above BottomNav). Placed as a sibling of the carousel
+            rather than inside it: a fixed-position element inside SwipeCarousel's
+            translateX(...) container would anchor to that transformed ancestor instead
+            of the viewport, per CSS's containing-block rules for transformed ancestors.
+            Deliberately always "Add contact", never context-switched to "Add entry" —
+            logging an entry stays a deliberate action from the contact page's own "+"
+            button (openAddEntry), not something the bottom FAB switches into just
+            because a contact happens to be selected. Hidden while the dedicated contact
+            page is open — that's a different screen with its own "+" affordance. */}
+        {!contactPageOpen && (
+          <button
+            type="button"
+            aria-label="Add contact"
+            onClick={openAddContact}
+            className="fixed right-5 bottom-[90px] z-40 grid size-14 place-items-center rounded-full bg-[image:var(--gradient-gold)] text-white shadow-[var(--shadow-glow)] transition-transform active:scale-95 md:hidden"
+          >
+            <span className="material-symbols-outlined text-2xl">add</span>
+          </button>
         )}
 
-        {/* Settlement score + receivable/payable split — always visible, no toggle. */}
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Tile>
-            <TileLabel>Settlement Score</TileLabel>
-            <p className="num mt-3 text-4xl font-extrabold text-gradient-gold">
-              {settleScore}<span className="text-base font-medium text-muted-foreground">/100</span>
-            </p>
-            <div className="mt-4">
-              <Bar value={settleScore} tone="gold" />
-            </div>
-            <p className="mt-4 text-xs text-muted-foreground">
-              {settledCount} of {contacts.length} accounts fully cleared · {entries.length} entries logged.
-            </p>
-          </Tile>
-
-          <Tile>
-            <TileLabel>Receivable vs Payable</TileLabel>
-            {totals.youllGet === 0 && totals.youllPay === 0 ? (
-              <p className="mt-8 text-center text-sm text-muted-foreground">No balances to show yet.</p>
-            ) : (
-              <div className="mt-2 h-[170px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Tooltip {...tip} formatter={(v) => formatINR(v)} />
-                    <Pie data={pieData} dataKey="value" innerRadius={44} outerRadius={66} paddingAngle={4} stroke="none">
-                      <Cell fill={SUCCESS_COLOR} />
-                      <Cell fill={DESTRUCTIVE_COLOR} />
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </Tile>
+        <div className="hidden md:flex md:flex-col md:gap-4">
+          <KhatabookEntriesSection
+            totals={totals}
+            positiveCount={positiveCount}
+            negativeCount={negativeCount}
+            contacts={contacts}
+            settledCount={settledCount}
+            sortedContacts={sortedContacts}
+            balances={balances}
+            entries={entries}
+            selectedContact={selectedContact}
+            setSelectedContactId={setSelectedContactId}
+            selectedEntries={selectedEntries}
+            selectedBalance={selectedBalance}
+            openAddContact={openAddContact}
+            openEditContact={openEditContact}
+            deleteContact={deleteContact}
+            openAddEntry={openAddEntry}
+            openEditEntry={openEditEntry}
+            deleteEntry={deleteEntry}
+          />
+          <KhatabookAnalyticsSection
+            settleScore={settleScore}
+            settledCount={settledCount}
+            contacts={contacts}
+            entries={entries}
+            totals={totals}
+            pieData={pieData}
+            selectedContact={selectedContact}
+            selectedBalance={selectedBalance}
+            balanceFlow={balanceFlow}
+            topContacts={topContacts}
+            sixMonthTrend={sixMonthTrend}
+            badges={badges}
+          />
         </div>
-
-        {/* Balance flow (selected contact) + biggest open balances across everyone. */}
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Tile>
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-lg text-gold">trending_up</span>
-              <TileLabel>{selectedContact ? `${selectedContact.name}'s Balance Flow` : 'Balance Flow'}</TileLabel>
-            </div>
-            {!selectedContact ? (
-              <p className="mt-8 text-center text-sm text-muted-foreground">Select a contact above to see their balance flow.</p>
-            ) : balanceFlow.length === 0 ? (
-              <p className="mt-8 text-center text-sm text-muted-foreground">No entries yet for {selectedContact.name}.</p>
-            ) : (
-              <div className="mt-2 h-[170px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart key={selectedContact.id} data={balanceFlow}>
-                    <defs>
-                      <linearGradient id="khataFlow" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor={selectedBalance >= 0 ? SUCCESS_COLOR : DESTRUCTIVE_COLOR} stopOpacity={0.6} />
-                        <stop offset="100%" stopColor={selectedBalance >= 0 ? SUCCESS_COLOR : DESTRUCTIVE_COLOR} stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
-                    <Tooltip {...tip} formatter={(v) => formatINR(v)} />
-                    <Area
-                      type="monotone"
-                      dataKey="balance"
-                      stroke={selectedBalance >= 0 ? SUCCESS_COLOR : DESTRUCTIVE_COLOR}
-                      strokeWidth={2.5}
-                      fill="url(#khataFlow)"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </Tile>
-
-          <Tile>
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-lg text-gold">handshake</span>
-              <TileLabel>Biggest Open Balances</TileLabel>
-            </div>
-            {topContacts.length === 0 ? (
-              <p className="mt-8 text-center text-sm text-muted-foreground">No open balances yet.</p>
-            ) : (
-              <div className="mt-2 h-[210px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={topContacts} barGap={6}>
-                    <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
-                    <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: 'var(--color-muted-foreground)' }} />
-                    <YAxis tickFormatter={formatINRCompact} tickLine={false} axisLine={false} width={48} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
-                    <Tooltip {...tip} formatter={(v) => formatINR(v)} />
-                    <RechartsBar dataKey="owed" name="You'll get" radius={[8, 8, 0, 0]} fill={SUCCESS_COLOR} barSize={18} />
-                    <RechartsBar dataKey="owe" name="You'll pay" radius={[8, 8, 0, 0]} fill={DESTRUCTIVE_COLOR} barSize={18} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </Tile>
-        </div>
-
-        {/* Given vs got, real 6-month trend. */}
-        <Tile className="mt-4">
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-lg text-gold">insights</span>
-            <TileLabel>Given vs Got — Last 6 Months</TileLabel>
-          </div>
-          {entries.length === 0 ? (
-            <p className="mt-8 text-center text-sm text-muted-foreground">Log entries to see your trend.</p>
-          ) : (
-            <div className="mt-2 h-[220px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={sixMonthTrend} barGap={6}>
-                  <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
-                  <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: 'var(--color-muted-foreground)' }} />
-                  <YAxis tickFormatter={formatINRCompact} tickLine={false} axisLine={false} width={48} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
-                  <Tooltip {...tip} formatter={(v) => formatINR(v)} />
-                  <RechartsBar dataKey="gave" name="You gave" radius={[8, 8, 0, 0]} fill={DESTRUCTIVE_COLOR} barSize={22} />
-                  <RechartsBar dataKey="got" name="You got" radius={[8, 8, 0, 0]} fill={SUCCESS_COLOR} barSize={22} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </Tile>
-
-        {/* Badges — all four always shown, dimmed until earned. */}
-        <Tile className="mt-4">
-          <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-lg text-gold">military_tech</span>
-            <TileLabel>Badges</TileLabel>
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {badges.map(b => (
-              <Badge3D
-                key={b.id}
-                title={b.label}
-                hint={b.hint}
-                earned={b.earned}
-                icon={<span className="material-symbols-outlined text-base">{b.icon}</span>}
-              />
-            ))}
-          </div>
-        </Tile>
       </PageShell>
 
       {contactSheetOpen && (
@@ -657,7 +468,7 @@ export default function KhatabookPanel({ session, sendMsg, addListener, onHome }
               {contactForm.id ? 'Save Changes' : 'Add Contact'}
             </button>
             {contactForm.id && (
-              <button className="add-txn-delete" onClick={() => { deleteContact(contactForm.id); setContactSheetOpen(false) }}>
+              <button className="add-txn-delete" onClick={() => { deleteContact(contactForm.id); setContactSheetOpen(false); closeContactPage() }}>
                 Delete Contact
               </button>
             )}

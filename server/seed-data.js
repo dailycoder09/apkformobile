@@ -175,18 +175,130 @@ function seedData(userId) {
     store.appendItem(store.TABLES.MILESTONE_TASKS, userId, t)
   })
 
+  // ── Health Tracker: Episodes ──
+  const healthEpisodes = [
+    {
+      id: 'health-1',
+      title: 'Flu',
+      symptoms: ['Fever', 'Body ache', 'Cough'],
+      treatments: [
+        { name: 'Paracetamol', dosage: '500mg twice a day', notes: '' },
+        { name: 'Rest & fluids', dosage: '', notes: 'Plenty of water and soup' },
+      ],
+      severity: 'moderate',
+      doctorVisited: true,
+      doctorNotes: 'Seasonal flu, prescribed rest and paracetamol.',
+      startDate: oneWeekAgo,
+      recoveryDate: twoDaysAgo,
+      notes: 'Caught it from a coworker.',
+    },
+    {
+      id: 'health-2',
+      title: 'Cold',
+      symptoms: ['Runny nose', 'Sore throat'],
+      treatments: [{ name: 'Steam inhalation', dosage: '', notes: 'Twice daily' }],
+      severity: 'mild',
+      doctorVisited: false,
+      doctorNotes: '',
+      startDate: yesterday,
+      recoveryDate: null,
+      notes: 'Still recovering.',
+    },
+    {
+      id: 'health-3',
+      title: 'Stomach ache',
+      symptoms: ['Nausea', 'Cramping'],
+      treatments: [{ name: 'Antacid', dosage: '1 tablet after meals', notes: '' }],
+      severity: 'mild',
+      doctorVisited: false,
+      doctorNotes: '',
+      startDate: oneMonthAgo,
+      recoveryDate: oneMonthAgo + 2 * 24 * 60 * 60 * 1000,
+      notes: 'Likely something eaten outside.',
+    },
+  ]
+
+  healthEpisodes.forEach((e) => {
+    store.appendItem(store.TABLES.HEALTH_EPISODES, userId, e)
+  })
+
+  // ── Health Tracker: Reminders ──
+  const healthReminders = [
+    {
+      id: 'reminder-1',
+      title: 'Multivitamin refill',
+      dueDate: now + 5 * 24 * 60 * 60 * 1000,
+      repeatDays: 30,
+      notes: 'Pharmacy on Main Street',
+      completed: false,
+    },
+    {
+      id: 'reminder-2',
+      title: 'Annual checkup',
+      dueDate: oneMonthAgo + 60 * 24 * 60 * 60 * 1000,
+      repeatDays: null,
+      notes: '',
+      completed: false,
+    },
+  ]
+
+  healthReminders.forEach((r) => {
+    store.appendItem(store.TABLES.HEALTH_REMINDERS, userId, r)
+  })
+
+  // ── Journal: Daily check-ins ──
+  const journalEntries = [
+    {
+      id: 'journal-1',
+      date: today,
+      mood: 'good',
+      energy: 4,
+      sleepHours: 7,
+      tags: ['Work', 'Health'],
+      notes: 'Solid day, finished the report and went for a walk in the evening.',
+      createdAt: today,
+    },
+    {
+      id: 'journal-2',
+      date: yesterday,
+      mood: 'okay',
+      energy: 3,
+      sleepHours: 6,
+      tags: ['Work', 'Money'],
+      notes: 'Busy sorting out bills, a bit tired by the evening.',
+      createdAt: yesterday,
+    },
+    {
+      id: 'journal-3',
+      date: twoDaysAgo,
+      mood: 'great',
+      energy: 5,
+      sleepHours: 8,
+      tags: ['Family', 'Deen', 'Rest'],
+      notes: 'Great family time after Jummah, felt very relaxed.',
+      createdAt: twoDaysAgo,
+    },
+  ]
+
+  journalEntries.forEach((e) => {
+    store.appendItem(store.TABLES.JOURNAL_ENTRIES, userId, e)
+  })
+
   // ── Finance: Transactions ──
+  // `type: 'debit'|'credit'` (not `kind: 'expense'|'income'`) and `merchant` (not just
+  // `description`) are the real fields TransactionPanel.jsx/Dashboard.jsx read everywhere —
+  // matching that schema so seeded accounts behave like real ones for Finance stats/charts.
   const transactions = [
-    { id: 'txn-1', category: 'food', kind: 'expense', amount: 350, description: 'Lunch', date: today, tags: ['daily'] },
-    { id: 'txn-2', category: 'transport', kind: 'expense', amount: 500, description: 'Uber to office', date: today, tags: [] },
-    { id: 'txn-3', category: 'salary', kind: 'income', amount: 50000, description: 'Monthly salary', date: yesterday, tags: ['monthly'] },
-    { id: 'txn-4', category: 'utilities', kind: 'expense', amount: 2500, description: 'Electricity bill', date: twoDaysAgo, tags: ['bills'] },
-    { id: 'txn-5', category: 'food', kind: 'expense', amount: 1200, description: 'Dinner with family', date: twoDaysAgo, tags: ['social'] },
-    { id: 'txn-6', category: 'entertainment', kind: 'expense', amount: 800, description: 'Movie tickets', date: oneWeekAgo, tags: ['entertainment'] },
-    { id: 'txn-7', category: 'shopping', kind: 'expense', amount: 3500, description: 'Clothes shopping', date: oneWeekAgo, tags: [] },
-    { id: 'txn-8', category: 'savings', kind: 'income', amount: 5000, description: 'Transfer to savings', date: oneWeekAgo, tags: ['savings'] },
-    { id: 'txn-9', category: 'health', kind: 'expense', amount: 1500, description: 'Doctor consultation', date: oneMonthAgo, tags: ['medical'] },
-    { id: 'txn-10', category: 'freelance', kind: 'income', amount: 8000, description: 'Project payment', date: oneMonthAgo, tags: [] },
+    { id: 'txn-1', category: 'food', type: 'debit', amount: 350, merchant: 'Lunch', description: 'Lunch', date: today, tags: ['daily'] },
+    { id: 'txn-2', category: 'transport', type: 'debit', amount: 500, merchant: 'Uber to office', description: 'Uber to office', date: today, tags: [] },
+    { id: 'txn-3', category: 'salary', type: 'credit', amount: 50000, merchant: 'Monthly salary', description: 'Monthly salary', date: yesterday, tags: ['monthly'] },
+    { id: 'txn-4', category: 'utilities', type: 'debit', amount: 2500, merchant: 'Electricity bill', description: 'Electricity bill', date: twoDaysAgo, tags: ['bills'] },
+    { id: 'txn-5', category: 'food', type: 'debit', amount: 1200, merchant: 'Dinner with family', description: 'Dinner with family', date: twoDaysAgo, tags: ['social'] },
+    { id: 'txn-6', category: 'entertainment', type: 'debit', amount: 800, merchant: 'Movie tickets', description: 'Movie tickets', date: oneWeekAgo, tags: ['entertainment'] },
+    { id: 'txn-7', category: 'shopping', type: 'debit', amount: 3500, merchant: 'Clothes shopping', description: 'Clothes shopping', date: oneWeekAgo, tags: [] },
+    { id: 'txn-8', category: 'savings', type: 'credit', amount: 5000, merchant: 'Transfer to savings', description: 'Transfer to savings', date: oneWeekAgo, tags: ['savings'] },
+    { id: 'txn-9', category: 'health', type: 'debit', amount: 1500, merchant: 'Doctor consultation', description: 'Doctor consultation', date: oneMonthAgo, tags: ['medical'] },
+    { id: 'txn-10', category: 'freelance', type: 'credit', amount: 8000, merchant: 'Project payment', description: 'Project payment', date: oneMonthAgo, tags: [] },
   ]
 
   transactions.forEach((t) => {
@@ -195,6 +307,8 @@ function seedData(userId) {
 
   console.log(`✅ Seeded ${contacts.length} contacts, ${entries.length} entries`)
   console.log(`✅ Seeded ${milestones.length} milestones, ${goals.length} goals, ${tasks.length} tasks`)
+  console.log(`✅ Seeded ${healthEpisodes.length} health episodes, ${healthReminders.length} reminders`)
+  console.log(`✅ Seeded ${journalEntries.length} journal entries`)
   console.log(`✅ Seeded ${transactions.length} transactions`)
 }
 

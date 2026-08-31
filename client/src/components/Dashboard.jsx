@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { Area, AreaChart, Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
 import { computeGoalStats, computeHomeStats } from '../utils/milestoneStats'
 import { getCategoryMeta } from '../utils/txnMeta'
+import { moodScore } from '../utils/journalFormat'
+import { formatDueLabel } from '../utils/healthFormat'
+import CornerMenu from './CornerMenu'
 
 const WORKOUT_GOAL_MIN = 30
 const PRAYER_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha']
@@ -118,12 +121,26 @@ const CATEGORY_ICON = {
   transport: 'directions_car', utilities: 'bolt', manual: 'edit_note',
 }
 
-export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
+export default function Dashboard({ session, onSelect, sendMsg, addListener, showProfile, onProfileOpen }) {
   const [txns, setTxns] = useState([])
   const [khataContacts, setKhataContacts] = useState([])
   const [khataEntries, setKhataEntries] = useState([])
   const [goals, setGoals] = useState([])
   const [tasks, setTasks] = useState([])
+  // Only fetched for the Streaks strip below — Journal's own streak/entries logic lives in
+  // JournalPanel.jsx; this is a separate, minimal copy of just the streak math, same
+  // "each screen keeps its own small derivation" convention as readNamazStreaks above.
+  const [journalEntries, setJournalEntries] = useState([])
+  // Fetched fresh here (Dashboard never loaded Health data before) purely for the Health
+  // bento tile's sick-days/next-reminder stats — HealthTrackerPanel.jsx owns the real
+  // add/edit/mark-done flows, this is a read-only summary same as Journal's above.
+  const [healthEpisodes, setHealthEpisodes] = useState([])
+  const [healthReminders, setHealthReminders] = useState([])
+  // Bumped when a 'namaz_data' reply hydrates localStorage below, purely to force a
+  // re-render — namazCount/namazWeekly/etc. are plain localStorage reads on every render
+  // rather than state, so without this they'd only pick up the hydrated values on some
+  // later unrelated re-render instead of as soon as the data arrives.
+  const [namazTick, setNamazTick] = useState(0) // eslint-disable-line no-unused-vars
   const namazCount = readNamazCount()
   const namazWeekly = readNamazWeekly()
   const namazStreaks = readNamazStreaks()
@@ -146,6 +163,39 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
         setGoals(msg.goals || [])
         setTasks(msg.tasks || [])
       }
+      if (msg.type === 'journal_data') {
+        setJournalEntries(msg.entries || [])
+      }
+      if (msg.type === 'health_data') {
+        setHealthEpisodes(msg.episodes || [])
+        setHealthReminders(msg.reminders || [])
+      }
+      // Namaz/Qada now persist server-side (see NamazTracker.jsx), but this screen's own
+      // stat helpers (readNamazAll/readNamazWeekly/readNamazStreaks/readNamazMonthRate,
+      // above) still read straight out of localStorage — that logic is left untouched.
+      // So on a second device that's never opened NamazTracker itself, hydrate those same
+      // localStorage keys here, in the exact shape they already have, purely so this
+      // screen's stats come out correct without duplicating any of its computation.
+      //
+      // Only write when the server actually HAS data (days.length > 0). An empty reply
+      // just means nothing has migrated yet — NOT that local history should be erased.
+      // Dashboard mounts (and fires this same namaz_data_get) before NamazTracker ever
+      // gets a chance to run its own one-time migration, so unconditionally overwriting
+      // localStorage here would wipe out a pre-existing device's local history the moment
+      // Home renders, before NamazTracker could read and upload it.
+      if (msg.type === 'namaz_data' && (msg.days || []).length > 0) {
+        const days = {}
+        msg.days.forEach((d) => {
+          const { id, ...rest } = d
+          days[id] = rest
+        })
+        localStorage.setItem('meeee_namaz', JSON.stringify(days))
+        if (msg.qada) {
+          const { id, ...qadaRest } = msg.qada
+          localStorage.setItem('meeee_namaz_qada', JSON.stringify(qadaRest))
+        }
+        setNamazTick((t) => t + 1)
+      }
     })
   }, [addListener, session.userId])
 
@@ -153,6 +203,9 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
     sendMsg({ type: 'transactions_get' })
     sendMsg({ type: 'ledger_data_get' })
     sendMsg({ type: 'milestone_data_get' })
+    sendMsg({ type: 'namaz_data_get' })
+    sendMsg({ type: 'journal_data_get' })
+    sendMsg({ type: 'health_data_get' })
   }, [sendMsg])
 
   const todayTxns = useMemo(() => {
@@ -224,11 +277,90 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
 
   const activeGoals = useMemo(() => goals.filter(g => g.status !== 'archived'), [goals])
   const milestoneStats = useMemo(() => computeHomeStats(activeGoals, tasks), [activeGoals, tasks])
-  const topGoal = useMemo(
-    () => [...activeGoals].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0] || null,
-    [activeGoals]
+  // Up to 3 active goals, newest first, each paired with its own stats — the Milestone tile
+  // below lists these individually (title + progress bar per goal) rather than just the one
+  // newest goal, matching the reference design's "N active challenges" list.
+  const topActiveGoals = useMemo(
+    () => [...activeGoals]
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .slice(0, 3)
+      .map(g => ({ goal: g, stats: computeGoalStats(g, tasks) })),
+    [activeGoals, tasks]
   )
-  const topGoalStats = useMemo(() => (topGoal ? computeGoalStats(topGoal, tasks) : null), [topGoal, tasks])
+
+  // Whichever active Milestone currently has the longest live streak — a user can be running
+  // several goals at once, and the Streaks strip below only has room for one number, so this
+  // surfaces the one actually worth bragging about right now rather than always the newest.
+  const bestMilestoneStreak = useMemo(() => {
+    let best = null
+    activeGoals.forEach((g) => {
+      const stats = computeGoalStats(g, tasks)
+      if (!best || stats.currentStreak > best.streak) best = { streak: stats.currentStreak, title: g.title }
+    })
+    return best
+  }, [activeGoals, tasks])
+
+  // Consecutive IST-ish calendar days with at least one Journal entry, ending today or
+  // yesterday — same definition as JournalPanel.jsx's own `streak`, kept as a separate small
+  // copy here (this screen's existing convention, see readNamazStreaks above) rather than
+  // importing that component's internals.
+  const journalStreak = useMemo(() => {
+    const dateKeys = new Set(journalEntries.map((e) => todayKey(new Date(e.date))))
+    const cursor = new Date()
+    if (!dateKeys.has(todayKey(cursor))) {
+      cursor.setDate(cursor.getDate() - 1)
+      if (!dateKeys.has(todayKey(cursor))) return 0
+    }
+    let count = 0
+    while (dateKeys.has(todayKey(cursor))) {
+      count++
+      cursor.setDate(cursor.getDate() - 1)
+    }
+    return count
+  }, [journalEntries])
+
+  // Last 7 IST-ish calendar days' mood, one point per day — same null-for-no-entry-day
+  // approach as JournalPanel.jsx's own moodEnergyTrend, just condensed to 7 points instead
+  // of 14 to fit this tile's smaller chart.
+  const journalMoodTrend = useMemo(() => {
+    const byDay = {}
+    journalEntries.forEach((e) => {
+      const key = todayKey(new Date(e.date))
+      if (!byDay[key]) byDay[key] = []
+      byDay[key].push(e)
+    })
+    const days = []
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i)
+      const dayEntries = byDay[todayKey(d)] || []
+      const mood = dayEntries.length ? dayEntries.reduce((s, e) => s + moodScore(e.mood), 0) / dayEntries.length : null
+      days.push({ i, mood })
+    }
+    return days
+  }, [journalEntries])
+
+  const avgMood7d = useMemo(() => {
+    const scored = journalMoodTrend.filter(d => d.mood != null)
+    if (scored.length === 0) return null
+    return scored.reduce((s, d) => s + d.mood, 0) / scored.length
+  }, [journalMoodTrend])
+
+  // Total days spent sick in the last 90 days — sums each episode's overlap with that
+  // window (startDate through recoveryDate, or "now" while still active), not just an
+  // episode count, so a single long illness weighs more than several short ones.
+  const healthSickDays90d = useMemo(() => {
+    const cutoff = Date.now() - 90 * 86400000
+    return Math.round(healthEpisodes.reduce((sum, e) => {
+      const start = Math.max(e.startDate, cutoff)
+      const end = Math.min(e.recoveryDate ?? Date.now(), Date.now())
+      return sum + Math.max(0, (end - start) / 86400000)
+    }, 0))
+  }, [healthEpisodes])
+
+  const nextHealthReminder = useMemo(() => {
+    const upcoming = healthReminders.filter(r => !r.completed).sort((a, b) => a.dueDate - b.dueDate)
+    return upcoming[0] || null
+  }, [healthReminders])
 
   const dateLabel = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })
 
@@ -237,6 +369,8 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
     { key: 'transactions', icon: 'payments', name: 'Finance', blurb: 'Spending, budgets & cashflow', metric: formatINRCompact(monthTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)), sub: 'spent this month' },
     { key: 'khatabook', icon: 'account_balance_wallet', name: 'Khata Book', blurb: 'Who owes what, settled cleanly', metric: formatINRCompact(khataTotals.youllGet), sub: 'receivable' },
     { key: 'milestone', icon: 'flag', name: 'Milestones', blurb: 'Challenges, habits & focus tasks', metric: `${activeGoals.length}`, sub: 'active challenges' },
+    { key: 'journal', icon: 'edit_note', name: 'Journal', blurb: 'Daily mood, energy & notes check-in', metric: avgMood7d != null ? avgMood7d.toFixed(1) : '—', sub: 'avg mood (7d)' },
+    { key: 'health', icon: 'health_and_safety', name: 'Health', blurb: 'Illnesses, recoveries & reminders', metric: `${healthSickDays90d}`, sub: 'sick days (90d)' },
     { key: 'workout', icon: 'fitness_center', name: 'Workout', blurb: 'Sessions logged today', metric: `${workoutMinutes}m`, sub: `of ${WORKOUT_GOAL_MIN}m goal` },
   ]
 
@@ -247,7 +381,20 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
         className="pointer-events-none absolute -top-48 left-1/2 size-[280px] -translate-x-1/2 rounded-full bg-[image:var(--gradient-gold)] opacity-25 blur-3xl animate-float sm:size-[440px] md:size-[640px]"
       />
 
-      <main className="relative mx-auto w-full max-w-6xl px-4 pt-10 pb-28 sm:px-6 sm:pt-14 sm:pb-36">
+      <main className="relative mx-auto w-full max-w-6xl px-4 pt-6 pb-28 sm:px-6 sm:pt-10 sm:pb-36">
+        {/* Inline, top-right, in normal flow — replaces the old fixed CornerMenu that used
+            to float over this hero (and everything else) instead of taking real header
+            space. */}
+        <div className="flex justify-end">
+          <CornerMenu
+            session={session}
+            sendMsg={sendMsg}
+            addListener={addListener}
+            showProfile={showProfile}
+            onProfileOpen={onProfileOpen}
+          />
+        </div>
+
         {/* Hero */}
         <section className="animate-fade-up text-center">
           <span className="inline-flex items-center gap-2 rounded-full border border-border bg-card/70 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-[0.2em] text-gold backdrop-blur">
@@ -271,8 +418,37 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
           </button>
         </section>
 
+        {/* Streaks strip — Namaz, Journal, and (if any active) Milestone streaks side by
+            side, in one glance, instead of only visible after opening each module
+            separately. Milestone chip only renders once there's an active goal to show. */}
+        <div className={`mt-10 grid grid-cols-2 gap-3 ${bestMilestoneStreak ? 'sm:grid-cols-3' : ''}`}>
+          <button type="button" onClick={() => onSelect('namaz')} className="tile grain flex flex-col items-center gap-1.5 p-4 text-center">
+            <span className="grid size-9 shrink-0 place-items-center rounded-2xl bg-warning-soft text-warning">
+              <span className="material-symbols-outlined text-lg">local_fire_department</span>
+            </span>
+            <p className="num text-xl font-extrabold text-foreground">{namazStreaks.current}d</p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Namaz streak</p>
+          </button>
+          <button type="button" onClick={() => onSelect('journal')} className="tile grain flex flex-col items-center gap-1.5 p-4 text-center">
+            <span className="grid size-9 shrink-0 place-items-center rounded-2xl bg-warning-soft text-warning">
+              <span className="material-symbols-outlined text-lg">local_fire_department</span>
+            </span>
+            <p className="num text-xl font-extrabold text-foreground">{journalStreak}d</p>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Journal streak</p>
+          </button>
+          {bestMilestoneStreak && (
+            <button type="button" onClick={() => onSelect('milestone')} className="tile grain col-span-2 flex flex-col items-center gap-1.5 p-4 text-center sm:col-span-1">
+              <span className="grid size-9 shrink-0 place-items-center rounded-2xl bg-warning-soft text-warning">
+                <span className="material-symbols-outlined text-lg">local_fire_department</span>
+              </span>
+              <p className="num text-xl font-extrabold text-foreground">{bestMilestoneStreak.streak}d</p>
+              <p className="truncate text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{bestMilestoneStreak.title}</p>
+            </button>
+          )}
+        </div>
+
         {/* Bento grid */}
-        <div className="mt-12 grid grid-cols-1 gap-4 stagger md:grid-cols-6">
+        <div className="mt-8 grid grid-cols-1 gap-4 stagger md:grid-cols-6">
             {/* Prayer big tile */}
             <button
               type="button"
@@ -390,31 +566,122 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener }) {
                 <p className="num mt-3 truncate text-3xl font-extrabold text-success">{formatINRCompact(khataTotals.youllGet)}</p>
                 <p className="text-xs text-muted-foreground">they owe you</p>
               </div>
+              {(khataTotals.youllGet > 0 || khataTotals.youllPay > 0) && (
+                <div className="mt-3 flex h-2 w-full overflow-hidden rounded-full bg-secondary">
+                  <div
+                    className="h-full bg-success"
+                    style={{ width: `${(khataTotals.youllGet / (khataTotals.youllGet + khataTotals.youllPay)) * 100}%` }}
+                  />
+                  <div
+                    className="h-full bg-destructive"
+                    style={{ width: `${(khataTotals.youllPay / (khataTotals.youllGet + khataTotals.youllPay)) * 100}%` }}
+                  />
+                </div>
+              )}
               <p className="num mt-4 truncate text-sm font-semibold text-destructive">
                 {formatINRCompact(khataTotals.youllPay)}
                 <span className="ml-1 text-xs font-normal text-muted-foreground">you owe</span>
               </p>
             </button>
 
-            {/* Milestone */}
-            {topGoal && topGoalStats && (
-              <button type="button" onClick={() => onSelect('milestone')} className="tile grain col-span-1 flex min-w-0 flex-col justify-between p-6 text-left md:col-span-2">
+            {/* Milestones — up to 3 active goals listed with their own progress bar, instead
+                of only ever showing the single newest one. */}
+            {topActiveGoals.length > 0 && (
+              <button type="button" onClick={() => onSelect('milestone')} className="tile grain col-span-1 flex min-w-0 flex-col p-6 text-left md:col-span-2">
                 <div className="flex items-start justify-between">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Top milestone</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    {activeGoals.length} active challenge{activeGoals.length === 1 ? '' : 's'}
+                  </p>
                   <span className="material-symbols-outlined shrink-0 text-base text-gold">flag</span>
                 </div>
-                <div className="mt-4 min-w-0">
-                  <p className="truncate text-lg font-bold text-foreground">{topGoal.title}</p>
-                  <p className="num mt-1 text-xs text-muted-foreground">Day {topGoalStats.daysElapsed} of {topGoalStats.totalDays}</p>
-                  <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-secondary">
-                    <div
-                      className="h-full rounded-full bg-[image:var(--gradient-gold)]"
-                      style={{ width: `${topGoalStats.completionPct}%` }}
-                    />
-                  </div>
+                <div className="mt-4 flex min-w-0 flex-col gap-3">
+                  {topActiveGoals.map(({ goal, stats }) => (
+                    <div key={goal.id} className="min-w-0">
+                      <p className="truncate text-sm font-bold text-foreground">{goal.title}</p>
+                      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                        <div
+                          className="h-full rounded-full bg-[image:var(--gradient-gold)]"
+                          style={{ width: `${stats.completionPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </button>
             )}
+
+            {/* Journal */}
+            <button type="button" onClick={() => onSelect('journal')} className="tile grain col-span-1 min-w-0 p-6 text-left md:col-span-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Journal</p>
+                  <p className="num mt-2 truncate text-3xl font-extrabold text-foreground">
+                    {avgMood7d != null ? avgMood7d.toFixed(1) : '—'}
+                    <span className="ml-1 text-sm font-semibold text-muted-foreground">/5</span>
+                  </p>
+                </div>
+                <span className="shrink-0 text-xs text-muted-foreground">{journalStreak}d streak · avg mood (7d)</span>
+              </div>
+              {journalMoodTrend.some(d => d.mood != null) && (
+                <div className="mt-4 h-[92px] min-w-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={journalMoodTrend}>
+                      <defs>
+                        <linearGradient id="dashboardMood" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="var(--chart-2)" stopOpacity={0.5} />
+                          <stop offset="100%" stopColor="var(--chart-2)" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <Area type="monotone" dataKey="mood" stroke="var(--chart-2)" strokeWidth={2.5} fill="url(#dashboardMood)" connectNulls />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </button>
+
+            {/* Health */}
+            <button type="button" onClick={() => onSelect('health')} className="tile grain col-span-1 flex min-w-0 flex-col justify-between p-6 text-left md:col-span-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Health</p>
+                  <p className="num mt-2 text-3xl font-extrabold text-foreground">
+                    {healthSickDays90d}
+                    <span className="ml-1 text-sm font-semibold text-muted-foreground">sick days (90d)</span>
+                  </p>
+                </div>
+                <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gold-soft text-gold">
+                  <span className="material-symbols-outlined text-xl">health_and_safety</span>
+                </span>
+              </div>
+              <p className="mt-4 text-sm text-muted-foreground">
+                {nextHealthReminder
+                  ? <>{nextHealthReminder.title} &middot; <span className="font-semibold text-foreground">{formatDueLabel(nextHealthReminder.dueDate)}</span></>
+                  : 'No reminders due soon.'}
+              </p>
+            </button>
+        </div>
+
+        {/* Quick actions — one tap from Home straight into each module's most common action,
+            instead of tile → module → find the add button. */}
+        <div className="mt-4 grid grid-cols-4 gap-3">
+          {[
+            { key: 'namaz', icon: 'mosque', label: 'Log prayer' },
+            { key: 'transactions', icon: 'add_card', label: 'Add expense' },
+            { key: 'journal', icon: 'edit_note', label: 'Daily note' },
+            { key: 'health', icon: 'health_and_safety', label: 'Log health' },
+          ].map((a) => (
+            <button
+              key={a.key}
+              type="button"
+              onClick={() => onSelect(a.key)}
+              className="tile flex flex-col items-center gap-2 p-4 text-center"
+            >
+              <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-gold-soft text-gold">
+                <span className="material-symbols-outlined text-lg">{a.icon}</span>
+              </span>
+              <p className="text-[11px] font-semibold text-foreground">{a.label}</p>
+            </button>
+          ))}
         </div>
 
         {/* Module launcher */}

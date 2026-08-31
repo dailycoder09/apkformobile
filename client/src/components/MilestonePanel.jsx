@@ -1,24 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import confetti from 'canvas-confetti'
-import {
-  Area, AreaChart, Bar as RechartsBar, BarChart, CartesianGrid, Cell, Pie, PieChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis,
-} from 'recharts'
 import { computeGoalStats, computeMilestoneStats, computeGlobalBadges } from '../utils/milestoneStats'
-import { PageShell, Tile, TileLabel, Stat, Bar } from './PageShell'
-import { Celebrate, Badge3D } from './Celebrate'
-import MilestoneCalendarAgenda from './MilestoneCalendarAgenda'
-
-// Recharts tooltip styling shared by every chart on this page, matching the reference's
-// own `tip` constant exactly (khata.tsx / milestones.tsx both define the same object).
-const tip = {
-  contentStyle: {
-    borderRadius: 12,
-    border: '1px solid var(--color-border)',
-    background: 'var(--color-popover)',
-    fontSize: 12,
-  },
-}
+import { PageShell } from './PageShell'
+import { Celebrate } from './Celebrate'
+import SwipeCarousel from './SwipeCarousel'
+import MilestoneAgendaSection from './MilestoneAgendaSection'
+import MilestoneAnalyticsSection from './MilestoneAnalyticsSection'
 
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -131,29 +118,13 @@ const GOAL_TEMPLATES = [
   },
 ]
 
-const QUOTES = [
-  'Consistency is what transforms average into excellence.',
-  "The secret of getting ahead is getting started.",
-  'Small daily improvements are the key to staggering long-term results.',
-  "Discipline is choosing between what you want now and what you want most.",
-  "You don't have to be great to start, but you have to start to be great.",
-  'Progress, not perfection.',
-]
-// Stable per-milestone (not re-randomized on every render) — a cheap string hash picks a
-// consistent index for a given id.
-function quoteFor(id) {
-  let h = 0
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0
-  return QUOTES[h % QUOTES.length]
-}
-
 const EMPTY_GOAL_FORM = { title: '', description: '', periodKey: 'week', customDays: '', templates: [{ title: '', description: '' }] }
 const EMPTY_MILESTONE_FORM = { id: null, title: '', description: '', day: '1', total: '30' }
 const EMPTY_TASK_FORM = { id: null, goalId: '', title: '', description: '', date: '' }
 
 const UNCATEGORIZED_ID = '__uncategorized__'
 
-export default function MilestonePanel({ session, sendMsg, addListener, onHome }) {
+export default function MilestonePanel({ session, sendMsg, addListener, onHome, onProfileOpen }) {
   const [milestones, setMilestones] = useState([])
   const [goals, setGoals] = useState([])
   const [tasks, setTasks] = useState([])
@@ -568,403 +539,150 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome }
         title="Milestones"
         lead="Every milestone breaks into goals, and every goal gets its own daily tasks. Tick them off and celebrate each win."
         onHome={onHome}
+        session={session}
+        sendMsg={sendMsg}
+        addListener={addListener}
+        showProfile
+        onProfileOpen={onProfileOpen}
         action={
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                const lines = combinedMilestones.map(m => {
-                  const gfs = m.synthetic ? orphanGoals.map(g => ({ ...g, milestoneId: m.id })) : goals
-                  const s = computeMilestoneStats(m, gfs, tasks)
-                  return `• ${m.title} — ${s.completionPct}% (day ${s.daysElapsed}/${s.totalDays})`
-                })
-                const text = `My milestones\n${lines.join('\n')}`
-                navigator.clipboard?.writeText(text)
-                setCheer({ n: Date.now(), msg: 'Progress summary copied!' })
-              }}
-              className="inline-flex items-center gap-1.5 rounded-2xl border border-border bg-card px-4 py-2.5 text-sm font-semibold transition-colors hover:bg-secondary"
-            >
-              <span className="material-symbols-outlined text-lg">share</span> Share
-            </button>
-            <div className="tile-static px-5 py-3 text-right">
-              <p className="num text-2xl font-extrabold">{combinedMilestones.length}</p>
-              <p className="text-[11px] text-muted-foreground">active milestones</p>
-            </div>
+          // Hidden on mobile — the count is folded into the Milestones list header
+          // (MilestoneAgendaSection.jsx) instead of floating as its own boxed card,
+          // matching Khatabook's net-position pill treatment.
+          <div className="tile-static hidden shrink-0 px-5 py-3 text-right md:block">
+            <p className="num text-2xl font-extrabold">{combinedMilestones.length}</p>
+            <p className="text-[11px] text-muted-foreground">active milestones</p>
           </div>
         }
       >
         <Celebrate show={cheer.n > 0} message={cheer.msg} key={cheer.n} />
 
         {badgeToast && (
-          // top-20 (not top-4/top-6, which the shared <Celebrate> banner above already
-          // occupies) — a milestone/goal completion and a badge unlock often fire in the
-          // same instant, and both toasts sharing one row rendered as illegible overlapping
-          // text.
-          <div role="status" className="animate-fade-in fixed left-1/2 top-20 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[image:var(--gradient-gold)] px-5 py-2.5 text-sm font-semibold text-white shadow-[var(--shadow-glow)]">
+          // top-32 on mobile (not top-4/top-6, which the shared <Celebrate> banner above
+          // already occupies) — a milestone/goal completion and a badge unlock often fire
+          // in the same instant, and both toasts sharing one row rendered as illegible
+          // overlapping text. Mobile-only bump from top-20: PageShell's mobile header still
+          // starts lower than its desktop sm:pt-10 (pt-16, to clear the single fixed
+          // CornerMenu trigger), so the "Milestones" <h1> occupies roughly the old top-20
+          // band - top-20 would put this toast right on top of that title instead of below
+          // it (re-verified with Playwright: title spans y 68-100px at 390px wide, top-32's
+          // 128px clears it with margin). Desktop keeps the original sm:top-20 - its header
+          // sits higher (sm:pt-10) and never moved, so it's unaffected.
+          <div role="status" className="animate-fade-in fixed left-1/2 top-32 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[image:var(--gradient-gold)] px-5 py-2.5 text-sm font-semibold text-white shadow-[var(--shadow-glow)] sm:top-20">
             <span className="material-symbols-outlined text-lg">{badgeToast.icon}</span>
             <span>{badgeToast.label} unlocked!</span>
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-4 stagger md:grid-cols-6">
-          <div className="col-span-1 grid grid-cols-1 gap-4 self-start sm:grid-cols-2 md:col-span-2">
-            <Stat label="Best streak" value={`${overall.bestStreak}d`} tone="warning" icon={<span className="material-symbols-outlined text-base">local_fire_department</span>} hint="Longest running goal" />
-            <Stat label="Tasks done" value={`${overall.totalDoneAll}`} tone="success" icon={<span className="material-symbols-outlined text-base">task_alt</span>} hint={`${overall.completionRate}% completion`} />
-            <Stat label="Goals achieved" value={`${overall.totalGoalsAchieved}`} tone="gold" icon={<span className="material-symbols-outlined text-base">emoji_events</span>} hint={`${activeMilestoneStats?.goalsCompleted ?? 0}/${activeMilestoneStats?.goalsCount ?? 0} in this milestone`} />
-            <Stat label="Today's tasks" value={`${activeMilestoneStats?.todayDone ?? 0}/${activeMilestoneStats?.todayTotal ?? 0}`} tone="gold" icon={<span className="material-symbols-outlined text-base">checklist</span>} hint={activeMilestone?.title ?? '—'} />
-          </div>
-
-          <Tile className="col-span-1 md:col-span-4">
-            <div className="flex items-center justify-between gap-3">
-              <TileLabel>Milestones</TileLabel>
-              <button
-                type="button"
-                onClick={openAddMilestone}
-                className="flex h-8 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3.5 text-xs font-semibold text-accent-foreground transition-opacity hover:opacity-90"
-              >
-                <span className="material-symbols-outlined text-sm">add</span> New milestone
-              </button>
-            </div>
-            <ul className="mt-4 space-y-2">
-              {combinedMilestones.map(m => {
-                const selected = m.id === activeMilestone?.id
-                const gfs = m.synthetic ? orphanGoals.map(g => ({ ...g, milestoneId: m.id })) : goals
-                const s = computeMilestoneStats(m, gfs, tasks)
-                return (
-                  <li key={m.id}>
-                    <div className={`flex w-full items-start gap-3 rounded-2xl border p-4 text-left transition-all duration-300 hover:-translate-y-0.5 ${
-                      selected ? 'border-gold/40 bg-gold-soft shadow-[var(--shadow-glow)]' : 'border-border bg-secondary/40'
-                    }`}>
-                      <button onClick={() => setActiveMilestoneId(m.id)} className="min-w-0 flex-1 text-left">
-                        <p className="flex items-center gap-1.5 truncate text-sm font-bold">
-                          <span className="truncate">{m.title}</span>
-                          {s.isComplete && <span className="material-symbols-outlined shrink-0 text-base text-gold">emoji_events</span>}
-                        </p>
-                        <p className="num mt-0.5 text-xs text-muted-foreground">
-                          Day {s.daysElapsed} of {s.totalDays} · {s.completionPct}% · {s.goalsCount} goals · {s.tasksCompleted}/{s.tasksTotal} tasks
-                        </p>
-                        <div className="mt-2.5">
-                          <Bar value={s.completionPct} tone="gold" />
-                        </div>
-                      </button>
-                      {!m.synthetic && (
-                        <span className="flex shrink-0 items-center gap-1">
-                          <button
-                            aria-label={`Edit ${m.title}`}
-                            onClick={() => openEditMilestone(m)}
-                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-                          >
-                            <span className="material-symbols-outlined text-lg">edit</span>
-                          </button>
-                          <button
-                            aria-label={`Delete ${m.title}`}
-                            onClick={() => deleteMilestone(m.id)}
-                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
-                          >
-                            <span className="material-symbols-outlined text-lg">delete</span>
-                          </button>
-                        </span>
-                      )}
-                    </div>
-                  </li>
-                )
-              })}
-              {combinedMilestones.length === 0 && (
-                <li className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                  No milestones yet — start your first one.
-                </li>
-              )}
-            </ul>
-          </Tile>
-
-          {activeMilestone && activeMilestoneStats && (
-            <div className="tile grain col-span-1 flex flex-col items-center justify-center p-8 text-center md:col-span-6">
-              <div className="relative grid size-44 shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(var(--color-gold) ${animatedRingPct * 3.6}deg, var(--color-secondary) 0deg)` }}>
-                <div className="grid size-36 place-items-center rounded-full bg-card">
-                  <p className="num text-5xl font-extrabold text-gradient-gold">{animatedRingPct}%</p>
-                  <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-                    {activeMilestoneStats.goalsCompleted}/{activeMilestoneStats.goalsCount} goals
-                  </p>
-                </div>
-              </div>
-              <span className="mt-5 inline-flex items-center gap-1.5 rounded-full bg-gold-soft px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-gold">
-                <span className="material-symbols-outlined text-sm">auto_awesome</span> Active Milestone
-              </span>
-              <h2 className="font-display mt-3 text-2xl font-extrabold">{activeMilestone.title}</h2>
-              {activeMilestone.description && <p className="mt-2 max-w-md text-sm text-muted-foreground">{activeMilestone.description}</p>}
-              <p className="mt-4 flex items-start gap-2 text-xs italic text-muted-foreground">
-                <span className="material-symbols-outlined mt-0.5 shrink-0 text-sm text-gold">format_quote</span>
-                {quoteFor(activeMilestone.id)}
-              </p>
-            </div>
-          )}
-
-          <Tile className="col-span-1 md:col-span-2">
-            <TileLabel>Motivation Score</TileLabel>
-            <p className="num mt-3 text-4xl font-extrabold text-gradient-gold">
-              {activeMilestoneStats?.motivationScore ?? 0}<span className="text-base text-muted-foreground">/100</span>
-            </p>
-            <div className="mt-4">
-              <Bar value={activeMilestoneStats?.motivationScore ?? 0} tone="gold" />
-            </div>
-            <p className="mt-4 text-xs text-muted-foreground">Live score from goal progress and how many daily tasks you ticked today.</p>
-          </Tile>
-
-          <Tile className="col-span-1 md:col-span-2">
-            <TileLabel>Completion Trend</TileLabel>
-            <div className="mt-4 h-[170px]">
-              {!trendData ? (
-                <p className="mt-8 text-center text-sm text-muted-foreground">Check back tomorrow to see your trend.</p>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={trendData}>
-                    <defs>
-                      <linearGradient id="msTrend" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="var(--color-gold)" stopOpacity={0.6} />
-                        <stop offset="100%" stopColor="var(--color-gold)" stopOpacity={0} />
-                      </linearGradient>
-                    </defs>
-                    <Tooltip {...tip} formatter={(v) => `${v}%`} />
-                    <Area type="monotone" dataKey="pct" stroke="var(--color-gold)" strokeWidth={2.5} fill="url(#msTrend)" />
-                  </AreaChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </Tile>
-
-          <Tile className="col-span-1 md:col-span-2">
-            <TileLabel>Today's Breakdown</TileLabel>
-            <div className="mt-2 h-[170px]">
-              {!breakdownData ? (
-                <p className="mt-8 text-center text-sm text-muted-foreground">No tasks planned yet.</p>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Tooltip {...tip} />
-                    <Pie data={breakdownData} dataKey="value" innerRadius={44} outerRadius={66} paddingAngle={4} stroke="none">
-                      <Cell fill="var(--color-gold)" />
-                      <Cell fill="var(--color-secondary)" />
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-            <p className="num text-center text-xs text-muted-foreground">
-              {activeMilestoneStats?.todayDone ?? 0} done · {Math.max(0, (activeMilestoneStats?.todayTotal ?? 0) - (activeMilestoneStats?.todayDone ?? 0))} remaining
-            </p>
-          </Tile>
-
-          <Tile className="col-span-1 md:col-span-3">
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-lg text-gold">target</span>
-              <TileLabel>Goal progress vs today's tasks</TileLabel>
-            </div>
-            <div className="mt-4 h-[220px]">
-              {goalChartData.length === 0 ? (
-                <p className="mt-8 text-center text-sm text-muted-foreground">No goals in this milestone yet.</p>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={goalChartData} barGap={6}>
-                    <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
-                    <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
-                    <YAxis domain={[0, 100]} tickLine={false} axisLine={false} width={34} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
-                    <Tooltip {...tip} formatter={(v) => `${v}%`} />
-                    <RechartsBar dataKey="goal" name="Goal %" radius={[8, 8, 0, 0]} fill="var(--chart-1)" barSize={18} />
-                    <RechartsBar dataKey="tasks" name="Today's tasks %" radius={[8, 8, 0, 0]} fill="var(--chart-2)" barSize={18} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-          </Tile>
-
-          <Tile className="col-span-1 md:col-span-3">
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-lg text-gold">rocket_launch</span>
-              <TileLabel>Progress vs motivation by milestone</TileLabel>
-            </div>
-            <div className="mt-4 h-[220px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={perMilestoneChartData} barGap={6}>
-                  <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
-                  <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: 'var(--color-muted-foreground)' }} />
-                  <YAxis domain={[0, 100]} tickLine={false} axisLine={false} width={34} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
-                  <Tooltip {...tip} formatter={(v) => `${v}%`} />
-                  <RechartsBar dataKey="progress" name="Progress %" radius={[8, 8, 0, 0]} fill="var(--chart-1)" barSize={20} />
-                  <RechartsBar dataKey="motivation" name="Motivation %" radius={[8, 8, 0, 0]} fill="var(--chart-2)" barSize={20} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </Tile>
-
-          <div className="col-span-1 md:col-span-6">
-            <MilestoneCalendarAgenda
+        {/* Mobile: two swipeable pages (agenda, then analytics) so the screen isn't one
+            long scroll. Desktop: both sections stacked, unchanged from before the split —
+            same two components either way, so there's nothing to fall out of sync. */}
+        {/* 140px = PageShell's mobile header height through BottomNav. This is a real magic
+            number tied to PageShell's current mobile header height — if that header's height
+            changes again, re-measure with Playwright (carouselTop/navTop getBoundingClientRect)
+            rather than guessing, both directions of this number being wrong are visible bugs
+            (dead gap above the nav, or the carousel overlapping/hiding behind it). Re-measured
+            after CornerMenu moved from a floating fixed trigger (pt-16 header, 184px) to
+            mounting inline in PageShell's header row (pt-6 header) — that migration shrank the
+            header by 44px but this value was missed at the time, leaving a 44px dead gap above
+            BottomNav on this page until caught during the Journal module build. */}
+        <div className="md:hidden" style={{ height: 'calc(100dvh - 140px)' }}>
+          <SwipeCarousel hintNext="Swipe left for analytics →" hintPrev="Swipe right for agenda →">
+            <MilestoneAgendaSection
+              overall={overall}
+              combinedMilestones={combinedMilestones}
+              activeMilestone={activeMilestone}
+              activeMilestoneStats={activeMilestoneStats}
+              animatedRingPct={animatedRingPct}
               goals={goals}
+              orphanGoals={orphanGoals}
               tasks={tasks}
-              onToggleTask={toggleTask}
-              onEditTask={openEditTaskSheet}
-              onDeleteTask={deleteTask}
-              onQuickAdd={(dateMs) => openAddTaskFor(dateMs)}
+              activeGoals={activeGoals}
+              activeArchivedGoals={activeArchivedGoals}
+              openGoals={openGoals}
+              setOpenGoals={setOpenGoals}
+              showArchived={showArchived}
+              setShowArchived={setShowArchived}
+              setActiveMilestoneId={setActiveMilestoneId}
+              openAddMilestone={openAddMilestone}
+              openEditMilestone={openEditMilestone}
+              deleteMilestone={deleteMilestone}
+              openAddGoal={openAddGoal}
+              duplicateGoal={duplicateGoal}
+              archiveGoal={archiveGoal}
+              unarchiveGoal={unarchiveGoal}
+              deleteGoal={deleteGoal}
+              toggleTask={toggleTask}
+              openEditTaskSheet={openEditTaskSheet}
+              deleteTask={deleteTask}
+              openAddTaskFor={openAddTaskFor}
             />
-          </div>
+            <MilestoneAnalyticsSection
+              activeMilestoneStats={activeMilestoneStats}
+              trendData={trendData}
+              breakdownData={breakdownData}
+              goalChartData={goalChartData}
+              perMilestoneChartData={perMilestoneChartData}
+              globalBadges={globalBadges}
+            />
+          </SwipeCarousel>
+        </div>
 
-          <Tile className="col-span-1 md:col-span-6">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-lg text-gold">flag</span>
-                <TileLabel>Goals &amp; Today's Tasks</TileLabel>
-              </div>
-              <button
-                type="button"
-                disabled={!activeMilestone}
-                onClick={openAddGoal}
-                className="flex h-8 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3.5 text-xs font-semibold text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-              >
-                <span className="material-symbols-outlined text-sm">add</span> Add goal
-              </button>
-            </div>
+        {/* Floating "Add milestone" — mobile only, matching Khatabook/Finance's FAB
+            geometry. Placed as a sibling of the carousel rather than inside it: a
+            fixed-position element inside SwipeCarousel's translateX(...) container would
+            anchor to that transformed ancestor instead of the viewport, per CSS's
+            containing-block rules for transformed ancestors.
+            Deliberately "Add milestone", not "Add task": the inline "New milestone"
+            button (and milestone-count badge) was removed from the mobile Milestones list
+            on the reasoning that this FAB already covers it. Adding a daily task stays
+            reachable from the goal rows / calendar quick-add (openAddTaskFor), unchanged. */}
+        <button
+          type="button"
+          aria-label="Add milestone"
+          onClick={openAddMilestone}
+          className="fixed right-5 bottom-[90px] z-40 grid size-14 place-items-center rounded-full bg-[image:var(--gradient-gold)] text-white shadow-[var(--shadow-glow)] transition-transform active:scale-95 md:hidden"
+        >
+          <span className="material-symbols-outlined text-2xl">add</span>
+        </button>
 
-            <div className="mt-4 space-y-3">
-              {activeGoals.map(g => {
-                const open = openGoals[g.id] ?? true
-                const stats = computeGoalStats(g, tasks)
-                const today = stats.days.find(d => d.isToday)
-                const todayTasks = today?.tasks ?? []
-                return (
-                  <div key={g.id} className={`rounded-2xl border p-4 transition-all duration-300 ${stats.isComplete ? 'border-success/40 bg-success-soft' : 'border-border bg-secondary/40'}`}>
-                    <div className="flex items-start gap-3">
-                      <button onClick={() => setOpenGoals(o => ({ ...o, [g.id]: !open }))} className="min-w-0 flex-1 text-left">
-                        <p className="flex items-center gap-1.5 text-sm font-bold">
-                          <span className={`material-symbols-outlined shrink-0 text-base transition-transform ${open ? '' : '-rotate-90'}`}>expand_more</span>
-                          <span className="truncate">{g.title}</span>
-                          {stats.isComplete && <span className="material-symbols-outlined shrink-0 text-base text-gold">emoji_events</span>}
-                          {stats.freezesRemaining > 0 && (
-                            <span className="flex shrink-0 items-center gap-0.5 rounded-full border border-border bg-card px-1.5 py-0.5 text-[10px] font-semibold text-foreground" title="Streak freezes protect your streak on a missed day">
-                              <span className="material-symbols-outlined text-xs">ac_unit</span>{stats.freezesRemaining}
-                            </span>
-                          )}
-                        </p>
-                        <p className="num mt-0.5 pl-5 text-xs text-muted-foreground">
-                          Day {stats.daysElapsed}/{stats.totalDays} · {stats.completionPct}% · {todayTasks.filter(t => t.done).length}/{todayTasks.length} tasks today
-                        </p>
-                        <div className="ml-5 mt-2.5">
-                          <Bar value={stats.completionPct} tone="gold" />
-                        </div>
-                      </button>
-                      <span className="flex shrink-0 items-center gap-1">
-                        <button onClick={() => duplicateGoal(g)} aria-label="Duplicate goal" title="Start again from today"
-                          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
-                          <span className="material-symbols-outlined text-base">content_copy</span>
-                        </button>
-                        {g.status === 'archived' ? (
-                          <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal" title="Unarchive"
-                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
-                            <span className="material-symbols-outlined text-base">unarchive</span>
-                          </button>
-                        ) : (
-                          <button onClick={() => archiveGoal(g)} aria-label="Archive goal" title="Archive"
-                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
-                            <span className="material-symbols-outlined text-base">archive</span>
-                          </button>
-                        )}
-                        <button onClick={() => deleteGoal(g.id)} aria-label={`Delete ${g.title}`}
-                          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
-                          <span className="material-symbols-outlined text-base">delete</span>
-                        </button>
-                      </span>
-                    </div>
-
-                    {open && (
-                      <div className="mt-3 animate-fade-in space-y-2 border-t border-border pt-3">
-                        {g.description && <p className="text-xs text-muted-foreground">{g.description}</p>}
-                        {todayTasks.map(t => (
-                          <div key={t.id} className={`relative flex items-center gap-3 rounded-xl border p-3 transition-all duration-300 hover:-translate-y-0.5 ${t.done ? 'border-success/30 bg-success-soft' : 'border-border bg-card'}`}>
-                            <button onClick={() => toggleTask(t)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                              <span className={`grid size-6 shrink-0 place-items-center rounded-full border transition-colors ${t.done ? 'border-success bg-success text-white' : 'border-clay'}`}>
-                                {t.done && <span className="material-symbols-outlined text-sm">check</span>}
-                              </span>
-                              <span className="min-w-0 flex-1">
-                                <span className={`block truncate text-sm font-semibold ${t.done ? 'text-muted-foreground line-through' : 'text-foreground'}`}>{t.title}</span>
-                                {t.description && <span className="block truncate text-xs text-muted-foreground">{t.description}</span>}
-                              </span>
-                            </button>
-                            <span className="flex shrink-0 items-center gap-1">
-                              <button aria-label="Edit task" onClick={() => openEditTaskSheet(t)}
-                                className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
-                                <span className="material-symbols-outlined text-base">edit</span>
-                              </button>
-                              <button aria-label="Delete task" onClick={() => deleteTask(t.id)}
-                                className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
-                                <span className="material-symbols-outlined text-base">delete</span>
-                              </button>
-                            </span>
-                          </div>
-                        ))}
-                        {todayTasks.length === 0 && (
-                          <p className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground">No daily tasks for today yet.</p>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => openAddTaskFor(Date.now(), g.id)}
-                          className="flex h-8 items-center gap-1 rounded-full bg-secondary px-3.5 text-xs font-semibold text-foreground transition-colors hover:bg-border"
-                        >
-                          <span className="material-symbols-outlined text-sm">add</span> Add daily task
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-              {activeMilestone && activeGoals.length === 0 && (
-                <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-                  No goals yet — add the first goal for this milestone.
-                </p>
-              )}
-            </div>
-
-            {activeArchivedGoals.length > 0 && (
-              <div className="mt-4 border-t border-border pt-4">
-                <button type="button" onClick={() => setShowArchived(v => !v)} className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-                  <span className="material-symbols-outlined text-base">{showArchived ? 'expand_less' : 'expand_more'}</span>
-                  {showArchived ? 'Hide' : 'Show'} archived ({activeArchivedGoals.length})
-                </button>
-                {showArchived && (
-                  <div className="mt-2 flex flex-col gap-2">
-                    {activeArchivedGoals.map(g => {
-                      const stats = computeGoalStats(g, tasks)
-                      return (
-                        <div key={g.id} className="flex items-center gap-3 rounded-2xl border border-border bg-secondary/40 p-3 opacity-70">
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-semibold text-foreground">{g.title} <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Archived</span></p>
-                            <p className="text-xs text-muted-foreground">Day {stats.daysElapsed}/{stats.totalDays} · {stats.completionPct}%</p>
-                          </div>
-                          <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal"
-                            className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
-                            <span className="material-symbols-outlined text-base">unarchive</span>
-                          </button>
-                          <button onClick={() => deleteGoal(g.id)} aria-label="Delete goal"
-                            className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
-                            <span className="material-symbols-outlined text-base">delete</span>
-                          </button>
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
-          </Tile>
-
-          <Tile className="col-span-1 md:col-span-6">
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-lg text-gold">military_tech</span>
-              <TileLabel>Achievement Badges</TileLabel>
-            </div>
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {globalBadges.map(b => (
-                <Badge3D key={b.id} title={b.label} hint={b.hint} earned={b.earned} icon={<span className="material-symbols-outlined text-lg">{b.icon}</span>} />
-              ))}
-            </div>
-          </Tile>
+        <div className="hidden md:flex md:flex-col md:gap-4">
+          <MilestoneAgendaSection
+            overall={overall}
+            combinedMilestones={combinedMilestones}
+            activeMilestone={activeMilestone}
+            activeMilestoneStats={activeMilestoneStats}
+            animatedRingPct={animatedRingPct}
+            goals={goals}
+            orphanGoals={orphanGoals}
+            tasks={tasks}
+            activeGoals={activeGoals}
+            activeArchivedGoals={activeArchivedGoals}
+            openGoals={openGoals}
+            setOpenGoals={setOpenGoals}
+            showArchived={showArchived}
+            setShowArchived={setShowArchived}
+            setActiveMilestoneId={setActiveMilestoneId}
+            openAddMilestone={openAddMilestone}
+            openEditMilestone={openEditMilestone}
+            deleteMilestone={deleteMilestone}
+            openAddGoal={openAddGoal}
+            duplicateGoal={duplicateGoal}
+            archiveGoal={archiveGoal}
+            unarchiveGoal={unarchiveGoal}
+            deleteGoal={deleteGoal}
+            toggleTask={toggleTask}
+            openEditTaskSheet={openEditTaskSheet}
+            deleteTask={deleteTask}
+            openAddTaskFor={openAddTaskFor}
+          />
+          <MilestoneAnalyticsSection
+            activeMilestoneStats={activeMilestoneStats}
+            trendData={trendData}
+            breakdownData={breakdownData}
+            goalChartData={goalChartData}
+            perMilestoneChartData={perMilestoneChartData}
+            globalBadges={globalBadges}
+          />
         </div>
       </PageShell>
 

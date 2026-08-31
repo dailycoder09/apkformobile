@@ -56,13 +56,24 @@ const NAV_ITEMS = [
     ),
   },
   {
-    value: 'profile',
-    key: 'profile',
-    label: 'Profile',
+    value: 'health',
+    key: 'health',
+    label: 'Health',
     icon: (
-      <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8a7 7 0 0 1 14 0" />
+      <path d="M9 3h6v6h6v6h-6v6H9v-6H3V9h6V3Z" />
     ),
   },
+  {
+    value: 'journal',
+    key: 'journal',
+    label: 'Journal',
+    icon: (
+      <path d="M6 4h10a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm0 0v16M9 8.5h5M9 12h5M9 15.5h3" />
+    ),
+  },
+  // Profile intentionally lives outside the bottom nav — it's a persistent top-corner
+  // avatar button (see ProfileTrigger.jsx, mounted at the App root) instead, matching
+  // the account-access placement convention of most dashboard-style apps.
 ]
 
 export default function BottomNav({ active, onNavigate }) {
@@ -78,7 +89,7 @@ export default function BottomNav({ active, onNavigate }) {
               onClick={() => onNavigate(item.value)}
               aria-label={item.label}
               title={item.label}
-              className={`flex size-[42px] items-center justify-center rounded-full transition-colors duration-150 active:scale-90 ${
+              className={`flex size-[38px] items-center justify-center rounded-full transition-colors duration-150 active:scale-90 ${
                 isActive ? 'bg-[image:var(--gradient-gold)] text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}
             >

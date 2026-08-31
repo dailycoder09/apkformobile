@@ -2,13 +2,19 @@
 // plain JS for this codebase - same functions, same math, no framework dependency.
 //
 // applyTheme() writes CSS custom properties directly on document.documentElement so that
-// the Tailwind-scoped screens (Dashboard, HomeScreen, BottomNav, NamazTracker,
-// TransactionPanel) that consume tokens like --color-gold / --chart-1 from
-// client/src/tailwind.css's @theme block re-color instantly, with zero changes needed in
-// those components. Every property name set below matches an existing token name in
-// tailwind.css exactly (the --color-* Tailwind-facing form). Bare aliases used by raw
-// SVG/Recharts code (--chart-1..5, --muted-foreground, --popover, --chart-border) are also
-// kept in sync so charts re-theme too.
+// the Tailwind-scoped screens (Dashboard, HomeScreen, BottomNav) that consume tokens like
+// --color-gold / --chart-1 from client/src/tailwind.css's @theme block re-color instantly,
+// with zero changes needed in those components. Every property name set below matches an
+// existing token name in tailwind.css exactly (the --color-* Tailwind-facing form). Bare
+// aliases used by raw SVG/Recharts code (--chart-1..5, --muted-foreground, --popover,
+// --chart-border) are also kept in sync so charts re-theme too.
+//
+// NamazTracker and TransactionPanel (and Finance/Khatabook's shared index.css styling) are
+// NOT Tailwind-scoped - they're plain CSS driven by their own --namaz-*/--txn-* variable
+// blocks in index.css. applyTheme() re-themes those too (gold/rose accents below, plus the
+// neutral --namaz-muted/--txn-ink/--txn-muted "body text" roles) by writing the same
+// property names index.css already declares as static fallbacks, exactly the way the
+// Tailwind side of this file overrides tailwind.css's @theme fallbacks.
 
 export const clampHue = (h) => ((Math.round(h) % 360) + 360) % 360;
 export const clampChroma = (c) => Math.min(0.24, Math.max(0.02, c));
@@ -107,6 +113,16 @@ export function applyTheme(theme) {
   set('--namaz-gold-dark', c(dark ? 0.6 : 0.46, chroma * 0.75));
   set('--namaz-gold-pastel', c(dark ? 0.32 : 0.94, chroma * 0.5));
 
+  // Neutral "ink"/"muted" body-text roles for the plain-CSS Namaz screen (index.css's
+  // --namaz-* block) - the direct equivalent of --color-foreground / --muted-foreground
+  // below, just for a screen that isn't Tailwind-scoped. These carry no semantic meaning
+  // (unlike e.g. --namaz-kaza/--namaz-missed, which stay fixed on purpose), so - like
+  // foreground/muted-foreground - they should track the live hue instead of sitting at
+  // index.css's static fallback forever. None of these legacy screens have a dark-mode
+  // background variant, so (unlike the Tailwind neutrals below) there's no `dark ? … : …`
+  // branch here - always the light-on-light-card lightness, hue-tinted to match.
+  set('--namaz-muted', c(0.545, 0.024));
+
   set('--txn-gold', c(dark ? 0.78 : 0.72, chroma));
   set('--txn-gold-pastel', c(dark ? 0.32 : 0.94, chroma * 0.5));
 
@@ -120,6 +136,15 @@ export function applyTheme(theme) {
   set('--txn-rose', c(dark ? 0.78 : 0.72, chroma));
   set('--txn-rose-dark', c(dark ? 0.6 : 0.46, chroma * 0.75));
   set('--txn-rose-pastel', c(dark ? 0.32 : 0.94, chroma * 0.5));
+
+  // Same neutral ink/muted pair as --namaz-muted above, for Finance's --txn-ink/--txn-muted
+  // (headings, stat numbers, and secondary labels/captions across TransactionPanel.jsx -
+  // .txn-title, .txn-stat-value, .txn-breakdown-val, .txn-budget-label, .txn-stat-sub, chart
+  // tick labels, etc). --txn-green* just above stays untouched on purpose (money-received is
+  // pinned green, same as --color-success); ink/muted carry no such semantic, so they should
+  // track hue the same way --color-foreground/--muted-foreground do.
+  set('--txn-ink', c(0.255, 0.019));
+  set('--txn-muted', c(0.545, 0.024));
 
   if (dark) {
     set('--color-background', c(0.17, 0.014)); set('--color-foreground', c(0.965, 0.008));

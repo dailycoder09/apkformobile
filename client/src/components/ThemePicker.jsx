@@ -5,15 +5,20 @@ import {
   applyTheme, clampHue, clampChroma,
 } from '../utils/theme'
 
-// Global floating color-theming control. Mounted once at the App root so it is visible on
-// every screen (Tailwind-scoped or not). All state is local - no Context needed, this is
-// a self-contained control surface that reads/writes localStorage + CSS custom properties
-// directly via applyTheme().
-export default function ThemePicker() {
+// Global color-theming control. Mounted once at the App root (inside CornerMenu.jsx) so
+// its mount-time load/applyTheme effect below always runs on every screen (Tailwind-scoped
+// or not), regardless of whether the panel itself is visible. All state is local - no
+// Context needed, this is a self-contained control surface that reads/writes localStorage
+// + CSS custom properties directly via applyTheme().
+//
+// Controlled by `open`/`onClose` rather than owning its own trigger button + open state -
+// CornerMenu.jsx is the single entry point for both this and the Profile screen now, so it
+// owns the toggle. The actual theming logic (presets, hue/intensity sliders, harmonies,
+// saved custom themes) is untouched from before this split.
+export default function ThemePicker({ open, onClose }) {
   const [theme, setTheme] = useState(DEFAULT_THEME)
   const [customThemes, setCustomThemes] = useState([])
   const [saveName, setSaveName] = useState('')
-  const [panelOpen, setPanelOpen] = useState(false)
 
   useEffect(() => {
     const initial = loadTheme()
@@ -58,19 +63,10 @@ export default function ThemePicker() {
   const chromaPct = Math.round(theme.chroma * 100)
   const matches = harmonies(theme.hue)
 
-  return (
-    <>
-      <button
-        type="button"
-        className="theme-picker-trigger"
-        aria-label="Change app colour"
-        onClick={() => setPanelOpen((v) => !v)}
-      >
-        <span className="material-symbols-outlined">palette</span>
-      </button>
+  if (!open) return null
 
-      {panelOpen && (
-        <div className="theme-picker-panel" role="dialog" aria-label="App colour picker">
+  return (
+    <div className="theme-picker-panel" role="dialog" aria-label="App colour picker">
           <div className="theme-picker-row theme-picker-header">
             <span className="theme-picker-title">App colour</span>
             <div className="theme-picker-header-actions">
@@ -96,7 +92,7 @@ export default function ThemePicker() {
                 type="button"
                 className="theme-picker-icon-btn"
                 aria-label="Close"
-                onClick={() => setPanelOpen(false)}
+                onClick={onClose}
               >
                 <span className="material-symbols-outlined">close</span>
               </button>
@@ -236,8 +232,6 @@ export default function ThemePicker() {
               ))}
             </div>
           )}
-        </div>
-      )}
-    </>
+    </div>
   )
 }

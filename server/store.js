@@ -14,6 +14,11 @@ const TABLES = {
   MILESTONE_MILESTONES: 'milestone_milestones',
   MILESTONE_GOALS: 'milestone_goals',
   MILESTONE_TASKS: 'milestone_tasks',
+  HEALTH_EPISODES: 'health_episodes',
+  HEALTH_REMINDERS: 'health_reminders',
+  JOURNAL_ENTRIES: 'journal_entries',
+  NAMAZ_DAYS: 'namaz_days',   // one row per day per user; id = the day key e.g. "2020-01-01"
+  NAMAZ_QADA: 'namaz_qada',   // one row per user; id is always the fixed string 'totals'
 }
 
 // Mechanical schema fixup for DBs created before the name→phone-number identity

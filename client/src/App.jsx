@@ -14,12 +14,14 @@ import TransactionPanel from './components/TransactionPanel'
 import KhatabookPanel from './components/KhatabookPanel'
 import MilestonePanel from './components/MilestonePanel'
 import AdminMilestoneView from './components/AdminMilestoneView'
+import HealthTrackerPanel from './components/HealthTrackerPanel'
+import AdminHealthView from './components/AdminHealthView'
+import JournalPanel from './components/JournalPanel'
 import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
 import NamazTracker from './components/NamazTracker'
 import ProfilePage from './components/ProfilePage'
-import TourPage, { ModuleTourDetail, MODULE_TOURS } from './components/TourPage'
-import ThemePicker from './components/ThemePicker'
+import TourPage from './components/TourPage'
 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
 const IS_NATIVE = Capacitor.isNativePlatform()
@@ -102,7 +104,13 @@ const DURABLE_MSG_TYPES = new Set([
   'transaction_add', 'transaction_update', 'transaction_delete', 'transaction_delete_all',
   'ledger_contact_add', 'ledger_contact_update', 'ledger_contact_delete',
   'ledger_entry_add', 'ledger_entry_update', 'ledger_entry_delete',
-  'milestone_goal_add', 'milestone_goal_update', 'milestone_goal_delete', 'milestone_checkin_set',
+  'milestone_milestone_add', 'milestone_milestone_update', 'milestone_milestone_delete',
+  'milestone_goal_add', 'milestone_goal_update', 'milestone_goal_delete',
+  'milestone_task_add', 'milestone_task_update', 'milestone_task_delete', 'milestone_tasks_bulk_add',
+  'health_episode_add', 'health_episode_update', 'health_episode_delete',
+  'health_reminder_add', 'health_reminder_update', 'health_reminder_delete',
+  'journal_entry_add', 'journal_entry_update', 'journal_entry_delete',
+  'namaz_day_set', 'namaz_qada_set',
 ])
 
 export default function App() {
@@ -441,9 +449,18 @@ export default function App() {
   // If ?pin= in URL, show nothing while auto-connecting
   const autoPin = getPinFromUrl()
 
+  // CornerMenu used to mount once, fixed, at the App root above every screen — every page
+  // then had to reserve extra top padding just so its own title wouldn't render underneath
+  // it. It now mounts INLINE in each screen's own header instead (PageShell, NamazTracker,
+  // TransactionPanel, HomeScreen, Dashboard), so these are threaded down as plain props for
+  // each of those call sites to render their own <CornerMenu> with, instead of one shared
+  // instance here. showProfile is computed per screen (only non-admin sessions get the
+  // "Profile" item; the check used to also hide it while already ON the profile screen, but
+  // ProfilePage never mounts one of these itself, so that no longer applies).
+  const onProfileOpen = () => setModule('profile')
+
   return (
     <div className="app">
-      <ThemePicker />
       {updateInfo && (
         <UpdateBanner apkUrl={updateInfo.apkUrl} onDismiss={() => setUpdateInfo(null)} />
       )}
@@ -458,8 +475,8 @@ export default function App() {
         <>
           {!module ? (
             session.role === 'admin'
-              ? <HomeScreen session={session} onSelect={setModule} />
-              : <Dashboard session={session} onSelect={setModule} sendMsg={sendMsg} addListener={addListener} />
+              ? <HomeScreen session={session} onSelect={setModule} sendMsg={sendMsg} addListener={addListener} showProfile={false} onProfileOpen={onProfileOpen} />
+              : <Dashboard session={session} onSelect={setModule} sendMsg={sendMsg} addListener={addListener} showProfile onProfileOpen={onProfileOpen} />
           ) : module === 'messages' ? (
             session.role === 'admin'
               ? <AdminPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
@@ -467,7 +484,7 @@ export default function App() {
           ) : module === 'transactions' ? (
             session.role === 'admin'
               ? <AdminTransactionView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
-              : <TransactionPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+              : <TransactionPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
           ) : module === 'browsing' ? (
             session.role === 'admin'
               ? <AdminBrowsingView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
@@ -477,20 +494,19 @@ export default function App() {
               ? <AdminCallLogView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
               : null
           ) : module === 'namaz' ? (
-            <NamazTracker />
-          ) : module === 'khatabook' ? (
-            <ModuleTourDetail
-              tour={MODULE_TOURS.khatabook}
-              onBack={() => setModule(null)}
-              backLabel="Home"
-              onOpen={() => setModule('khatabook-app')}
-            />
-          ) : module === 'khatabook-app' ? (
-            <KhatabookPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+            <NamazTracker session={session} sendMsg={sendMsg} addListener={addListener} onProfileOpen={onProfileOpen} />
+          ) : module === 'khatabook' || module === 'khatabook-app' ? (
+            <KhatabookPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
           ) : module === 'milestone' ? (
             session.role === 'admin'
               ? <AdminMilestoneView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
-              : <MilestonePanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+              : <MilestonePanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
+          ) : module === 'health' ? (
+            session.role === 'admin'
+              ? <AdminHealthView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
+              : <HealthTrackerPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
+          ) : module === 'journal' ? (
+            <JournalPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
           ) : module === 'profile' ? (
             session.role === 'admin'
               ? null

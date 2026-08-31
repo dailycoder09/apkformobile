@@ -881,6 +881,14 @@ wss.on('connection', (ws, req) => {
         return
       }
 
+      // ── Admin commands ── health tracker (read-only parent view) ────
+      if (meta.role === 'admin' && msg.type === 'health_data_get') {
+        const episodes = store.getList(store.TABLES.HEALTH_EPISODES, msg.userId)
+        const reminders = store.getList(store.TABLES.HEALTH_REMINDERS, msg.userId)
+        send(ws, { type: 'health_data', userId: msg.userId, episodes, reminders })
+        return
+      }
+
       // ── Admin commands ── browsing activity ─────────
       if (meta.role === 'admin' && msg.type === 'browsing_get') {
         const list = store.getList(store.TABLES.BROWSING_HISTORY, msg.userId)
@@ -1164,6 +1172,134 @@ wss.on('connection', (ws, req) => {
           const deleted = store.deleteItem(store.TABLES.MILESTONE_TASKS, uid, msg.id)
           if (!deleted) return
           broadcastToAdmins({ type: 'milestone_task_deleted', id: msg.id, fromUserId: uid })
+          return
+        }
+
+        // Health tracker — sickness episodes (symptoms/treatments/severity/dates), a
+        // single flat table since symptoms and treatments are always edited together with
+        // their parent episode, unlike Milestones' Goal/Task which need independent CRUD.
+        // Broadcasts to admins, same reasoning as Milestones above — a parent explicitly
+        // wants visibility into a child's health tracking.
+
+        if (msg.type === 'health_data_get') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const episodes = store.getList(store.TABLES.HEALTH_EPISODES, uid)
+          const reminders = store.getList(store.TABLES.HEALTH_REMINDERS, uid)
+          send(ws, { type: 'health_data', userId: uid, episodes, reminders })
+          return
+        }
+
+        if (msg.type === 'health_episode_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const episode = { ...msg.episode }
+          store.appendItem(store.TABLES.HEALTH_EPISODES, uid, episode)
+          broadcastToAdmins({ type: 'health_episode_new', episode, fromUserId: uid, fromUserName: meta.name })
+          return
+        }
+
+        if (msg.type === 'health_episode_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const episode = store.updateItem(store.TABLES.HEALTH_EPISODES, uid, msg.episode?.id, { ...msg.episode })
+          if (!episode) return
+          broadcastToAdmins({ type: 'health_episode_updated', episode, fromUserId: uid })
+          return
+        }
+
+        if (msg.type === 'health_episode_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const deleted = store.deleteItem(store.TABLES.HEALTH_EPISODES, uid, msg.id)
+          if (!deleted) return
+          broadcastToAdmins({ type: 'health_episode_deleted', id: msg.id, fromUserId: uid })
+          return
+        }
+
+        // Health reminders — a one-time or recurring "due date" (medicine refill, follow-up
+        // checkup) separate from episodes. Same broadcastToAdmins pattern as episodes above,
+        // for consistency, even though the admin UI doesn't render this field yet.
+
+        if (msg.type === 'health_reminder_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const reminder = { ...msg.reminder }
+          store.appendItem(store.TABLES.HEALTH_REMINDERS, uid, reminder)
+          broadcastToAdmins({ type: 'health_reminder_new', reminder, fromUserId: uid, fromUserName: meta.name })
+          return
+        }
+
+        if (msg.type === 'health_reminder_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const reminder = store.updateItem(store.TABLES.HEALTH_REMINDERS, uid, msg.reminder?.id, { ...msg.reminder })
+          if (!reminder) return
+          broadcastToAdmins({ type: 'health_reminder_updated', reminder, fromUserId: uid })
+          return
+        }
+
+        if (msg.type === 'health_reminder_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const deleted = store.deleteItem(store.TABLES.HEALTH_REMINDERS, uid, msg.id)
+          if (!deleted) return
+          broadcastToAdmins({ type: 'health_reminder_deleted', id: msg.id, fromUserId: uid })
+          return
+        }
+
+        // Journal — a private daily mood/notes check-in (mood, energy, sleep, tags, free
+        // text), one row per day-ish entry. Self-service only, same reasoning as Khatabook
+        // above (no broadcastToAdmins call anywhere in this block) — never surfaced to a
+        // parent's admin view.
+
+        if (msg.type === 'journal_data_get') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const entries = store.getList(store.TABLES.JOURNAL_ENTRIES, uid)
+          send(ws, { type: 'journal_data', userId: uid, entries })
+          return
+        }
+
+        if (msg.type === 'journal_entry_add') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const entry = { ...msg.entry }
+          store.appendItem(store.TABLES.JOURNAL_ENTRIES, uid, entry)
+          return
+        }
+
+        if (msg.type === 'journal_entry_update') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.updateItem(store.TABLES.JOURNAL_ENTRIES, uid, msg.entry?.id, { ...msg.entry })
+          return
+        }
+
+        if (msg.type === 'journal_entry_delete') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.deleteItem(store.TABLES.JOURNAL_ENTRIES, uid, msg.id)
+          return
+        }
+
+        // Namaz (prayer) tracker + Qada (missed-prayer) tracking — private, self-only, same
+        // reasoning as Khatabook/Journal above (never surfaced to a parent's admin view).
+        // namaz_days holds one row per calendar day (id = "YYYY-MM-DD"); namaz_qada holds a
+        // single fixed row (id = 'totals') with the per-prayer owed/completed counters.
+        // Both mutators are upserts since the client sends the one changed day/qada object
+        // without knowing whether a row for that id already exists server-side.
+
+        if (msg.type === 'namaz_data_get') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const days = store.getList(store.TABLES.NAMAZ_DAYS, uid)
+          const qadaRows = store.getList(store.TABLES.NAMAZ_QADA, uid)
+          send(ws, { type: 'namaz_data', days, qada: qadaRows[0] || null })
+          return
+        }
+
+        if (msg.type === 'namaz_day_set') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const day = { ...msg.day }
+          const updated = store.updateItem(store.TABLES.NAMAZ_DAYS, uid, day.id, day)
+          if (!updated) store.appendItem(store.TABLES.NAMAZ_DAYS, uid, day)
+          return
+        }
+
+        if (msg.type === 'namaz_qada_set') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          const qada = { ...msg.qada }
+          const updated = store.updateItem(store.TABLES.NAMAZ_QADA, uid, qada.id, qada)
+          if (!updated) store.appendItem(store.TABLES.NAMAZ_QADA, uid, qada)
           return
         }
 

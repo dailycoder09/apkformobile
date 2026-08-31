@@ -5,14 +5,11 @@ import {
 } from '../utils/prayerTimes'
 import { notify, requestNotificationPermission } from '../App'
 import DuasPage from './DuasPage'
+import CornerMenu from './CornerMenu'
 
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search'
 const STREAK_MILESTONES = [7, 30, 100]
 const CONFETTI_COLORS = ['#1f4d43', '#d97706', '#7c9a8e', '#f4c95d']
-const HIJRI_MONTHS = [
-  'Muharram', 'Safar', "Rabi' al-awwal", "Rabi' al-thani", 'Jumada al-awwal', 'Jumada al-thani',
-  'Rajab', "Sha'ban", 'Ramadan', 'Shawwal', "Dhu al-Qi'dah", "Dhu al-Hijjah",
-]
 
 const ANALYTICS_RANGES = [
   { key: 'week', label: 'This week', days: 7 },
@@ -152,7 +149,7 @@ function summarize(dayData) {
   return { ontime, kaza, total: ontime + kaza }
 }
 
-export default function NamazTracker() {
+export default function NamazTracker({ session, sendMsg, addListener, onProfileOpen }) {
   const [namazData, setNamazData] = useState(readNamaz)
   const [location, setLocation] = useState(null)
   const [locStatus, setLocStatus] = useState('idle')
@@ -168,6 +165,11 @@ export default function NamazTracker() {
   const [showQada, setShowQada] = useState(false)
   const [qada, setQada] = useState(readQada)
   const [showQadaCalc, setShowQadaCalc] = useState(false)
+  // 'daily' vs 'qada' just changes the day-detail sheet's default emphasis/labels below —
+  // both statuses are always available regardless of mode, this is a framing hint only.
+  const [dayMode, setDayMode] = useState('daily')
+  const [daySheet, setDaySheet] = useState(null) // { key, date } for the tapped calendar day, or null when closed
+  const [showMonthJump, setShowMonthJump] = useState(false)
   const [showDuas, setShowDuas] = useState(false)
   const [qadaCalcFrom, setQadaCalcFrom] = useState('')
   const [qadaCalcTo, setQadaCalcTo] = useState(() => todayKey())
@@ -240,6 +242,55 @@ export default function NamazTracker() {
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000)
     return () => clearInterval(id)
+  }, [])
+
+  // Namaz/Qada server persistence. Historically this whole module was localStorage-only
+  // (meeee_namaz / meeee_namaz_qada) — no cross-device sync, data lost on cache-clear.
+  // On mount, ask the server for its copy. Exactly one of two things happens on the reply:
+  //  - server has nothing yet but this device has real local history → upload it once
+  //    (one-time migration for a pre-existing device).
+  //  - server already has data → it's the source of truth, hydrate React state from it
+  //    (a second device, or this same device after its own migration already ran).
+  // Either branch still keeps writing through to localStorage on every local mutation (see
+  // setStatus/setReason/addQadaOwed/etc. below) so Dashboard.jsx's independent local reads
+  // keep working unmodified.
+  useEffect(() => {
+    return addListener((msg) => {
+      if (msg.type !== 'namaz_data') return
+      const days = msg.days || []
+      const qadaRow = msg.qada || null
+      if (days.length === 0) {
+        const localDays = readNamaz()
+        const localQada = readQada()
+        if (Object.keys(localDays).length > 0) {
+          Object.entries(localDays).forEach(([dayKey, dayData]) => {
+            sendMsg({ type: 'namaz_day_set', day: { id: dayKey, ...dayData } })
+          })
+          if (Object.keys(localQada).length > 0) {
+            sendMsg({ type: 'namaz_qada_set', qada: { id: 'totals', ...localQada } })
+          }
+        }
+        // Nothing on the server and nothing local either — fresh account, nothing to do.
+      } else {
+        const hydratedDays = {}
+        days.forEach((d) => {
+          const { id, ...rest } = d
+          hydratedDays[id] = rest
+        })
+        setNamazData(hydratedDays)
+        localStorage.setItem('meeee_namaz', JSON.stringify(hydratedDays))
+        if (qadaRow) {
+          const { id, ...restQada } = qadaRow
+          setQada(restQada)
+          localStorage.setItem('meeee_namaz_qada', JSON.stringify(restQada))
+        }
+      }
+    })
+  }, [addListener, sendMsg])
+
+  useEffect(() => {
+    sendMsg({ type: 'namaz_data_get' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -371,6 +422,24 @@ export default function NamazTracker() {
     return { bearing, label: compassLabel(bearing), tip }
   }, [location])
 
+  // The hero carousel's two slides (prayer-time ring vs. qibla compass) are naturally
+  // different heights, and a horizontal flex row without an explicit height stretches
+  // every slide to the tallest one by default — leaving a dead gap below the shorter,
+  // currently-visible slide before "This month" begins. Measure the ACTIVE slide's own
+  // height and apply it explicitly to the carousel so it always hugs whichever slide is
+  // in view instead of the taller sibling.
+  const heroPageRefs = useRef([])
+  const [heroCarouselHeight, setHeroCarouselHeight] = useState(null)
+  useEffect(() => {
+    function measure() {
+      const el = heroPageRefs.current[heroPage]
+      if (el) setHeroCarouselHeight(el.offsetHeight)
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    return () => window.removeEventListener('resize', measure)
+  }, [heroPage, qibla, location])
+
   const hijriLabel = useMemo(() => getHijriDate(new Date()), [])
 
   const qadaTotals = useMemo(() => {
@@ -413,28 +482,52 @@ export default function NamazTracker() {
 
   const todayData = namazData[todayKey()] || {}
 
-  function setStatus(prayerKey, status) {
-    const key = todayKey()
+  function setStatus(prayerKey, status, dayKey = todayKey()) {
+    // Compute the kaza transition from the current render's `namazData` (the real "before"
+    // state for this synchronous click) rather than from inside the setNamazData updater
+    // below — a variable set inside a functional setState updater isn't guaranteed to be
+    // populated by the time code right after the setState call runs, so that approach
+    // silently never fired the Qada reconciliation (caught via testing: namazData updated
+    // correctly, meeee_namaz_qada stayed null).
+    const beforeEntry = getEntry(namazData[dayKey] || {}, prayerKey)
+    const nextStatus = beforeEntry.status === status ? null : status
+    const becameKaza = beforeEntry.status !== 'kaza' && nextStatus === 'kaza'
+    const leftKaza = beforeEntry.status === 'kaza' && nextStatus !== 'kaza'
+
     setNamazData((prev) => {
-      const day = { ...(prev[key] || {}) }
+      const day = { ...(prev[dayKey] || {}) }
       const entry = getEntry(day, prayerKey)
-      const nextStatus = entry.status === status ? null : status
-      day[prayerKey] = nextStatus ? { status: nextStatus, reason: entry.reason } : false
-      const next = { ...prev, [key]: day }
+      const resolvedStatus = entry.status === status ? null : status
+      day[prayerKey] = resolvedStatus ? { status: resolvedStatus, reason: entry.reason } : false
+      const next = { ...prev, [dayKey]: day }
       localStorage.setItem('meeee_namaz', JSON.stringify(next))
+      sendMsg({ type: 'namaz_day_set', day: { id: dayKey, ...day } })
       return next
     })
+
+    // Reconcile the Qada Tracker counter with this specific transition, so marking/
+    // unmarking a date's prayer as kaza shows up there instead of the two silently
+    // drifting apart. Direction depends on dayMode at the moment of the tap: Qada mode
+    // means "paying off an old debt right now" (owed down, completed up); Daily mode
+    // means "just missed this prayer" (owed up) — the exact inverse.
+    if (becameKaza) {
+      if (dayMode === 'qada') completeQada(prayerKey)
+      else addQadaOwed(prayerKey)
+    } else if (leftKaza) {
+      if (dayMode === 'qada') uncompleteQada(prayerKey)
+      else removeQadaOwed(prayerKey)
+    }
   }
 
-  function setReason(prayerKey, reason) {
-    const key = todayKey()
+  function setReason(prayerKey, reason, dayKey = todayKey()) {
     setNamazData((prev) => {
-      const day = { ...(prev[key] || {}) }
+      const day = { ...(prev[dayKey] || {}) }
       const entry = getEntry(day, prayerKey)
       if (!entry.status) return prev
       day[prayerKey] = { status: entry.status, reason }
-      const next = { ...prev, [key]: day }
+      const next = { ...prev, [dayKey]: day }
       localStorage.setItem('meeee_namaz', JSON.stringify(next))
+      sendMsg({ type: 'namaz_day_set', day: { id: dayKey, ...day } })
       return next
     })
   }
@@ -444,6 +537,7 @@ export default function NamazTracker() {
       const entry = prev[prayerKey] || { owed: 0, completed: 0 }
       const next = { ...prev, [prayerKey]: { ...entry, owed: entry.owed + 1 } }
       localStorage.setItem('meeee_namaz_qada', JSON.stringify(next))
+      sendMsg({ type: 'namaz_qada_set', qada: { id: 'totals', ...next } })
       return next
     })
   }
@@ -451,9 +545,37 @@ export default function NamazTracker() {
   function completeQada(prayerKey) {
     setQada((prev) => {
       const entry = prev[prayerKey] || { owed: 0, completed: 0 }
-      if (entry.owed <= 0) return prev
-      const next = { ...prev, [prayerKey]: { owed: entry.owed - 1, completed: entry.completed + 1 } }
+      // No longer refuses when owed is already 0 — a specific dated Qada logged via the
+      // calendar is a real completion whether or not this prayer had a prior owed estimate
+      // from the bulk calculator. owed still floors at 0 rather than going negative.
+      const next = { ...prev, [prayerKey]: { owed: Math.max(0, entry.owed - 1), completed: entry.completed + 1 } }
       localStorage.setItem('meeee_namaz_qada', JSON.stringify(next))
+      sendMsg({ type: 'namaz_qada_set', qada: { id: 'totals', ...next } })
+      return next
+    })
+  }
+
+  // Reverse of completeQada — a calendar-logged Qada mark got un-tapped in Qada mode.
+  function uncompleteQada(prayerKey) {
+    setQada((prev) => {
+      const entry = prev[prayerKey] || { owed: 0, completed: 0 }
+      if (entry.completed <= 0) return prev
+      const next = { ...prev, [prayerKey]: { owed: entry.owed + 1, completed: entry.completed - 1 } }
+      localStorage.setItem('meeee_namaz_qada', JSON.stringify(next))
+      sendMsg({ type: 'namaz_qada_set', qada: { id: 'totals', ...next } })
+      return next
+    })
+  }
+
+  // Reverse of addQadaOwed — a Daily-mode kaza mark got un-tapped (turns out it wasn't
+  // actually missed after all, or was corrected to on-time).
+  function removeQadaOwed(prayerKey) {
+    setQada((prev) => {
+      const entry = prev[prayerKey] || { owed: 0, completed: 0 }
+      if (entry.owed <= 0) return prev
+      const next = { ...prev, [prayerKey]: { ...entry, owed: entry.owed - 1 } }
+      localStorage.setItem('meeee_namaz_qada', JSON.stringify(next))
+      sendMsg({ type: 'namaz_qada_set', qada: { id: 'totals', ...next } })
       return next
     })
   }
@@ -472,6 +594,7 @@ export default function NamazTracker() {
         next[p.key] = { ...entry, owed: entry.owed + qadaCalcPreview.days }
       })
       localStorage.setItem('meeee_namaz_qada', JSON.stringify(next))
+      sendMsg({ type: 'namaz_qada_set', qada: { id: 'totals', ...next } })
       return next
     })
     setShowQadaCalc(false)
@@ -556,27 +679,6 @@ export default function NamazTracker() {
     return map
   }, [islamicEvents])
 
-  // Auto-sliding card under the calendar, cycling through all Islamic events —
-  // advances on a timer but still swipeable, same scroll-tracked-dots idea as the
-  // hero carousel above (handleHeroScroll/heroPage) so manual swipes keep the dots in sync.
-  const eventCarouselRef = useRef(null)
-  const [eventSlide, setEventSlide] = useState(0)
-  useEffect(() => {
-    if (islamicEvents.length < 2) return
-    const timer = setInterval(() => {
-      const el = eventCarouselRef.current
-      if (!el) return
-      const next = (Math.round(el.scrollLeft / (el.clientWidth || 1)) + 1) % islamicEvents.length
-      el.scrollTo({ left: next * el.clientWidth, behavior: 'smooth' })
-      setEventSlide(next)
-    }, 4000)
-    return () => clearInterval(timer)
-  }, [islamicEvents.length])
-  function handleEventScroll() {
-    const el = eventCarouselRef.current
-    if (!el || !el.clientWidth) return
-    setEventSlide(Math.round(el.scrollLeft / el.clientWidth))
-  }
 
   const calendarDays = useMemo(() => {
     const year = calendarMonth.getFullYear()
@@ -805,10 +907,19 @@ export default function NamazTracker() {
       )}
 
       {!nextPrayer && (
-        <div className="namaz-header">
-          <h1 className="namaz-title">{dateLabel}</h1>
-          {hijriLabel && <p className="namaz-hijri">{hijriLabel} AH</p>}
-          {locStatus === 'loading' && <p className="namaz-loc-status">Finding your location…</p>}
+        <div className="namaz-header namaz-header--row">
+          <div className="min-w-0">
+            <h1 className="namaz-title">{dateLabel}</h1>
+            {hijriLabel && <p className="namaz-hijri">{hijriLabel}</p>}
+            {locStatus === 'loading' && <p className="namaz-loc-status">Finding your location…</p>}
+          </div>
+          <CornerMenu
+            session={session}
+            sendMsg={sendMsg}
+            addListener={addListener}
+            showProfile
+            onProfileOpen={onProfileOpen}
+          />
         </div>
       )}
 
@@ -849,14 +960,19 @@ export default function NamazTracker() {
 
       {nextPrayer && (
         <>
-          <div className="namaz-hero-carousel" ref={heroCarouselRef} onScroll={handleHeroScroll}>
-            <div className="namaz-hero-page">
+          <div
+            className="namaz-hero-carousel"
+            ref={heroCarouselRef}
+            onScroll={handleHeroScroll}
+            style={heroCarouselHeight ? { height: `${heroCarouselHeight}px` } : undefined}
+          >
+            <div className="namaz-hero-page" ref={(el) => { heroPageRefs.current[0] = el }}>
               <div className="namaz-hero">
                 <div className="namaz-hero-aura" aria-hidden="true" />
                 <div className="namaz-hero-top">
                   <span className="namaz-hero-date-group">
                     <span className="namaz-hero-date">{dateLabel}</span>
-                    {hijriLabel && <span className="namaz-hero-hijri">{hijriLabel} AH</span>}
+                    {hijriLabel && <span className="namaz-hero-hijri">{hijriLabel}</span>}
                   </span>
                   <span className="namaz-hero-top-actions">
                     <button className="namaz-hero-loc" onClick={() => setShowPicker((v) => !v)}>
@@ -866,6 +982,13 @@ export default function NamazTracker() {
                     <button className="namaz-hero-gear" onClick={() => setShowSettings((v) => !v)} aria-label="Prayer settings">
                       <span className="material-symbols-outlined">settings</span>
                     </button>
+                    <CornerMenu
+                      session={session}
+                      sendMsg={sendMsg}
+                      addListener={addListener}
+                      showProfile
+                      onProfileOpen={onProfileOpen}
+                    />
                   </span>
                 </div>
                 <h2 className="namaz-hero-heading">Next Prayer: {nextPrayer.en}</h2>
@@ -891,7 +1014,7 @@ export default function NamazTracker() {
             </div>
 
             {qibla && (
-              <div className="namaz-hero-page">
+              <div className="namaz-hero-page" ref={(el) => { heroPageRefs.current[1] = el }}>
                 <div className="namaz-hero namaz-hero--qibla">
                   <div className="namaz-hero-aura" aria-hidden="true" />
                   <div className="namaz-hero-top">
@@ -1115,13 +1238,61 @@ export default function NamazTracker() {
 
 
       <div className="namaz-section">
+        <div className="namaz-mode-toggle" role="tablist" aria-label="Prayer log mode">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={dayMode === 'daily'}
+            className={`namaz-mode-btn${dayMode === 'daily' ? ' active' : ''}`}
+            onClick={() => setDayMode('daily')}
+          >
+            <span className="material-symbols-outlined">today</span> Daily
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={dayMode === 'qada'}
+            className={`namaz-mode-btn${dayMode === 'qada' ? ' active' : ''}`}
+            onClick={() => setDayMode('qada')}
+          >
+            <span className="material-symbols-outlined">event_repeat</span> Qada
+          </button>
+        </div>
+        <p className="namaz-day-sheet-hint">
+          {dayMode === 'qada'
+            ? 'Tap any past day on the calendar to log a Qada (makeup) prayer for that exact date.'
+            : 'Tap any past day on the calendar to log or edit its prayers.'}
+        </p>
         <div className="namaz-cal-header">
           <button className="namaz-cal-nav" onClick={() => goToMonth(-1)} aria-label="Previous month">‹</button>
-          <h2 className="namaz-section-title namaz-cal-title">
+          <button
+            type="button"
+            className="namaz-section-title namaz-cal-title namaz-cal-title-btn"
+            onClick={() => setShowMonthJump((v) => !v)}
+            aria-expanded={showMonthJump}
+          >
             {calendarMonth.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
-          </h2>
+            <span className="material-symbols-outlined namaz-cal-title-chevron">{showMonthJump ? 'expand_less' : 'expand_more'}</span>
+          </button>
           <button className="namaz-cal-nav" onClick={() => goToMonth(1)} aria-label="Next month">›</button>
         </div>
+        {showMonthJump && (
+          <div className="namaz-cal-jump">
+            <input
+              type="month"
+              className="namaz-time-input namaz-cal-jump-input"
+              aria-label="Jump to month and year"
+              value={`${calendarMonth.getFullYear()}-${String(calendarMonth.getMonth() + 1).padStart(2, '0')}`}
+              max={`${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`}
+              onChange={(e) => {
+                const [y, m] = e.target.value.split('-').map(Number)
+                if (!y || !m) return
+                setCalendarMonth(new Date(y, m - 1, 1))
+                setShowMonthJump(false)
+              }}
+            />
+          </div>
+        )}
         <div className="namaz-calendar">
           <div className="namaz-cal-weekdays">
             {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
@@ -1144,8 +1315,12 @@ export default function NamazTracker() {
               return (
                 <span
                   key={cell.key}
-                  className={`namaz-cal-cell${isToday ? ' namaz-cal-cell--today' : ''}`}
+                  className={`namaz-cal-cell${isToday ? ' namaz-cal-cell--today' : ''}${!isFuture ? ' namaz-cal-cell--clickable' : ''}`}
                   title={tooltip}
+                  role={!isFuture ? 'button' : undefined}
+                  tabIndex={!isFuture ? 0 : undefined}
+                  onClick={!isFuture ? () => setDaySheet({ key: cell.key, date: cell.date }) : undefined}
+                  onKeyDown={!isFuture ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setDaySheet({ key: cell.key, date: cell.date }) } } : undefined}
                 >
                   <span className="namaz-cal-daynum">{cell.date.getDate()}</span>
                   {event && <span className="namaz-cal-event-dot" aria-label={event.name} />}
@@ -1180,27 +1355,6 @@ export default function NamazTracker() {
           )}
         </div>
       </div>
-
-      {islamicEvents.length > 0 && (
-        <div className="namaz-section">
-          <h3 className="namaz-section-title">Islamic Events</h3>
-          <div className="namaz-events-carousel" ref={eventCarouselRef} onScroll={handleEventScroll}>
-            {islamicEvents.map((e, i) => (
-              <div key={i} className="namaz-events-slide">
-                <span className="namaz-events-icon"><span className="material-symbols-outlined">event</span></span>
-                <h4 className="namaz-events-name">{e.name}</h4>
-                <p className="namaz-events-date">{e.day} {HIJRI_MONTHS[e.month - 1]}</p>
-                <p className="namaz-events-desc">{e.description}</p>
-              </div>
-            ))}
-          </div>
-          <div className="namaz-events-dots">
-            {islamicEvents.map((_, i) => (
-              <span key={i} className={`namaz-events-dot${i === eventSlide ? ' active' : ''}`} />
-            ))}
-          </div>
-        </div>
-      )}
 
       <div className="namaz-toggle-row">
         <button className="namaz-analytics-toggle" onClick={() => setShowQada((v) => !v)}>
@@ -1472,6 +1626,59 @@ export default function NamazTracker() {
       <button className="namaz-fab" onClick={() => setShowDuas(true)} aria-label="Read Quran & Duas">
         <span className="material-symbols-outlined">menu_book</span>
       </button>
+
+      {daySheet && (
+        <div className="namaz-day-sheet-overlay" onClick={() => setDaySheet(null)}>
+          <div className="namaz-day-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="namaz-day-sheet-header">
+              {daySheet.date.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+              <button className="namaz-day-sheet-close" onClick={() => setDaySheet(null)} aria-label="Close">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="namaz-day-sheet-body">
+              <p className="namaz-day-sheet-hint">
+                {dayMode === 'qada'
+                  ? 'Log a Qada (makeup) prayer for this date. Both options stay available regardless of mode.'
+                  : 'Log prayers for this date. Both options stay available regardless of mode.'}
+              </p>
+              {PRAYERS.map((p) => {
+                const dayData = namazData[daySheet.key] || {}
+                const entry = getEntry(dayData, p.key)
+                const order = dayMode === 'qada' ? ['kaza', 'ontime'] : ['ontime', 'kaza']
+                return (
+                  <div key={p.key} className="namaz-day-sheet-prayer">
+                    <div className="namaz-expand-title">
+                      {p.en} <span className="namaz-expand-ar">{p.ar}</span>
+                    </div>
+                    <div className="namaz-card-actions">
+                      {order.map((statusKey) => (
+                        <button
+                          key={statusKey}
+                          className={`namaz-status-btn namaz-status-btn--${statusKey}${entry.status === statusKey ? ' active' : ''}`}
+                          onClick={() => setStatus(p.key, statusKey, daySheet.key)}
+                        >
+                          <span className="material-symbols-outlined">{statusKey === 'ontime' ? 'check_circle' : 'schedule'}</span>
+                          {statusKey === 'ontime' ? 'On time' : (dayMode === 'qada' ? 'Qada prayed' : 'Kaza')}
+                        </button>
+                      ))}
+                    </div>
+                    {entry.status === 'kaza' && (
+                      <input
+                        className="namaz-reason-input"
+                        type="text"
+                        placeholder="Reason (optional)"
+                        value={entry.reason}
+                        onChange={(e) => setReason(p.key, e.target.value, daySheet.key)}
+                      />
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

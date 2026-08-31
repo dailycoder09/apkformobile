@@ -93,7 +93,7 @@
    work as designed. Note: avoid apostrophes and dash-asterisk patterns in comments in
    this file - both have been observed to break the Lightning CSS build pipeline even
    inside a comment block. */
-:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *, .mile-screen, .mile-screen *, .khata-screen, .khata-screen *) {
+:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *, .mile-screen, .mile-screen *, .khata-screen, .khata-screen *, .health-screen, .health-screen *, .journal-screen, .journal-screen *) {
   margin: 0;
   padding: 0;
 }
@@ -425,6 +425,9 @@ button { font-family: inherit; cursor: pointer; }
   padding: 24px 20px 32px;
 }
 .namaz-header { margin-bottom: 10px; }
+/* Row variant used when the CornerMenu trigger sits inline next to the date/title instead
+   of floating fixed over the screen. */
+.namaz-header--row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .namaz-title { font-size: 20px; font-weight: 700; color: var(--namaz-gold-dark); }
 .namaz-hijri { font-size: 12px; color: var(--namaz-muted); margin-top: 2px; }
 
@@ -553,11 +556,13 @@ button { font-family: inherit; cursor: pointer; }
 
 .namaz-hero-carousel {
   display: flex;
+  align-items: flex-start; /* don't stretch the visible (shorter) slide to the taller sibling's height — JS sets an explicit height matching the active slide instead, see heroCarouselHeight in NamazTracker.jsx */
   gap: 12px;
   overflow-x: auto;
   scroll-snap-type: x mandatory;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
+  transition: height 0.2s ease;
 }
 .namaz-hero-carousel::-webkit-scrollbar { display: none; }
 .namaz-hero-page {
@@ -569,41 +574,6 @@ button { font-family: inherit; cursor: pointer; }
 .namaz-hero-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(0,0,0,0.15); transition: background 0.2s, transform 0.2s; }
 .namaz-hero-dot.active { background: var(--namaz-gold); transform: scale(1.3); }
 
-.namaz-events-carousel {
-  display: flex;
-  overflow-x: auto;
-  scroll-snap-type: x mandatory;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-  border-radius: 18px;
-  background: linear-gradient(160deg, rgba(255,255,255,0.9), rgba(255,255,255,0.6));
-  box-shadow: var(--shadow-soft);
-}
-.namaz-events-carousel::-webkit-scrollbar { display: none; }
-.namaz-events-slide {
-  flex: 0 0 100%;
-  scroll-snap-align: start;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  text-align: center;
-  gap: 6px;
-  padding: 22px 24px;
-}
-.namaz-events-icon {
-  display: flex; align-items: center; justify-content: center;
-  width: 40px; height: 40px; border-radius: 50%;
-  background: var(--namaz-gold-pastel); color: var(--namaz-gold-dark);
-  margin-bottom: 4px;
-}
-.namaz-events-icon .material-symbols-outlined { font-size: 20px; }
-.namaz-events-name { font-size: 16px; font-weight: 700; color: var(--namaz-teal-dark); margin: 0; }
-.namaz-events-date { font-size: 12px; font-weight: 700; color: var(--namaz-gold-dark); margin: 0; }
-.namaz-events-desc { font-size: 13px; color: var(--namaz-muted); line-height: 1.5; margin: 4px 0 0; max-width: 32ch; }
-.namaz-events-dots { display: flex; justify-content: center; gap: 6px; margin: 10px 0 0; }
-.namaz-events-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(0,0,0,0.15); transition: background 0.2s, transform 0.2s; }
-.namaz-events-dot.active { background: var(--namaz-gold); transform: scale(1.3); }
 
 .namaz-compass { width: 100%; height: 100%; }
 .namaz-compass-tick { stroke: var(--namaz-gold-pastel); stroke-width: 1.5; }
@@ -1050,6 +1020,93 @@ button { font-family: inherit; cursor: pointer; }
   gap: 5px;
   font-size: 11px;
   color: var(--namaz-muted);
+}
+
+/* Daily/Qada segmented pill toggle above the calendar — same footprint as
+   .namaz-analytics-toggle's row (.namaz-toggle-row) but a simpler two-state pill since
+   this is a default/label hint, not a filter with a chevron-expand panel. */
+.namaz-mode-toggle { display: flex; gap: 8px; margin-bottom: 8px; }
+.namaz-mode-btn {
+  flex: 1;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 40px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1.5px solid rgba(0,0,0,0.08);
+  background: var(--namaz-card);
+  color: var(--namaz-muted);
+  font-size: 13px; font-weight: 700;
+}
+.namaz-mode-btn .material-symbols-outlined { font-size: 16px; }
+.namaz-mode-btn.active {
+  border-color: var(--namaz-gold);
+  color: var(--namaz-gold-dark);
+  background: var(--namaz-gold-pastel);
+}
+
+/* Tapping the calendar's month/year title reveals a compact native <input type="month">
+   so jumping to e.g. January 2020 doesn't take ~74 one-month clicks via namaz-cal-nav.
+   Explicitly restates .namaz-section-title's color/size/weight (rather than `inherit`)
+   because a <button> doesn't reliably inherit those from a same-specificity class rule —
+   this one is declared later in the file, so `inherit` here was silently winning the
+   cascade over .namaz-section-title's --namaz-teal-dark and rendering the label near-
+   invisible against the cream background. */
+.namaz-cal-title-btn {
+  display: flex; align-items: center; gap: 4px;
+  background: none; border: none; cursor: pointer; padding: 0;
+  color: var(--namaz-teal-dark);
+  font-family: inherit; font-size: 15px; font-weight: 700;
+}
+.namaz-cal-title-chevron { font-size: 16px !important; color: var(--namaz-gold-dark); }
+.namaz-cal-jump { display: flex; justify-content: center; padding: 8px 0 2px; }
+.namaz-cal-jump-input { max-width: 200px; text-align: center; }
+
+/* Calendar day cells became tappable (they previously had no onClick at all) to open the
+   day-detail sheet below for logging/editing any non-future date. */
+.namaz-cal-cell--clickable { cursor: pointer; }
+.namaz-cal-cell--clickable:hover, .namaz-cal-cell--clickable:focus-visible {
+  background: var(--namaz-teal-pastel);
+  outline: none;
+}
+
+/* Day-detail sheet, opened by tapping a calendar day — structurally the same bottom-sheet
+   shell as .add-txn-overlay/.add-txn-sheet (fixed inset overlay, bottom-anchored sheet,
+   sticky header with a round close button, safe-area padding) but styled with this
+   screen's own --namaz-* warm cream/gold/teal tokens instead of Finance's rose palette. */
+.namaz-day-sheet-overlay {
+  position: fixed; inset: 0;
+  background: rgba(42, 36, 16, 0.35);
+  display: flex; align-items: flex-end;
+  z-index: 100;
+}
+.namaz-day-sheet {
+  background: var(--namaz-bg-from);
+  width: 100%; max-height: 90svh;
+  border-radius: 20px 20px 0 0;
+  overflow-y: auto;
+  padding: 0 0 env(safe-area-inset-bottom, 16px);
+}
+.namaz-day-sheet-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 12px;
+  font-size: 15px; font-weight: 800; color: var(--namaz-teal-dark);
+  position: sticky; top: 0; background: var(--namaz-bg-from); z-index: 1;
+}
+.namaz-day-sheet-close {
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: rgba(0,0,0,0.05); border: none; color: var(--namaz-muted);
+}
+.namaz-day-sheet-body { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.namaz-day-sheet-hint { font-size: 12px; color: var(--namaz-muted); margin: 0 0 2px; }
+.namaz-day-sheet-prayer {
+  background: var(--namaz-card);
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 14px;
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
 }
 
 .namaz-hadith {
@@ -3198,7 +3255,17 @@ button { font-family: inherit; cursor: pointer; }
   box-shadow: var(--shadow-soft); flex-shrink: 0;
 }
 .txn-header-icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.txn-title  { font-size: 20px; font-weight: 800; color: var(--txn-ink); flex: 1; }
+/* On a narrow phone, home button + title + date-range picker + upload + clear-all + the
+   CornerMenu trigger no longer fit in one row — the title was truncating to "Fi...". Upload
+   statement / clear all are occasional maintenance actions (not reached anywhere near as
+   often as the date range), so on mobile they're hidden from this row rather than crowding
+   out the title — CornerMenu's extraItems prop (see TransactionPanel.jsx) surfaces the same
+   two actions from the "⋮" dropdown instead, so they stay reachable on mobile without
+   competing for header width. Unchanged on desktop, where the row has plenty of width. */
+@media (max-width: 639px) {
+  .txn-header-icon-btn { display: none; }
+}
+.txn-title  { font-size: 20px; font-weight: 800; color: var(--txn-ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Compact range picker living in the header itself, in place of a separate full-width row
    (or a search icon) — same analyticsRange state the charts below read from. */
 .txn-header-range {
@@ -3207,7 +3274,17 @@ button { font-family: inherit; cursor: pointer; }
   padding: 7px 10px; box-shadow: var(--shadow-soft);
 }
 .txn-header-range .material-symbols-outlined { font-size: 15px; color: var(--txn-rose-dark); }
-.txn-header-range select { background: transparent; border: none; font-size: 12px; font-weight: 700; color: var(--txn-ink); outline: none; max-width: 90px; }
+/* Explicit width (not just max-width) — a native <select> otherwise sizes itself to its
+   longest <option> regardless of max-width in some browsers, which used to push .txn-header
+   wider than the viewport on mobile and shove whatever sat at the end of the row (now
+   CornerMenu) off-screen. 92px fits every current option ("This month", "This year") without
+   truncating — the previous 74px was narrower than the default "This month" label itself, so
+   it always rendered as "This m...". Options were also shortened ("Last 3 months" -> "3
+   months") to keep the longest case comfortably inside this width. */
+.txn-header-range select {
+  background: transparent; border: none; font-size: 12px; font-weight: 700; color: var(--txn-ink);
+  outline: none; width: 92px; max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .txn-body { padding: 8px 20px 100px; display: flex; flex-direction: column; gap: 12px; }
 
@@ -3742,24 +3819,81 @@ button { font-family: inherit; cursor: pointer; }
    sheet's primary CTA/focus ring/delete action track the live theme instead of staying
    stuck on Finance's rose regardless of the picked color. */
 .khata-screen .add-txn-submit,
-.mile-screen .add-txn-submit {
+.mile-screen .add-txn-submit,
+.health-screen .add-txn-submit,
+.journal-screen .add-txn-submit {
   background: var(--gradient-gold);
   color: var(--color-accent-foreground);
   box-shadow: var(--shadow-glow);
 }
 .khata-screen .add-txn-submit:active,
-.mile-screen .add-txn-submit:active {
+.mile-screen .add-txn-submit:active,
+.health-screen .add-txn-submit:active,
+.journal-screen .add-txn-submit:active {
   box-shadow: none;
 }
 .khata-screen .add-input:focus,
-.mile-screen .add-input:focus {
+.mile-screen .add-input:focus,
+.health-screen .add-input:focus,
+.journal-screen .add-input:focus {
   border-color: var(--color-gold);
 }
 .khata-screen .add-txn-delete,
-.mile-screen .add-txn-delete {
+.mile-screen .add-txn-delete,
+.health-screen .add-txn-delete,
+.journal-screen .add-txn-delete {
   color: var(--color-destructive);
   border-color: var(--color-destructive-soft);
 }
+
+/* Journal reuses Finance's .cat-chip tag-select primitive (category-grid/cat-chip) for its
+   multi-select tag chips — that control was previously Finance-only and hardcoded to the
+   fixed rose brand, so give Journal's instance the same live-theme override the shared
+   sheet primitives above already get, rather than leaving tag chips stuck on rose. */
+.journal-screen .cat-chip.active {
+  border-color: var(--color-gold);
+  color: var(--color-gold);
+  background: var(--color-gold-soft);
+}
+
+/* Journal's 5-way mood picker reuses the .type-toggle layout primitive but needs 5 equal
+   columns instead of 3, plus its own emoji-over-label button shape. Semantic tone per mood
+   is pinned to the fixed success/warning/destructive tokens (never the live gold theme) so
+   mood color stays legible/consistent regardless of theme, same reasoning as Health's
+   type-btn.active.mild/moderate/severe above. Two moods share success and two share
+   destructive since the app only has 3 semantic tones for 5 mood levels; the emoji + label
+   still disambiguate great from good (and low from rough) at a glance. */
+.mood-toggle { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.mood-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  padding: 8px 2px;
+  background: var(--txn-card); border: 1.5px solid rgba(0,0,0,0.08);
+  border-radius: 12px; color: var(--txn-muted);
+  font-size: 10px; cursor: pointer; font-weight: 700;
+  min-height: 56px;
+}
+.mood-btn-emoji { font-size: 20px; line-height: 1; }
+.mood-btn.active.mood-great,
+.mood-btn.active.mood-good {
+  border-color: var(--color-success); color: var(--color-success); background: var(--color-success-soft);
+}
+.mood-btn.active.mood-okay {
+  border-color: var(--color-warning); color: var(--color-warning); background: var(--color-warning-soft);
+}
+.mood-btn.active.mood-low,
+.mood-btn.active.mood-rough {
+  border-color: var(--color-destructive); color: var(--color-destructive); background: var(--color-destructive-soft);
+}
+
+/* Health module 3-way severity toggle (Mild/Moderate/Severe) reuses the shared
+   .type-toggle/.type-btn bottom-sheet primitives for layout, but needs three tone options
+   instead of the Finance debit/credit/transfer split above - new modifier classes rather
+   than repurposing those names, always pinned to the fixed success/warning/destructive
+   tokens (not the live gold theme) so severity stays visually consistent regardless of
+   theme. */
+.type-btn.active.mild { border-color: var(--color-success); color: var(--color-success); background: var(--color-success-soft); }
+.type-btn.active.moderate { border-color: var(--color-warning); color: var(--color-warning); background: var(--color-warning-soft); }
+.type-btn.active.severe { border-color: var(--color-destructive); color: var(--color-destructive); background: var(--color-destructive-soft); }
 
 /* .type-btn.active.debit is shared with Finance's own add-transaction "kind" toggle,
    which now intentionally tracks the live theme (--txn-rose above) since the reference
@@ -3794,6 +3928,45 @@ button { font-family: inherit; cursor: pointer; }
   flex-direction: column;
   color: var(--txn-ink);
 }
+/* ── Health Tracker (family illness/recovery log) ─────────────────────────── */
+/* Same shape as .khata-screen just above - the app-wide "full-screen module root" contract
+   (flex:1/min-height:0/overflow-y:auto/display:flex/flex-direction:column) every screen
+   needs to fill and scroll correctly inside the outer App layout, reusing the same rose
+   --txn-* background tokens purely as a base surface (PageShell own surface-sand gradient
+   is what is actually visible on screen). */
+.health-screen .material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal; font-style: normal; line-height: 1;
+  display: inline-block; vertical-align: middle;
+}
+.health-screen {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: linear-gradient(160deg, var(--txn-bg-from), var(--txn-bg-to));
+  display: flex;
+  flex-direction: column;
+  color: var(--txn-ink);
+}
+/* ── Journal (daily mood/notes check-in) ──────────────────────────────────── */
+/* Same app-wide "full-screen module root" contract as .khata-screen/.health-screen above. */
+.journal-screen .material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal; font-style: normal; line-height: 1;
+  display: inline-block; vertical-align: middle;
+}
+.journal-screen {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: linear-gradient(160deg, var(--txn-bg-from), var(--txn-bg-to));
+  display: flex;
+  flex-direction: column;
+  color: var(--txn-ink);
+}
+
 .khata-header { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px; flex-shrink: 0; }
 .khata-home-btn {
   display: flex; align-items: center; justify-content: center;
@@ -4967,35 +5140,93 @@ button { font-family: inherit; cursor: pointer; }
 .profile-save-btn:active:not(:disabled) { transform: scale(0.97); }
 .profile-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* ── Theme Picker — global floating colour control, mounted once at the App root so it
-   renders above every screen (Tailwind-scoped or not). Deliberately not built on the
-   Tailwind utility layer so it keeps working even if a screen has not adopted Tailwind
-   yet. Uses --gradient-gold / --gold from tailwind.css (globally inherited custom
-   properties, imported ahead of this file in main.jsx) plus this file's own
-   --shadow-soft / --radius-xl tokens for a look consistent with the rest of the app. */
-.theme-picker-trigger {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
+/* ── Corner menu — small "more" control mounted INLINE in each screen's own header row
+   (PageShell's header, .namaz-header / .namaz-hero-top-actions, .txn-header, the
+   Home/Dashboard welcome row) instead of floating fixed over the page. It used to be a
+   single App-root-mounted fixed top-right circle; that meant every screen had to reserve
+   extra top padding just so its title wouldn't render underneath it (see the reverted
+   comments this replaces on PageShell.jsx and the .namaz-screen / .txn-header rules
+   below). Now it just takes up real space in the header it's placed in, so no page needs
+   to reserve a dead band for it. Deliberately not built on the Tailwind utility layer so
+   it keeps working even in screens that haven't adopted Tailwind. Uses --gradient-gold /
+   --gold from tailwind.css (globally inherited custom properties, imported ahead of this
+   file in main.jsx) plus this file's own --shadow-soft / --radius-xl tokens.
+   The dropdown itself is portaled to <body> (see CornerMenu.jsx) and positioned with
+   `fixed` + inline top/right computed from the trigger's real getBoundingClientRect() —
+   several of this app's headers apply a CSS `transform` for their entrance animation
+   (PageShell's `animate-fade-up`, in particular), and a plain `position: absolute`
+   dropdown gets silently trapped inside that transformed ancestor's own stacking context,
+   so later page content (a carousel, a stat tile, ...) paints over it and swallows clicks
+   even though it still LOOKS like it's on top. Portaling sidesteps that entirely. */
+.corner-menu { position: relative; display: inline-flex; flex-shrink: 0; }
+.corner-menu-trigger {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
   border: none;
-  background-image: var(--gradient-gold, linear-gradient(135deg, #f4d58d, #c9a227));
-  color: #fff;
+  background: rgba(31, 27, 46, 0.06);
+  color: var(--ink-muted, #6b6685);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 4px rgba(138, 109, 31, 0.25), 0 8px 24px rgba(138, 109, 31, 0.35), inset 0 1px 0 rgba(255,255,255,0.3);
-  z-index: 500;
-  transition: transform 0.15s, box-shadow 0.15s;
+  flex-shrink: 0;
+  transition: transform 0.15s, background 0.15s;
 }
-.theme-picker-trigger .material-symbols-outlined { font-size: 22px; }
-.theme-picker-trigger:active { transform: translateY(2px) scale(0.96); box-shadow: 0 1px 2px rgba(138, 109, 31, 0.3); }
+.corner-menu-trigger .material-symbols-outlined { font-size: 20px; }
+.corner-menu-trigger:hover { background: rgba(31, 27, 46, 0.1); }
+.corner-menu-trigger:active { transform: scale(0.94); background: rgba(31, 27, 46, 0.14); }
+
+.corner-menu-dropdown {
+  position: fixed;
+  width: 188px;
+  background: var(--card-bg, #fff);
+  border-radius: var(--radius-xl, 18px);
+  box-shadow: var(--shadow-soft, 0 8px 24px rgba(124,109,242,0.14)), 0 24px 60px rgba(20,16,10,0.2);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 500;
+  color: var(--ink, #1f1b2e);
+}
+.corner-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: none;
+  border-radius: 12px;
+  background: transparent;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink, #1f1b2e);
+  text-align: left;
+  transition: background 0.15s;
+}
+.corner-menu-item:hover, .corner-menu-item:active { background: rgba(138, 109, 31, 0.08); }
+.corner-menu-item:disabled { opacity: 0.4; cursor: not-allowed; }
+.corner-menu-item:disabled:hover { background: transparent; }
+.corner-menu-item-icon { font-size: 18px !important; color: var(--ink-muted, #8b87a3); }
+.corner-menu-divider { height: 1px; margin: 4px 2px; background: rgba(31, 27, 46, 0.08); flex-shrink: 0; }
+.corner-menu-item-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-image: var(--gradient-gold, linear-gradient(135deg, #f4d58d, #c9a227));
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+.corner-menu-item-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .theme-picker-panel {
   position: fixed;
-  top: 68px;
+  top: 60px;
   right: 16px;
   width: min(320px, calc(100vw - 32px));
   max-height: min(600px, calc(100vh - 90px));

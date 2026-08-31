@@ -6,6 +6,7 @@ import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, l
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
 import { detectRecurring } from '../utils/recurringDetection'
+import CornerMenu from './CornerMenu'
 
 // Supported statement formats, tried in order — auto-detected from file content so the
 // upload flow stays a single tap (no "pick your bank" dropdown). Adding a new bank later is
@@ -33,7 +34,7 @@ const DEFAULT_BUDGET = 20000
 const ANALYTICS_RANGES = [
   { key: 'week', label: 'This week', days: 7 },
   { key: 'month', label: 'This month', days: 30 },
-  { key: '3m', label: 'Last 3 months', days: 90 },
+  { key: '3m', label: '3 months', days: 90 },
   { key: 'year', label: 'This year', days: 365 },
   { key: 'all', label: 'All time', days: null },
 ]
@@ -205,7 +206,7 @@ function FilterGroup({ label, options, selected, exclude, onToggleOption, onTogg
   )
 }
 
-export default function TransactionPanel({ session, sendMsg, addListener, onHome }) {
+export default function TransactionPanel({ session, sendMsg, addListener, onHome, onProfileOpen }) {
   const [txns, setTxns]       = useState([])
   const [tab, setTab]         = useState('all')
   const [sheetMode, setSheetMode] = useState(null) // null | 'add' | 'edit'
@@ -775,6 +776,17 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
         <button className="txn-header-icon-btn" onClick={clearAllTxns} disabled={txns.length === 0} aria-label="Clear all transactions">
           <span className="material-symbols-outlined">delete_sweep</span>
         </button>
+        <CornerMenu
+          session={session}
+          sendMsg={sendMsg}
+          addListener={addListener}
+          showProfile
+          onProfileOpen={onProfileOpen}
+          extraItems={[
+            { icon: 'upload_file', label: 'Upload statement', onClick: () => statementInputRef.current?.click() },
+            { icon: 'delete_sweep', label: 'Clear all transactions', onClick: clearAllTxns, disabled: txns.length === 0 },
+          ]}
+        />
         <input
           ref={statementInputRef}
           type="file"
