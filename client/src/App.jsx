@@ -83,11 +83,6 @@ function buildWsUrl(serverUrl) {
   return `${proto}//${location.host}/ws`
 }
 
-// Read ?pin= from URL — used for secret admin access
-function getPinFromUrl() {
-  return new URLSearchParams(location.search).get('pin') || ''
-}
-
 // Message types that mutate the user's own durable data (transactions). Losing one of
 // these to a momentary disconnect isn't a stale live-monitor frame, it's data loss — a
 // screen lock / network handoff / app-swipe-away on a real phone can easily land right
@@ -136,19 +131,14 @@ export default function App() {
 
   useEffect(() => { requestNotificationPermission() }, [])
 
-  // Auto-login as admin if ?pin= is in the URL
-  useEffect(() => {
-    const pin = getPinFromUrl()
-    if (pin) login('admin', '', pin, '')
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
   // A previously-registered child should never see the phone/OTP screens again — Firebase
   // persists the signed-in phone-auth user across app restarts on its own, so on mount we
   // just ask it whether someone's already signed in and, if so, reconnect straight away
   // (connect() below fetches a fresh ID token itself). Admin has no equivalent persisted
-  // login (only the ephemeral ?pin= URL param above), so there's nothing to mirror there.
+  // login — every admin session starts at the PIN form in Login.jsx (previously an
+  // ephemeral ?pin= URL param instead; removed since a bookmarked/shared/logged URL with
+  // the PIN in it granted instant access with no further check).
   useEffect(() => {
-    if (getPinFromUrl()) { setAuthChecked(true); return }
     let cancelled = false
     FirebaseAuthentication.getCurrentUser()
       .then(({ user }) => {
@@ -382,9 +372,6 @@ export default function App() {
     deferredPrompt.userChoice.then(() => setDeferredPrompt(null))
   }
 
-  // If ?pin= in URL, show nothing while auto-connecting
-  const autoPin = getPinFromUrl()
-
   // CornerMenu used to mount once, fixed, at the App root above every screen — every page
   // then had to reserve extra top padding just so its own title wouldn't render underneath
   // it. It now mounts INLINE in each screen's own header instead (PageShell, NamazTracker,
@@ -404,7 +391,7 @@ export default function App() {
         <InstallPrompt onInstall={handleInstall} onDismiss={() => setDeferredPrompt(null)} />
       )}
       {!session ? (
-        autoPin || !authChecked
+        !authChecked
           ? <div className="auto-login-screen"><div className="auto-login-spinner">◌</div></div>
           : <Login onLogin={login} status={wsStatus} error={loginError} />
       ) : (

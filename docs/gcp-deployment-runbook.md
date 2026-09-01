@@ -48,12 +48,19 @@ Key architectural points:
   the same `familywatch.duckdns.org` cert. Both proxy blocks need WebSocket upgrade
   headers because both the app's own WebSocket server and LiveKit's signaling channel
   are WS-based.
-- **Deployment automation** is a GitHub Actions workflow
+- **APK build automation** is a GitHub Actions workflow
   (`.github/workflows/build-apk.yml`) that, on push to `main` (or manual
-  `workflow_dispatch`), builds the Android APK, publishes a GitHub Release, and SSHes
-  into the VM to `git pull` + rebuild + `systemctl restart familywatch`. This workflow
-  assumes the VM is reachable at whatever host/IP is configured as a secret — **if you
-  migrate to a new VM, update that secret/host too**, not just DNS.
+  `workflow_dispatch`), builds the Android APK and publishes a GitHub Release. It still
+  SSHes into the VM once, to install/refresh the nightly backup timer (harmless,
+  idempotent, `continue-on-error`) — but it no longer deploys the server itself.
+  **Server deploys are manual** (2026-09-01: removed after the VM's 1 vCPU/1GB
+  `e2-micro` repeatedly hit `appleboy/ssh-action`'s 10-minute `command_timeout` running
+  `npm ci && vite build` on top of the already-running app/nginx/LiveKit). See Section
+  3.9-style steps below for the manual sequence: build `client/dist` on a real machine,
+  `gcloud compute scp --recurse client/dist ...`, then SSH in for
+  `git fetch`/`reset --hard`/`npm --prefix server ci`/`systemctl restart familywatch` —
+  order matters, do the git steps *before* copying `dist/` over, since `reset --hard`
+  would otherwise wipe it.
 - **Everything of value lives on the boot disk**: the app code, the systemd unit, the
   nginx config, the Let's Encrypt cert, and the LiveKit Docker container/config. This
   is why disk migration (Section 3) is so much faster than a from-scratch rebuild.

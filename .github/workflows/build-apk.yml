@@ -93,28 +93,15 @@ jobs:
           path: meeee.apk
           retention-days: 30
 
-      - name: Deploy server to GCP VM
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: familywatch.duckdns.org
-          username: fatemasayed760
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            set -e
-            cd ~/chat-pwa
-            git fetch origin ${{ github.ref_name }}
-            git checkout ${{ github.ref_name }} 2>/dev/null || git checkout -b ${{ github.ref_name }} origin/${{ github.ref_name }}
-            git reset --hard origin/${{ github.ref_name }}
-            npm --prefix server ci --production
-            npm --prefix client ci
-            npm --prefix client run build
-            if ! sudo grep -q "^Environment=FIREBASE_PROJECT_ID=" /etc/systemd/system/familywatch.service; then
-              sudo sed -i '/^\[Service\]/a Environment=FIREBASE_PROJECT_ID=familykit-dd384' /etc/systemd/system/familywatch.service
-              sudo systemctl daemon-reload
-              echo "✓ Added FIREBASE_PROJECT_ID to systemd unit"
-            fi
-            sudo systemctl restart familywatch
-            echo "✓ Server deployed"
+      # Server deploy to the GCP VM is done manually now (see docs/gcp-deployment-runbook.md)
+      # rather than from this workflow — the e2-micro VM's 1 vCPU/1GB RAM couldn't reliably
+      # finish `npm ci && vite build` within appleboy/ssh-action's 10-minute command_timeout
+      # while also running the live app + nginx + a LiveKit Docker container, so CI runs were
+      # timing out on this step even when the build itself wasn't broken. Building on this
+      # job's much more powerful runner and copying the result over is also just the better
+      # pattern generally — if this ever comes back as an automated step, prefer building the
+      # client here and `scp`/`rsync`-ing the finished client/dist to the VM over SSH, rather
+      # than re-running the whole install+build on the VM itself.
 
       - name: Install nightly backup timer on GCP VM
         # Sets up the systemd oneshot service + timer that runs

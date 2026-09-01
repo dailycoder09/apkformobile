@@ -351,6 +351,8 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 13px;
   font-weight: 600;
   padding: 6px;
+  text-decoration: none;
+  display: inline-block;
 }
 .login-link-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .login-link-btn:hover:not(:disabled) { color: var(--accent-dark); }

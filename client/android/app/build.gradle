@@ -71,7 +71,9 @@ dependencies {
     // Version matches the plugin's own default (firebaseAuthVersion in its android/build.gradle).
     implementation 'com.google.firebase:firebase-auth:24.0.1'
     // Wakes a killed KeepAliveService on admin demand (see FamilyWatchMessagingService) —
-    // a data-only high-priority push, not a visible notification.
+    // a data-only high-priority push, not a visible notification. 24.1.2 (not 24.1.4, which
+    // doesn't exist — verified against Google's own Maven group-index.xml) is the newest
+    // release in the same 24.x line as firebase-auth above.
     implementation 'com.google.firebase:firebase-messaging:24.1.2'
 }
 
