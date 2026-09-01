@@ -205,13 +205,15 @@ export function DailyAgendaCard({ state, onToggleTask, onEditTask, onDeleteTask,
                 {doneCount}/{selectedDayTasks.length} tasks done · {groupedByGoal.length} goals
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => onQuickAdd(selectedDate)}
-              className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3 text-xs font-semibold text-white transition-opacity hover:opacity-90"
-            >
-              <span className="material-symbols-outlined text-sm">add</span> Quick add
-            </button>
+            {onQuickAdd && (
+              <button
+                type="button"
+                onClick={() => onQuickAdd(selectedDate)}
+                className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3 text-xs font-semibold text-white transition-opacity hover:opacity-90"
+              >
+                <span className="material-symbols-outlined text-sm">add</span> Quick add
+              </button>
+            )}
           </div>
 
           <div className="mt-3 flex flex-col gap-4">
@@ -231,34 +233,44 @@ export function DailyAgendaCard({ state, onToggleTask, onEditTask, onDeleteTask,
                       key={t.id}
                       className={`flex items-center gap-3 rounded-2xl border border-border p-3 ${t.done ? 'bg-success-soft' : 'bg-card'}`}
                     >
-                      <button
-                        type="button"
-                        onClick={() => onToggleTask(t)}
-                        aria-label={t.done ? 'Mark task incomplete' : 'Mark task complete'}
-                        className={`grid size-8 shrink-0 place-items-center rounded-full transition-colors ${
-                          t.done ? 'bg-success-soft text-success' : 'text-muted-foreground hover:bg-secondary'
-                        }`}
-                      >
-                        <span className="material-symbols-outlined text-xl">{t.done ? 'check_circle' : 'radio_button_unchecked'}</span>
-                      </button>
+                      {onToggleTask ? (
+                        <button
+                          type="button"
+                          onClick={() => onToggleTask(t)}
+                          aria-label={t.done ? 'Mark task incomplete' : 'Mark task complete'}
+                          className={`grid size-8 shrink-0 place-items-center rounded-full transition-colors ${
+                            t.done ? 'bg-success-soft text-success' : 'text-muted-foreground hover:bg-secondary'
+                          }`}
+                        >
+                          <span className="material-symbols-outlined text-xl">{t.done ? 'check_circle' : 'radio_button_unchecked'}</span>
+                        </button>
+                      ) : (
+                        <span className={`grid size-8 shrink-0 place-items-center rounded-full ${t.done ? 'bg-success-soft text-success' : 'text-muted-foreground'}`}>
+                          <span className="material-symbols-outlined text-xl">{t.done ? 'check_circle' : 'radio_button_unchecked'}</span>
+                        </span>
+                      )}
                       <div className="min-w-0 flex-1">
                         <p className={`truncate text-sm font-semibold ${t.done ? 'text-muted-foreground line-through' : 'text-foreground'}`}>
                           {t.title}
                         </p>
                         {t.description && <p className="truncate text-xs text-muted-foreground">{t.description}</p>}
                       </div>
-                      <button
-                        type="button" onClick={() => onEditTask(t)} aria-label="Edit task"
-                        className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                      >
-                        <span className="material-symbols-outlined text-lg">edit</span>
-                      </button>
-                      <button
-                        type="button" onClick={() => onDeleteTask(t.id)} aria-label="Delete task"
-                        className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
-                      >
-                        <span className="material-symbols-outlined text-lg">delete</span>
-                      </button>
+                      {onEditTask && (
+                        <button
+                          type="button" onClick={() => onEditTask(t)} aria-label="Edit task"
+                          className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                        >
+                          <span className="material-symbols-outlined text-lg">edit</span>
+                        </button>
+                      )}
+                      {onDeleteTask && (
+                        <button
+                          type="button" onClick={() => onDeleteTask(t.id)} aria-label="Delete task"
+                          className="grid size-8 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
+                        >
+                          <span className="material-symbols-outlined text-lg">delete</span>
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>

@@ -208,25 +208,32 @@ function MobileFlat({
                   </button>
                   {/* Edit/delete only surface for the selected row — tapping a milestone
                       both activates it and reveals its actions, instead of every row
-                      showing icons all the time. */}
-                  {!m.synthetic && selected && (
+                      showing icons all the time. Omitted entirely (not disabled) when
+                      openEditMilestone/deleteMilestone aren't passed — AdminMilestoneView.jsx's
+                      read-only reuse doesn't pass either, same "no callback = no control"
+                      convention as HealthEpisodesSection.jsx's EpisodeRow. */}
+                  {!m.synthetic && selected && (openEditMilestone || deleteMilestone) && (
                     <span className="flex shrink-0 items-center gap-0.5">
-                      <button
-                        type="button"
-                        aria-label={`Edit ${m.title}`}
-                        onClick={() => openEditMilestone(m)}
-                        className="grid size-6 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-                      >
-                        <span className="material-symbols-outlined text-sm">edit</span>
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`Delete ${m.title}`}
-                        onClick={() => deleteMilestone(m.id)}
-                        className="grid size-6 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
-                      >
-                        <span className="material-symbols-outlined text-sm">delete</span>
-                      </button>
+                      {openEditMilestone && (
+                        <button
+                          type="button"
+                          aria-label={`Edit ${m.title}`}
+                          onClick={() => openEditMilestone(m)}
+                          className="grid size-6 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                        >
+                          <span className="material-symbols-outlined text-sm">edit</span>
+                        </button>
+                      )}
+                      {deleteMilestone && (
+                        <button
+                          type="button"
+                          aria-label={`Delete ${m.title}`}
+                          onClick={() => deleteMilestone(m.id)}
+                          className="grid size-6 shrink-0 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
+                        >
+                          <span className="material-symbols-outlined text-sm">delete</span>
+                        </button>
+                      )}
                     </span>
                   )}
                 </div>
@@ -243,7 +250,7 @@ function MobileFlat({
           onToggleTask={toggleTask}
           onEditTask={openEditTaskSheet}
           onDeleteTask={deleteTask}
-          onQuickAdd={(dateMs) => openAddTaskFor(dateMs)}
+          onQuickAdd={openAddTaskFor ? (dateMs) => openAddTaskFor(dateMs) : undefined}
         />
       </div>
 
@@ -256,15 +263,17 @@ function MobileFlat({
             <span className="material-symbols-outlined text-base text-gold">flag</span>
             <TileLabel>Goals &amp; Today's Tasks</TileLabel>
           </div>
-          <button
-            type="button"
-            aria-label="Add goal"
-            disabled={!activeMilestone}
-            onClick={openAddGoal}
-            className="grid size-8 shrink-0 place-items-center rounded-full bg-secondary text-foreground transition-colors hover:bg-secondary/70 disabled:opacity-40"
-          >
-            <span className="material-symbols-outlined text-lg">add</span>
-          </button>
+          {openAddGoal && (
+            <button
+              type="button"
+              aria-label="Add goal"
+              disabled={!activeMilestone}
+              onClick={openAddGoal}
+              className="grid size-8 shrink-0 place-items-center rounded-full bg-secondary text-foreground transition-colors hover:bg-secondary/70 disabled:opacity-40"
+            >
+              <span className="material-symbols-outlined text-lg">add</span>
+            </button>
+          )}
         </div>
 
         <div className="mt-3 flex flex-col divide-y divide-foreground/12">
@@ -296,27 +305,35 @@ function MobileFlat({
                       <Bar value={stats.completionPct} tone="gold" />
                     </div>
                   </button>
-                  {open && (
+                  {open && (duplicateGoal || archiveGoal || unarchiveGoal || deleteGoal) && (
                     <span className="flex shrink-0 items-center gap-0.5">
-                      <button onClick={() => duplicateGoal(g)} aria-label="Duplicate goal" title="Start again from today"
-                        className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
-                        <span className="material-symbols-outlined text-xs">content_copy</span>
-                      </button>
-                      {g.status === 'archived' ? (
-                        <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal" title="Unarchive"
+                      {duplicateGoal && (
+                        <button onClick={() => duplicateGoal(g)} aria-label="Duplicate goal" title="Start again from today"
                           className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
-                          <span className="material-symbols-outlined text-xs">unarchive</span>
-                        </button>
-                      ) : (
-                        <button onClick={() => archiveGoal(g)} aria-label="Archive goal" title="Archive"
-                          className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
-                          <span className="material-symbols-outlined text-xs">archive</span>
+                          <span className="material-symbols-outlined text-xs">content_copy</span>
                         </button>
                       )}
-                      <button onClick={() => deleteGoal(g.id)} aria-label={`Delete ${g.title}`}
-                        className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-destructive">
-                        <span className="material-symbols-outlined text-xs">delete</span>
-                      </button>
+                      {g.status === 'archived' ? (
+                        unarchiveGoal && (
+                          <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal" title="Unarchive"
+                            className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
+                            <span className="material-symbols-outlined text-xs">unarchive</span>
+                          </button>
+                        )
+                      ) : (
+                        archiveGoal && (
+                          <button onClick={() => archiveGoal(g)} aria-label="Archive goal" title="Archive"
+                            className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
+                            <span className="material-symbols-outlined text-xs">archive</span>
+                          </button>
+                        )
+                      )}
+                      {deleteGoal && (
+                        <button onClick={() => deleteGoal(g.id)} aria-label={`Delete ${g.title}`}
+                          className="grid size-5 place-items-center rounded text-muted-foreground transition-colors hover:text-destructive">
+                          <span className="material-symbols-outlined text-xs">delete</span>
+                        </button>
+                      )}
                     </span>
                   )}
                 </div>
@@ -324,9 +341,9 @@ function MobileFlat({
                 {open && (
                   <div className="mt-3 animate-fade-in flex flex-col gap-2 pl-5">
                     {g.description && <p className="text-xs text-muted-foreground">{g.description}</p>}
-                    {todayTasks.map(t => (
-                      <div key={t.id} className="flex items-center gap-2 border-b border-foreground/12 pb-2 last:border-0 last:pb-0">
-                        <button onClick={() => toggleTask(t)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                    {todayTasks.map(t => {
+                      const taskBody = (
+                        <>
                           <span className={`grid size-6 shrink-0 place-items-center rounded-full border transition-colors ${t.done ? 'border-success bg-success text-white' : 'border-foreground/25'}`}>
                             {t.done && <span className="material-symbols-outlined text-sm">check</span>}
                           </span>
@@ -334,27 +351,42 @@ function MobileFlat({
                             <span className={`block truncate text-sm font-semibold ${t.done ? 'text-muted-foreground line-through' : 'text-foreground'}`}>{t.title}</span>
                             {t.description && <span className="block truncate text-xs text-muted-foreground">{t.description}</span>}
                           </span>
-                        </button>
-                        <button aria-label="Edit task" onClick={() => openEditTaskSheet(t)}
-                          className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
-                          <span className="material-symbols-outlined text-xs">edit</span>
-                        </button>
-                        <button aria-label="Delete task" onClick={() => deleteTask(t.id)}
-                          className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-destructive">
-                          <span className="material-symbols-outlined text-xs">delete</span>
-                        </button>
-                      </div>
-                    ))}
+                        </>
+                      )
+                      return (
+                        <div key={t.id} className="flex items-center gap-2 border-b border-foreground/12 pb-2 last:border-0 last:pb-0">
+                          {toggleTask ? (
+                            <button onClick={() => toggleTask(t)} className="flex min-w-0 flex-1 items-center gap-2 text-left">{taskBody}</button>
+                          ) : (
+                            <span className="flex min-w-0 flex-1 items-center gap-2">{taskBody}</span>
+                          )}
+                          {openEditTaskSheet && (
+                            <button aria-label="Edit task" onClick={() => openEditTaskSheet(t)}
+                              className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
+                              <span className="material-symbols-outlined text-xs">edit</span>
+                            </button>
+                          )}
+                          {deleteTask && (
+                            <button aria-label="Delete task" onClick={() => deleteTask(t.id)}
+                              className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-destructive">
+                              <span className="material-symbols-outlined text-xs">delete</span>
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
                     {todayTasks.length === 0 && (
                       <p className="py-3 text-center text-xs text-muted-foreground">No daily tasks for today yet.</p>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => openAddTaskFor(Date.now(), g.id)}
-                      className="flex h-7 w-fit items-center gap-1 rounded-full bg-secondary px-3 text-xs font-semibold text-foreground transition-colors hover:bg-secondary/70"
-                    >
-                      <span className="material-symbols-outlined text-xs">add</span> Add daily task
-                    </button>
+                    {openAddTaskFor && (
+                      <button
+                        type="button"
+                        onClick={() => openAddTaskFor(Date.now(), g.id)}
+                        className="flex h-7 w-fit items-center gap-1 rounded-full bg-secondary px-3 text-xs font-semibold text-foreground transition-colors hover:bg-secondary/70"
+                      >
+                        <span className="material-symbols-outlined text-xs">add</span> Add daily task
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -381,14 +413,18 @@ function MobileFlat({
                         <p className="truncate text-sm font-semibold text-foreground">{g.title} <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Archived</span></p>
                         <p className="text-xs text-muted-foreground">Day {stats.daysElapsed}/{stats.totalDays} · {stats.completionPct}%</p>
                       </div>
-                      <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal"
-                        className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
-                        <span className="material-symbols-outlined text-xs">unarchive</span>
-                      </button>
-                      <button onClick={() => deleteGoal(g.id)} aria-label="Delete goal"
-                        className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-destructive">
-                        <span className="material-symbols-outlined text-xs">delete</span>
-                      </button>
+                      {unarchiveGoal && (
+                        <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal"
+                          className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground">
+                          <span className="material-symbols-outlined text-xs">unarchive</span>
+                        </button>
+                      )}
+                      {deleteGoal && (
+                        <button onClick={() => deleteGoal(g.id)} aria-label="Delete goal"
+                          className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-destructive">
+                          <span className="material-symbols-outlined text-xs">delete</span>
+                        </button>
+                      )}
                     </div>
                   )
                 })}
@@ -444,13 +480,15 @@ function DesktopCards({
         <Tile className="col-span-1 md:col-span-4">
           <div className="flex items-center justify-between gap-3">
             <TileLabel>Milestones</TileLabel>
-            <button
-              type="button"
-              onClick={openAddMilestone}
-              className="flex h-8 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3.5 text-xs font-semibold text-accent-foreground transition-opacity hover:opacity-90"
-            >
-              <span className="material-symbols-outlined text-sm">add</span> New milestone
-            </button>
+            {openAddMilestone && (
+              <button
+                type="button"
+                onClick={openAddMilestone}
+                className="flex h-8 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3.5 text-xs font-semibold text-accent-foreground transition-opacity hover:opacity-90"
+              >
+                <span className="material-symbols-outlined text-sm">add</span> New milestone
+              </button>
+            )}
           </div>
           <ul className="mt-4 space-y-2">
             {combinedMilestones.map(m => {
@@ -474,22 +512,26 @@ function DesktopCards({
                         <Bar value={s.completionPct} tone="gold" />
                       </div>
                     </button>
-                    {!m.synthetic && (
+                    {!m.synthetic && (openEditMilestone || deleteMilestone) && (
                       <span className="flex shrink-0 items-center gap-1">
-                        <button
-                          aria-label={`Edit ${m.title}`}
-                          onClick={() => openEditMilestone(m)}
-                          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
-                        >
-                          <span className="material-symbols-outlined text-lg">edit</span>
-                        </button>
-                        <button
-                          aria-label={`Delete ${m.title}`}
-                          onClick={() => deleteMilestone(m.id)}
-                          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
-                        >
-                          <span className="material-symbols-outlined text-lg">delete</span>
-                        </button>
+                        {openEditMilestone && (
+                          <button
+                            aria-label={`Edit ${m.title}`}
+                            onClick={() => openEditMilestone(m)}
+                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+                          >
+                            <span className="material-symbols-outlined text-lg">edit</span>
+                          </button>
+                        )}
+                        {deleteMilestone && (
+                          <button
+                            aria-label={`Delete ${m.title}`}
+                            onClick={() => deleteMilestone(m.id)}
+                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive"
+                          >
+                            <span className="material-symbols-outlined text-lg">delete</span>
+                          </button>
+                        )}
                       </span>
                     )}
                   </div>
@@ -517,7 +559,7 @@ function DesktopCards({
             onToggleTask={toggleTask}
             onEditTask={openEditTaskSheet}
             onDeleteTask={deleteTask}
-            onQuickAdd={(dateMs) => openAddTaskFor(dateMs)}
+            onQuickAdd={openAddTaskFor ? (dateMs) => openAddTaskFor(dateMs) : undefined}
           />
         </div>
 
@@ -527,14 +569,16 @@ function DesktopCards({
               <span className="material-symbols-outlined text-lg text-gold">flag</span>
               <TileLabel>Goals &amp; Today's Tasks</TileLabel>
             </div>
-            <button
-              type="button"
-              disabled={!activeMilestone}
-              onClick={openAddGoal}
-              className="flex h-8 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3.5 text-xs font-semibold text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
-            >
-              <span className="material-symbols-outlined text-sm">add</span> Add goal
-            </button>
+            {openAddGoal && (
+              <button
+                type="button"
+                disabled={!activeMilestone}
+                onClick={openAddGoal}
+                className="flex h-8 items-center gap-1 rounded-full bg-[image:var(--gradient-gold)] px-3.5 text-xs font-semibold text-accent-foreground transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                <span className="material-symbols-outlined text-sm">add</span> Add goal
+              </button>
+            )}
           </div>
 
           <div className="mt-4 space-y-3">
@@ -564,35 +608,45 @@ function DesktopCards({
                         <Bar value={stats.completionPct} tone="gold" />
                       </div>
                     </button>
-                    <span className="flex shrink-0 items-center gap-1">
-                      <button onClick={() => duplicateGoal(g)} aria-label="Duplicate goal" title="Start again from today"
-                        className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
-                        <span className="material-symbols-outlined text-base">content_copy</span>
-                      </button>
-                      {g.status === 'archived' ? (
-                        <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal" title="Unarchive"
-                          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
-                          <span className="material-symbols-outlined text-base">unarchive</span>
-                        </button>
-                      ) : (
-                        <button onClick={() => archiveGoal(g)} aria-label="Archive goal" title="Archive"
-                          className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
-                          <span className="material-symbols-outlined text-base">archive</span>
-                        </button>
-                      )}
-                      <button onClick={() => deleteGoal(g.id)} aria-label={`Delete ${g.title}`}
-                        className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
-                        <span className="material-symbols-outlined text-base">delete</span>
-                      </button>
-                    </span>
+                    {(duplicateGoal || archiveGoal || unarchiveGoal || deleteGoal) && (
+                      <span className="flex shrink-0 items-center gap-1">
+                        {duplicateGoal && (
+                          <button onClick={() => duplicateGoal(g)} aria-label="Duplicate goal" title="Start again from today"
+                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
+                            <span className="material-symbols-outlined text-base">content_copy</span>
+                          </button>
+                        )}
+                        {g.status === 'archived' ? (
+                          unarchiveGoal && (
+                            <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal" title="Unarchive"
+                              className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
+                              <span className="material-symbols-outlined text-base">unarchive</span>
+                            </button>
+                          )
+                        ) : (
+                          archiveGoal && (
+                            <button onClick={() => archiveGoal(g)} aria-label="Archive goal" title="Archive"
+                              className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
+                              <span className="material-symbols-outlined text-base">archive</span>
+                            </button>
+                          )
+                        )}
+                        {deleteGoal && (
+                          <button onClick={() => deleteGoal(g.id)} aria-label={`Delete ${g.title}`}
+                            className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
+                            <span className="material-symbols-outlined text-base">delete</span>
+                          </button>
+                        )}
+                      </span>
+                    )}
                   </div>
 
                   {open && (
                     <div className="mt-3 animate-fade-in space-y-2 border-t border-border pt-3">
                       {g.description && <p className="text-xs text-muted-foreground">{g.description}</p>}
-                      {todayTasks.map(t => (
-                        <div key={t.id} className={`relative flex items-center gap-3 rounded-xl border p-3 transition-all duration-300 hover:-translate-y-0.5 ${t.done ? 'border-success/30 bg-success-soft' : 'border-border bg-card'}`}>
-                          <button onClick={() => toggleTask(t)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                      {todayTasks.map(t => {
+                        const taskBody = (
+                          <>
                             <span className={`grid size-6 shrink-0 place-items-center rounded-full border transition-colors ${t.done ? 'border-success bg-success text-white' : 'border-clay'}`}>
                               {t.done && <span className="material-symbols-outlined text-sm">check</span>}
                             </span>
@@ -600,29 +654,46 @@ function DesktopCards({
                               <span className={`block truncate text-sm font-semibold ${t.done ? 'text-muted-foreground line-through' : 'text-foreground'}`}>{t.title}</span>
                               {t.description && <span className="block truncate text-xs text-muted-foreground">{t.description}</span>}
                             </span>
-                          </button>
-                          <span className="flex shrink-0 items-center gap-1">
-                            <button aria-label="Edit task" onClick={() => openEditTaskSheet(t)}
-                              className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
-                              <span className="material-symbols-outlined text-base">edit</span>
-                            </button>
-                            <button aria-label="Delete task" onClick={() => deleteTask(t.id)}
-                              className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
-                              <span className="material-symbols-outlined text-base">delete</span>
-                            </button>
-                          </span>
-                        </div>
-                      ))}
+                          </>
+                        )
+                        return (
+                          <div key={t.id} className={`relative flex items-center gap-3 rounded-xl border p-3 transition-all duration-300 hover:-translate-y-0.5 ${t.done ? 'border-success/30 bg-success-soft' : 'border-border bg-card'}`}>
+                            {toggleTask ? (
+                              <button onClick={() => toggleTask(t)} className="flex min-w-0 flex-1 items-center gap-3 text-left">{taskBody}</button>
+                            ) : (
+                              <span className="flex min-w-0 flex-1 items-center gap-3">{taskBody}</span>
+                            )}
+                            {(openEditTaskSheet || deleteTask) && (
+                              <span className="flex shrink-0 items-center gap-1">
+                                {openEditTaskSheet && (
+                                  <button aria-label="Edit task" onClick={() => openEditTaskSheet(t)}
+                                    className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
+                                    <span className="material-symbols-outlined text-base">edit</span>
+                                  </button>
+                                )}
+                                {deleteTask && (
+                                  <button aria-label="Delete task" onClick={() => deleteTask(t.id)}
+                                    className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
+                                    <span className="material-symbols-outlined text-base">delete</span>
+                                  </button>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
                       {todayTasks.length === 0 && (
                         <p className="rounded-xl border border-dashed border-border p-4 text-center text-xs text-muted-foreground">No daily tasks for today yet.</p>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => openAddTaskFor(Date.now(), g.id)}
-                        className="flex h-8 items-center gap-1 rounded-full bg-secondary px-3.5 text-xs font-semibold text-foreground transition-colors hover:bg-border"
-                      >
-                        <span className="material-symbols-outlined text-sm">add</span> Add daily task
-                      </button>
+                      {openAddTaskFor && (
+                        <button
+                          type="button"
+                          onClick={() => openAddTaskFor(Date.now(), g.id)}
+                          className="flex h-8 items-center gap-1 rounded-full bg-secondary px-3.5 text-xs font-semibold text-foreground transition-colors hover:bg-border"
+                        >
+                          <span className="material-symbols-outlined text-sm">add</span> Add daily task
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -651,14 +722,18 @@ function DesktopCards({
                           <p className="truncate text-sm font-semibold text-foreground">{g.title} <span className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Archived</span></p>
                           <p className="text-xs text-muted-foreground">Day {stats.daysElapsed}/{stats.totalDays} · {stats.completionPct}%</p>
                         </div>
-                        <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal"
-                          className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
-                          <span className="material-symbols-outlined text-base">unarchive</span>
-                        </button>
-                        <button onClick={() => deleteGoal(g.id)} aria-label="Delete goal"
-                          className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
-                          <span className="material-symbols-outlined text-base">delete</span>
-                        </button>
+                        {unarchiveGoal && (
+                          <button onClick={() => unarchiveGoal(g)} aria-label="Unarchive goal"
+                            className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground">
+                            <span className="material-symbols-outlined text-base">unarchive</span>
+                          </button>
+                        )}
+                        {deleteGoal && (
+                          <button onClick={() => deleteGoal(g.id)} aria-label="Delete goal"
+                            className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-destructive-soft hover:text-destructive">
+                            <span className="material-symbols-outlined text-base">delete</span>
+                          </button>
+                        )}
                       </div>
                     )
                   })}

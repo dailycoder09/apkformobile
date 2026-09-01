@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { PieChart } from '@mui/x-charts/PieChart'
-import { ThemeProvider, createTheme } from '@mui/material/styles'
-import { Area, Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, XAxis, YAxis, Tooltip as RechartsTooltip } from 'recharts'
+import { Area, Bar, CartesianGrid, Cell, ComposedChart, Legend, Line, Pie, PieChart, ResponsiveContainer, XAxis, YAxis, Tooltip as RechartsTooltip } from 'recharts'
 import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, loadBanks, addBank, OVERALL_BUDGET_CATEGORY, hasRealTime, loadCategoryOverrides, addCategoryOverride, applyCategoryOverrides } from '../utils/txnMeta'
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
@@ -231,7 +229,25 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   const [filters, setFilters] = useState(EMPTY_FILTERS)
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
+  // Quick-pick helper for the Date range filter below — jumping to "August 2026" used to
+  // mean manually typing the same month into both the From and To date pickers. Purely a
+  // convenience that fills dateFrom/dateTo; not itself part of the filter logic.
+  const [monthPick, setMonthPick] = useState('')
   const statementInputRef = useRef(null)
+
+  function handleMonthPick(monthStr) {
+    setMonthPick(monthStr)
+    if (!monthStr) return
+    const [y, m] = monthStr.split('-').map(Number)
+    const lastDay = new Date(y, m, 0).getDate() // day 0 of next month = last day of this one
+    setDateFrom(`${monthStr}-01`)
+    setDateTo(`${monthStr}-${String(lastDay).padStart(2, '0')}`)
+    // The header's analytics-range dropdown combines with a custom date range as a floor
+    // (see effectiveFromMs below — "This month" would otherwise force the combined range
+    // to start in the CURRENT month, making a past month's pick collide with it into an
+    // empty from-after-to range). "All time" has no floor, so the picked month always wins.
+    setAnalyticsRange('all')
+  }
 
   // Listen for incoming transaction confirmations (own), new ones from server, edits, deletes, and history
   useEffect(() => {
@@ -431,6 +447,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     setFilters(EMPTY_FILTERS)
     setDateFrom('')
     setDateTo('')
+    setMonthPick('')
     setSearchQuery('')
   }
 
@@ -492,6 +509,16 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
         const existingIds = new Set(prev.map(t => t.id))
         return [...parsed.filter(t => !existingIds.has(t.id)), ...prev].sort((a, b) => b.date - a.date)
       })
+      // A statement almost always covers a period that's already ended (last week/month),
+      // and "This month" is scoped to the calendar month, not a rolling 30 days — so an
+      // import done right after the month rolls over would otherwise land outside the
+      // default view entirely, making a successful import look like it silently did
+      // nothing. Widen to "All time" whenever anything imported falls before the
+      // currently-selected range, so what was just imported is immediately visible.
+      const earliestImported = Math.min(...parsed.map(t => t.date))
+      if (earliestImported < rangeStart(analyticsRange)) {
+        setAnalyticsRange('all')
+      }
       window.alert(`Imported ${parsed.length} transactions from the ${format.name} statement.`)
     } catch (err) {
       window.alert('Could not read that file — make sure it\'s an unmodified statement CSV or Excel export.')
@@ -697,7 +724,7 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     return days.map(d => ({ ...d, level: d.amount === 0 ? 0 : Math.min(4, Math.ceil((d.amount / max) * 4)) }))
   }, [txns])
 
-  // Spending Categories is an MUI X Charts PieChart — driven by the same
+  // Spending Categories is a Recharts PieChart — driven by the same
   // analyticsData.categories every other range-scoped card uses, so it can't drift out of
   // sync with the range/filter selection the way it once did when pinned to monthStats.
   const categoryPieData = useMemo(
@@ -715,9 +742,9 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
     return `${parseInt(da, 10)} ${MONTH_SHORT[parseInt(mo, 10) - 1]}`
   }
 
-  // Spending vs Income Trend is an MUI X Charts LineChart — MUI's own curve rendering
-  // uses monotone interpolation internally (no manual smoothing/overshoot math needed
-  // here anymore, unlike the hand-rolled version this replaces).
+  // Spending vs Income Trend is a Recharts ComposedChart (Area + Line) — its own
+  // monotone-interpolation curve rendering means no manual smoothing/overshoot math is
+  // needed here anymore, unlike the hand-rolled version this replaces.
   const trendChartData = useMemo(() => {
     const { buckets } = analyticsData
     if (buckets.length < 2) return null
@@ -959,7 +986,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
 
           {/* Multiple chart cards, side by side on wider screens — collapsed by default */}
           {showCharts && (
-          <ThemeProvider theme={createTheme({ palette: { primary: { main: '#e0345c' } } })}>
           <div className="txn-charts-grid">
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending Categories — {ANALYTICS_RANGES.find(o => o.key === analyticsRange)?.label}</h3>
@@ -967,11 +993,24 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                 {categoryPieData.length === 0 ? (
                   <p className="txn-donut-empty">No spending recorded in this period.</p>
                 ) : (
-                  <PieChart
-                    series={[{ data: categoryPieData, innerRadius: 45, paddingAngle: 2, cornerRadius: 4 }]}
-                    height={220}
-                    slotProps={{ legend: { direction: 'vertical', position: { vertical: 'middle', horizontal: 'end' } } }}
-                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, height: 220 }}>
+                    <ResponsiveContainer width="55%" height="100%">
+                      <PieChart>
+                        <Pie data={categoryPieData} dataKey="value" innerRadius={45} outerRadius={80} paddingAngle={2} stroke="none">
+                          {categoryPieData.map((c) => <Cell key={c.id} fill={c.color} />)}
+                        </Pie>
+                        <RechartsTooltip formatter={(v, _n, entry) => [formatINRShort(v), entry.payload.label]} contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 4px 14px rgba(0,0,0,0.12)' }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="txn-pie-legend">
+                      {categoryPieData.map((c) => (
+                        <span key={c.id} className="txn-pie-legend-item">
+                          <span className="txn-pie-legend-dot" style={{ background: c.color }} />
+                          {c.label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
@@ -1107,7 +1146,6 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
               </div>
             )}
           </div>
-          </ThemeProvider>
           )}
         </div>
 
@@ -1162,9 +1200,13 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
                   <span className="txn-filter-group-label">Date range</span>
                 </div>
                 <div className="txn-filter-daterange">
-                  <input className="add-input" type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+                  <input className="add-input" type="month" value={monthPick} onChange={e => handleMonthPick(e.target.value)} aria-label="Jump to a specific month" />
+                  <span className="txn-filter-daterange-sep">or pick dates</span>
+                </div>
+                <div className="txn-filter-daterange">
+                  <input className="add-input" type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setMonthPick('') }} />
                   <span className="txn-filter-daterange-sep">to</span>
-                  <input className="add-input" type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} />
+                  <input className="add-input" type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setMonthPick('') }} />
                 </div>
               </div>
 

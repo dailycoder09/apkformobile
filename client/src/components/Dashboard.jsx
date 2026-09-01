@@ -6,7 +6,6 @@ import { moodScore } from '../utils/journalFormat'
 import { formatDueLabel } from '../utils/healthFormat'
 import CornerMenu from './CornerMenu'
 
-const WORKOUT_GOAL_MIN = 30
 const PRAYER_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha']
 
 function todayKey(d = new Date()) {
@@ -106,16 +105,6 @@ function readNamazMonthRate() {
   return daysElapsed > 0 ? Math.round((fullDays / daysElapsed) * 100) : 0
 }
 
-function readWorkoutMinutes() {
-  try {
-    const all = JSON.parse(localStorage.getItem('meeee_workout') || '{}')
-    const sessions = all[todayKey()] || []
-    return sessions.reduce((sum, s) => sum + (s.minutes || 0), 0)
-  } catch {
-    return 0
-  }
-}
-
 const CATEGORY_ICON = {
   upi: 'smartphone', bank: 'account_balance', food: 'restaurant', shopping: 'shopping_cart',
   transport: 'directions_car', utilities: 'bolt', manual: 'edit_note',
@@ -145,7 +134,6 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
   const namazWeekly = readNamazWeekly()
   const namazStreaks = readNamazStreaks()
   const namazMonthRate = readNamazMonthRate()
-  const workoutMinutes = readWorkoutMinutes()
 
   useEffect(() => {
     return addListener((msg) => {
@@ -364,16 +352,6 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
 
   const dateLabel = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })
 
-  const modules = [
-    { key: 'namaz', icon: 'mosque', name: 'Prayer', blurb: 'Namaz log, qada tracker & streaks', metric: `${namazCount}/5`, sub: 'today' },
-    { key: 'transactions', icon: 'payments', name: 'Finance', blurb: 'Spending, budgets & cashflow', metric: formatINRCompact(monthTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0)), sub: 'spent this month' },
-    { key: 'khatabook', icon: 'account_balance_wallet', name: 'Khata Book', blurb: 'Who owes what, settled cleanly', metric: formatINRCompact(khataTotals.youllGet), sub: 'receivable' },
-    { key: 'milestone', icon: 'flag', name: 'Milestones', blurb: 'Challenges, habits & focus tasks', metric: `${activeGoals.length}`, sub: 'active challenges' },
-    { key: 'journal', icon: 'edit_note', name: 'Journal', blurb: 'Daily mood, energy & notes check-in', metric: avgMood7d != null ? avgMood7d.toFixed(1) : '—', sub: 'avg mood (7d)' },
-    { key: 'health', icon: 'health_and_safety', name: 'Health', blurb: 'Illnesses, recoveries & reminders', metric: `${healthSickDays90d}`, sub: 'sick days (90d)' },
-    { key: 'workout', icon: 'fitness_center', name: 'Workout', blurb: 'Sessions logged today', metric: `${workoutMinutes}m`, sub: `of ${WORKOUT_GOAL_MIN}m goal` },
-  ]
-
   return (
     <div className="dashboard relative h-full overflow-y-auto overflow-x-hidden surface-sand font-sans">
       <div
@@ -418,37 +396,10 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
           </button>
         </section>
 
-        {/* Streaks strip — Namaz, Journal, and (if any active) Milestone streaks side by
-            side, in one glance, instead of only visible after opening each module
-            separately. Milestone chip only renders once there's an active goal to show. */}
-        <div className={`mt-10 grid grid-cols-2 gap-3 ${bestMilestoneStreak ? 'sm:grid-cols-3' : ''}`}>
-          <button type="button" onClick={() => onSelect('namaz')} className="tile grain flex flex-col items-center gap-1.5 p-4 text-center">
-            <span className="grid size-9 shrink-0 place-items-center rounded-2xl bg-warning-soft text-warning">
-              <span className="material-symbols-outlined text-lg">local_fire_department</span>
-            </span>
-            <p className="num text-xl font-extrabold text-foreground">{namazStreaks.current}d</p>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Namaz streak</p>
-          </button>
-          <button type="button" onClick={() => onSelect('journal')} className="tile grain flex flex-col items-center gap-1.5 p-4 text-center">
-            <span className="grid size-9 shrink-0 place-items-center rounded-2xl bg-warning-soft text-warning">
-              <span className="material-symbols-outlined text-lg">local_fire_department</span>
-            </span>
-            <p className="num text-xl font-extrabold text-foreground">{journalStreak}d</p>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Journal streak</p>
-          </button>
-          {bestMilestoneStreak && (
-            <button type="button" onClick={() => onSelect('milestone')} className="tile grain col-span-2 flex flex-col items-center gap-1.5 p-4 text-center sm:col-span-1">
-              <span className="grid size-9 shrink-0 place-items-center rounded-2xl bg-warning-soft text-warning">
-                <span className="material-symbols-outlined text-lg">local_fire_department</span>
-              </span>
-              <p className="num text-xl font-extrabold text-foreground">{bestMilestoneStreak.streak}d</p>
-              <p className="truncate text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{bestMilestoneStreak.title}</p>
-            </button>
-          )}
-        </div>
-
-        {/* Bento grid */}
-        <div className="mt-8 grid grid-cols-1 gap-4 stagger md:grid-cols-6">
+        {/* Bento grid — each module gets exactly one card here (no separate streaks strip or
+            "Explore the modules" section anymore, both of which used to repeat these same
+            numbers a second/third time as you scrolled). */}
+        <div className="mt-10 grid grid-cols-1 gap-4 stagger md:grid-cols-6">
             {/* Prayer big tile */}
             <button
               type="button"
@@ -482,32 +433,23 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
                   </ResponsiveContainer>
                 </div>
               )}
-              <div className="mt-4 flex items-center gap-2 text-sm font-semibold text-gold">
+              {/* Streak + this-month rate folded into the hero tile's own footer, instead of
+                  two more separate cards directly underneath repeating the same module. */}
+              <div className="mt-4 flex items-center justify-between gap-3 border-t border-foreground/10 pt-3">
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                  <span className="material-symbols-outlined text-sm text-warning">local_fire_department</span>
+                  <span className="num text-foreground">{namazStreaks.current}d</span> streak
+                  <span className="opacity-60">· best {namazStreaks.longest}</span>
+                </span>
+                <span className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+                  <span className="num text-foreground">{namazMonthRate}%</span> this month
+                </span>
+              </div>
+              <div className="mt-3 flex items-center gap-2 text-sm font-semibold text-gold">
                 Open prayer tracker
                 <span className="material-symbols-outlined text-base">arrow_outward</span>
               </div>
             </button>
-
-            {/* Streak + This month - two small cards side by side instead of one full-width
-                streak card with a lot of empty space. */}
-            <div className="col-span-1 grid grid-cols-2 gap-4 md:col-span-3">
-              <button type="button" onClick={() => onSelect('namaz')} className="tile grain flex min-w-0 flex-col gap-2 p-5 text-left">
-                <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-warning-soft text-warning">
-                  <span className="material-symbols-outlined text-xl">local_fire_department</span>
-                </span>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Streak</p>
-                <p className="num text-2xl font-extrabold text-foreground">{namazStreaks.current}d</p>
-                <p className="text-xs text-muted-foreground">Best {namazStreaks.longest}</p>
-              </button>
-              <button type="button" onClick={() => onSelect('namaz')} className="tile grain flex min-w-0 flex-col gap-2 p-5 text-left">
-                <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-gold-soft text-gold">
-                  <span className="material-symbols-outlined text-xl">calendar_month</span>
-                </span>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">This month</p>
-                <p className="num text-2xl font-extrabold text-foreground">{namazMonthRate}%</p>
-                <p className="text-xs text-muted-foreground">on-time rate</p>
-              </button>
-            </div>
 
             {/* Cashflow */}
             <button type="button" onClick={() => onSelect('transactions')} className="tile col-span-1 min-w-0 p-6 text-left md:col-span-3">
@@ -563,11 +505,11 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
             <button type="button" onClick={() => onSelect('khatabook')} className="tile grain col-span-1 flex min-w-0 flex-col justify-between p-6 text-left md:col-span-2">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Khata book</p>
-                <p className="num mt-3 truncate text-3xl font-extrabold text-success">{formatINRCompact(khataTotals.youllGet)}</p>
+                <p className="num mt-2 truncate text-3xl font-extrabold text-success">{formatINRCompact(khataTotals.youllGet)}</p>
                 <p className="text-xs text-muted-foreground">they owe you</p>
               </div>
               {(khataTotals.youllGet > 0 || khataTotals.youllPay > 0) && (
-                <div className="mt-3 flex h-2 w-full overflow-hidden rounded-full bg-secondary">
+                <div className="mt-2.5 flex h-2 w-full overflow-hidden rounded-full bg-secondary">
                   <div
                     className="h-full bg-success"
                     style={{ width: `${(khataTotals.youllGet / (khataTotals.youllGet + khataTotals.youllPay)) * 100}%` }}
@@ -578,23 +520,32 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
                   />
                 </div>
               )}
-              <p className="num mt-4 truncate text-sm font-semibold text-destructive">
+              <p className="num mt-2.5 truncate text-sm font-semibold text-destructive">
                 {formatINRCompact(khataTotals.youllPay)}
                 <span className="ml-1 text-xs font-normal text-muted-foreground">you owe</span>
               </p>
             </button>
 
             {/* Milestones — up to 3 active goals listed with their own progress bar, instead
-                of only ever showing the single newest one. */}
+                of only ever showing the single newest one. bestMilestoneStreak folds the old
+                separate Streaks-strip chip into this card's own header instead of a
+                second/third place showing the same number. */}
             {topActiveGoals.length > 0 && (
               <button type="button" onClick={() => onSelect('milestone')} className="tile grain col-span-1 flex min-w-0 flex-col p-6 text-left md:col-span-2">
-                <div className="flex items-start justify-between">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 truncate text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                     {activeGoals.length} active challenge{activeGoals.length === 1 ? '' : 's'}
                   </p>
-                  <span className="material-symbols-outlined shrink-0 text-base text-gold">flag</span>
+                  {bestMilestoneStreak ? (
+                    <span className="flex shrink-0 items-center gap-1 text-xs font-bold text-warning">
+                      <span className="material-symbols-outlined text-sm">local_fire_department</span>
+                      {bestMilestoneStreak.streak}d
+                    </span>
+                  ) : (
+                    <span className="material-symbols-outlined shrink-0 text-base text-gold">flag</span>
+                  )}
                 </div>
-                <div className="mt-4 flex min-w-0 flex-col gap-3">
+                <div className="mt-2.5 flex min-w-0 flex-col gap-3">
                   {topActiveGoals.map(({ goal, stats }) => (
                     <div key={goal.id} className="min-w-0">
                       <p className="truncate text-sm font-bold text-foreground">{goal.title}</p>
@@ -653,7 +604,7 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
                   <span className="material-symbols-outlined text-xl">health_and_safety</span>
                 </span>
               </div>
-              <p className="mt-4 text-sm text-muted-foreground">
+              <p className="mt-2.5 text-sm text-muted-foreground">
                 {nextHealthReminder
                   ? <>{nextHealthReminder.title} &middot; <span className="font-semibold text-foreground">{formatDueLabel(nextHealthReminder.dueDate)}</span></>
                   : 'No reminders due soon.'}
@@ -680,31 +631,6 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
                 <span className="material-symbols-outlined text-lg">{a.icon}</span>
               </span>
               <p className="text-[11px] font-semibold text-foreground">{a.label}</p>
-            </button>
-          ))}
-        </div>
-
-        {/* Module launcher */}
-        <h2 className="mb-5 mt-16 font-display text-xl font-bold text-foreground">Explore the modules</h2>
-        <div className="grid grid-cols-1 gap-4 stagger sm:grid-cols-2 lg:grid-cols-4">
-          {modules.map(m => (
-            <button
-              key={m.key}
-              type="button"
-              onClick={() => onSelect(m.key)}
-              className="tile group flex min-w-0 flex-col gap-4 p-6 text-left"
-            >
-              <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gold-soft text-gold transition-transform duration-300 group-hover:-translate-y-1">
-                <span className="material-symbols-outlined text-xl">{m.icon}</span>
-              </span>
-              <div className="min-w-0">
-                <p className="text-base font-bold text-foreground">{m.name}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{m.blurb}</p>
-              </div>
-              <p className="num mt-auto truncate text-2xl font-extrabold text-foreground">
-                {m.metric}
-                <span className="ml-2 text-[11px] font-normal text-muted-foreground">{m.sub}</span>
-              </p>
             </button>
           ))}
         </div>

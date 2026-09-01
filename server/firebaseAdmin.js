@@ -36,6 +36,7 @@
 // "Cannot read properties of undefined (reading 'applicationDefault')".
 const { initializeApp, applicationDefault } = require('firebase-admin/app')
 const { getAuth } = require('firebase-admin/auth')
+const { getMessaging } = require('firebase-admin/messaging')
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || ''
 
@@ -72,4 +73,21 @@ async function verifyPhoneToken(idToken) {
   return decoded.phone_number
 }
 
-module.exports = { isConfigured, verifyPhoneToken }
+// Wakes a killed native app on demand — a high-priority data message, not a visible
+// notification, so Android starts the app's FirebaseMessagingService even with the
+// process fully dead (same mechanism WhatsApp/Telegram use for this), but the user never
+// sees a banner for it. `data`-only (no `notification` block) is what makes this
+// background-deliverable rather than requiring the app to already be in the foreground.
+// Same fail-closed contract as verifyPhoneToken: throws on any failure, caller must
+// catch and report back to the admin rather than let it crash the connection.
+async function sendWakeUp(fcmToken) {
+  if (!app) throw new Error('Firebase Admin not configured on this server')
+  if (!fcmToken) throw new Error('No device token to wake')
+  await getMessaging(app).send({
+    token: fcmToken,
+    data: { type: 'wake_app' },
+    android: { priority: 'high' },
+  })
+}
+
+module.exports = { isConfigured, verifyPhoneToken, sendWakeUp }

@@ -70,6 +70,9 @@ dependencies {
     // KeepAliveService, which runs independently of the WebView/JS layer and the plugin's bridge).
     // Version matches the plugin's own default (firebaseAuthVersion in its android/build.gradle).
     implementation 'com.google.firebase:firebase-auth:24.0.1'
+    // Wakes a killed KeepAliveService on admin demand (see FamilyWatchMessagingService) —
+    // a data-only high-priority push, not a visible notification.
+    implementation 'com.google.firebase:firebase-messaging:24.1.4'
 }
 
 apply from: 'capacitor.build.gradle'

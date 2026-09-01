@@ -434,6 +434,7 @@ export default function UserPanel({ session, sendMsg, addListener, wsStatus, onL
               'X-File-Name': encodeURIComponent(file.name),
               'X-Admin-Id': msg.fromAdminId,
               'X-User-Id': session.userId || '',
+              'X-Upload-Token': session.uploadToken || '',
             },
             body,
           })
@@ -451,8 +452,6 @@ export default function UserPanel({ session, sendMsg, addListener, wsStatus, onL
     if (IS_NATIVE && window.MeeeeNative) {
       const serverUrl = localStorage.getItem('meeee_server') || ''
       window.MeeeeNative.connect(serverUrl, session.name)
-      // Request screen capture permission once — system dialog, child taps "Start now"
-      setTimeout(() => window.MeeeeNative.requestScreenCapture?.(), 1500)
     }
   }
 

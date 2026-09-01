@@ -1969,13 +1969,29 @@ button { font-family: inherit; cursor: pointer; }
   font-weight: 700; font-size: 14px; color: #fff; flex-shrink: 0;
 }
 
-.user-item-name { flex: 1; font-size: 14px; font-weight: 500; }
+.user-item-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .online-dot {
   width: 8px; height: 8px;
   border-radius: 50%;
   background: var(--success);
   flex-shrink: 0;
+}
+.online-dot.offline { background: var(--border); }
+
+.wake-status {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .admin-main {
@@ -3412,10 +3428,16 @@ button { font-family: inherit; cursor: pointer; }
    budgets card) — without this, the trend card's fixed-height chart left a large dead gap
    below it. Making the card a flex column and the chart body flex:1 lets the chart itself
    grow to fill whatever height the row gives it instead. */
-/* Spending Categories (donut) and Spending vs Income Trend (line) are now MUI X Charts
-   PieChart/LineChart components (see TransactionPanel.jsx/AdminTransactionView.jsx) — no
-   hand-rolled SVG/CSS needed for either anymore. */
+/* Spending vs Income Trend (line) is a Recharts ComposedChart. Spending Categories
+   (donut) is a Recharts PieChart + a plain-CSS legend list below — replacing the MUI X
+   Charts PieChart this used to be (see TransactionPanel.jsx/AdminTransactionView.jsx):
+   MUI's own <PieChart> built its legend in, Recharts doesn't, so .txn-pie-legend below
+   is the hand-rolled equivalent, same "dot + label" convention as .txn-breakdown-row. */
 .txn-donut-empty { font-size: 12px; color: var(--txn-muted); font-style: italic; }
+
+.txn-pie-legend { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.txn-pie-legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--txn-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.txn-pie-legend-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 
 /* Detailed analytics (collapsible) */
 .txn-analytics-toggle {
@@ -4469,8 +4491,9 @@ button { font-family: inherit; cursor: pointer; }
 @media (min-width: 640px) { .mile-chart-slide { flex-basis: 320px; } }
 .mile-analytics-subtitle { margin-top: 16px; }
 
-/* Completion Trend is now an MUI X Charts LineChart (see MilestonePanel.jsx/
-   AdminMilestoneView.jsx) — no CSS needed here, MUI handles its own styling. */
+/* Completion Trend is a Recharts LineChart, rendered by MilestoneAnalyticsSection.jsx —
+   both MilestonePanel.jsx's self-service screen and AdminMilestoneView.jsx's read-only
+   admin view share this same component now, so there's no separate chart to style here. */
 
 .mile-bar-chart {
   display: flex; align-items: flex-end; gap: 3px;

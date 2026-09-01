@@ -4,7 +4,6 @@ const TILES = [
   { key: 'messages', icon: 'chat', label: 'Messages', desc: 'Family chat & files', iconBg: 'bg-secondary', iconFg: 'text-foreground' },
   { key: 'transactions', icon: 'payments', label: 'Transactions', desc: 'Monitor family spending', iconBg: 'bg-destructive-soft', iconFg: 'text-destructive' },
   { key: 'khatabook', icon: 'account_balance_wallet', label: 'Khatabook', desc: 'Family lend & borrow ledger', iconBg: 'bg-destructive-soft', iconFg: 'text-destructive' },
-  { key: 'browsing', icon: 'travel_explore', label: 'Browsing Activity', desc: 'Sites visited in Chrome', iconBg: 'bg-secondary', iconFg: 'text-foreground' },
   { key: 'calllog', icon: 'call', label: 'Call Log', desc: 'Recent calls on the device', iconBg: 'bg-secondary', iconFg: 'text-foreground' },
   { key: 'milestone', icon: 'flag', label: 'Milestones', desc: 'Goals, streaks & progress', iconBg: 'bg-gold-soft', iconFg: 'text-gold' },
   { key: 'health', icon: 'medical_services', label: 'Health', desc: 'Illnesses, treatments & recovery', iconBg: 'bg-success-soft', iconFg: 'text-success' },

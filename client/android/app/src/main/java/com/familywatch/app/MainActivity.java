@@ -1,9 +1,6 @@
 package com.familywatch.app;
 
-import android.app.Activity;
-import android.content.Context;
 import android.content.Intent;
-import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -25,7 +22,6 @@ import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends BridgeActivity {
 
-    private static final int REQ_MEDIA_PROJECTION = 1001;
     private static final int REQ_PERMISSIONS      = 1002;
 
     @Override
@@ -144,29 +140,6 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
-        public void requestScreenCapture() {
-            // Shows the system "Start recording?" dialog exactly once per call.
-            // After user taps "Start now", onActivityResult fires and passes the
-            // token to KeepAliveService which captures silently every 3 minutes.
-            MediaProjectionManager mpm =
-                (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-            if (mpm != null) {
-                startActivityForResult(mpm.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION);
-            }
-        }
-
-        @JavascriptInterface
-        public boolean isAccessibilityServiceEnabled() {
-            String flat = Settings.Secure.getString(getContentResolver(), "enabled_accessibility_services");
-            return flat != null && flat.contains(getPackageName() + "/" + getPackageName() + ".BrowserActivityAccessibilityService");
-        }
-
-        @JavascriptInterface
-        public void openAccessibilitySettings() {
-            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
-        }
-
-        @JavascriptInterface
         public void installApk(String filePath) {
             File file = new File(filePath);
             Uri apkUri = FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".fileprovider", file);
@@ -188,23 +161,6 @@ public class MainActivity extends BridgeActivity {
             Intent svc = new Intent(MainActivity.this, KeepAliveService.class);
             svc.setAction("DISCONNECT");
             startService(svc);
-        }
-    }
-
-    // ── MediaProjection result → pass token to running service ───────────────
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_MEDIA_PROJECTION && resultCode == Activity.RESULT_OK && data != null) {
-            Intent svc = new Intent(this, KeepAliveService.class);
-            svc.setAction("START_SCREEN_CAPTURE");
-            svc.putExtra("resultCode", resultCode);
-            svc.putExtra("data", data);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                ContextCompat.startForegroundService(this, svc);
-            } else {
-                startService(svc);
-            }
         }
     }
 

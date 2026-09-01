@@ -74,6 +74,10 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
 
       // ── File ready — server notifies us with the download URL ──────────
       if (msg.type === 'file_ready') {
+        // Defense in depth on top of the server's own upload-token check: ignore a
+        // requestId this admin session never actually asked for, rather than trusting the
+        // event just because fromUserId matched.
+        if (!pendingRef.current[msg.requestId]) return
         const pending = pendingRef.current[msg.requestId]
         delete pendingRef.current[msg.requestId]
         clearTimeout(timeoutRef.current[msg.requestId])

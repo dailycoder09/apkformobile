@@ -1,7 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { PieChart } from '@mui/x-charts/PieChart'
-import { ThemeProvider, createTheme } from '@mui/material/styles'
-import { Area, Bar, CartesianGrid, ComposedChart, Legend, Line, ResponsiveContainer, XAxis, YAxis, Tooltip as RechartsTooltip } from 'recharts'
+import { Area, Bar, CartesianGrid, Cell, ComposedChart, Legend, Line, Pie, PieChart, ResponsiveContainer, XAxis, YAxis, Tooltip as RechartsTooltip } from 'recharts'
 import { getCategoryMeta, OVERALL_BUDGET_CATEGORY, hasRealTime } from '../utils/txnMeta'
 import { detectRecurring } from '../utils/recurringDetection'
 
@@ -427,7 +425,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
     return recurringByUser[activeUser] || { groups: [], totalMonthly: 0 }
   }, [recurringByUser, activeUser])
 
-  // Spending Categories is an MUI X Charts PieChart — mirrors TransactionPanel.jsx's
+  // Spending Categories is a Recharts PieChart — mirrors TransactionPanel.jsx's
   // own conversion (see that file for the equivalent self-view chart).
   const categoryPieData = useMemo(
     () => categoryStats.categories.map((c, i) => ({ id: i, label: `${c.label} · ${c.pct}%`, value: c.amount, color: c.color })),
@@ -479,7 +477,7 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
     return { buckets, bucketMax, bankBreakdown, bankMax, avgDailySpend, biggestExpense, savingsRate }
   }, [displayed, period, start, end, totalDebit, totalCredit])
 
-  // Spending vs Income Trend is an MUI X Charts LineChart — mirrors TransactionPanel.jsx.
+  // Spending vs Income Trend is a Recharts ComposedChart — mirrors TransactionPanel.jsx.
   const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
   const shortDateLabel = (key) => {
     const [, mo, da] = key.split('-')
@@ -748,7 +746,6 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
           )}
 
           {showCharts && (
-          <ThemeProvider theme={createTheme({ palette: { primary: { main: '#e0345c' } } })}>
           <div className="txn-charts-grid">
             <div className="txn-chart-card">
               <h3 className="txn-analytics-title">Spending Categories</h3>
@@ -756,11 +753,24 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
                 {categoryPieData.length === 0 ? (
                   <p className="txn-donut-empty">No spending recorded for this period.</p>
                 ) : (
-                  <PieChart
-                    series={[{ data: categoryPieData, innerRadius: 45, paddingAngle: 2, cornerRadius: 4 }]}
-                    height={220}
-                    slotProps={{ legend: { direction: 'vertical', position: { vertical: 'middle', horizontal: 'end' } } }}
-                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, height: 220 }}>
+                    <ResponsiveContainer width="55%" height="100%">
+                      <PieChart>
+                        <Pie data={categoryPieData} dataKey="value" innerRadius={45} outerRadius={80} paddingAngle={2} stroke="none">
+                          {categoryPieData.map((c) => <Cell key={c.id} fill={c.color} />)}
+                        </Pie>
+                        <RechartsTooltip formatter={(v, _n, entry) => [formatINRShort(v), entry.payload.label]} contentStyle={{ borderRadius: 12, border: 'none', boxShadow: '0 4px 14px rgba(0,0,0,0.12)' }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="txn-pie-legend">
+                      {categoryPieData.map((c) => (
+                        <span key={c.id} className="txn-pie-legend-item">
+                          <span className="txn-pie-legend-dot" style={{ background: c.color }} />
+                          {c.label}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
@@ -856,7 +866,6 @@ export default function AdminTransactionView({ initialUsers, sendMsg, addListene
               </div>
             )}
           </div>
-          </ThemeProvider>
           )}
         </div>
 

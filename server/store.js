@@ -7,7 +7,6 @@ db.pragma('journal_mode = WAL') // survives concurrent reads without blocking th
 
 const TABLES = {
   TRANSACTIONS: 'transactions',
-  BROWSING_HISTORY: 'browsing_history',
   CALL_LOGS: 'call_logs',
   LEDGER_CONTACTS: 'ledger_contacts',
   LEDGER_ENTRIES: 'ledger_entries',
@@ -64,8 +63,8 @@ db.exec(`
 `)
 renameColumnIfPresent('known_users', 'name', 'phone_number')
 
-// Small durable key/value table for server-generated secrets (e.g. the screenshot
-// encryption key) that must survive a process restart — see getOrCreateSecret().
+// Small durable key/value table for server-generated secrets (e.g. the upload
+// token secret) that must survive a process restart — see getOrCreateSecret().
 db.exec(`
   CREATE TABLE IF NOT EXISTS secrets (
     name TEXT PRIMARY KEY,
@@ -85,6 +84,21 @@ db.exec(`
     last_name TEXT,
     email TEXT,
     photo_path TEXT,
+    updated_at INTEGER
+  )
+`)
+
+// One row per user's current FCM push token — lets the server wake a killed native app
+// on demand (admin "Wake up" action) rather than relying solely on the always-on
+// KeepAliveService staying alive. Doubles as the durable "known family members" roster
+// for that same feature: unlike the live in-memory `users` Map, this survives both a
+// killed app and a server restart, and is populated the first time each child's native
+// app registers a token (right after login) — see register_fcm_token in index.js.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS device_tokens (
+    user_id TEXT PRIMARY KEY,
+    fcm_token TEXT,
+    name TEXT,
     updated_at INTEGER
   )
 `)
@@ -148,6 +162,17 @@ const setPhotoPathStmt = db.prepare(`
   ON CONFLICT(user_id) DO UPDATE SET photo_path = excluded.photo_path, updated_at = excluded.updated_at
 `)
 
+const getDeviceTokenStmt = db.prepare('SELECT * FROM device_tokens WHERE user_id = ?')
+const getAllDeviceTokensStmt = db.prepare('SELECT * FROM device_tokens ORDER BY updated_at DESC')
+const upsertDeviceTokenStmt = db.prepare(`
+  INSERT INTO device_tokens (user_id, fcm_token, name, updated_at)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(user_id) DO UPDATE SET
+    fcm_token  = excluded.fcm_token,
+    name       = excluded.name,
+    updated_at = excluded.updated_at
+`)
+
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
 
@@ -190,8 +215,8 @@ function deleteItem(table, ownerUserId, id) {
   return info.changes > 0
 }
 
-// Wipes every row for a given owner in the given table — e.g. "delete all browsing
-// history" / "delete all call logs" for a child, requested by the admin.
+// Wipes every row for a given owner in the given table — e.g. "delete all call
+// logs" / "delete all transactions" for a child, requested by the admin.
 function deleteAllForOwner(table, ownerUserId) {
   const info = stmts[table].deleteAll.run(ownerUserId)
   return info.changes
@@ -249,6 +274,24 @@ function setProfilePhotoPath(userId, photoPath) {
   return getProfile(userId)
 }
 
+// Returns null if this user's native app has never registered a push token.
+function getDeviceToken(userId) {
+  return getDeviceTokenStmt.get(userId) || null
+}
+
+// Every known device, regardless of current online status — the durable roster behind
+// the admin's "All family members" list. `name` is whatever the native app's own
+// session name was at the time it last registered (cosmetic only, same as everywhere
+// else in this app — never used to look anyone up).
+function getAllDeviceTokens() {
+  return getAllDeviceTokensStmt.all()
+}
+
+function upsertDeviceToken(userId, fcmToken, name) {
+  upsertDeviceTokenStmt.run(userId, fcmToken, name ?? null, Date.now())
+  return getDeviceToken(userId)
+}
+
 // Returns { category: monthlyLimit, ... } for every budget the owner has set (including
 // the reserved overall-budget category, if set) — empty object if none set yet.
 function getBudgets(ownerUserId) {
@@ -278,6 +321,9 @@ module.exports = {
   getProfile,
   upsertProfile,
   setProfilePhotoPath,
+  getDeviceToken,
+  getAllDeviceTokens,
+  upsertDeviceToken,
   getBudgets,
   setBudget,
 }

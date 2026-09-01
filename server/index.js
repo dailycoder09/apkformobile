@@ -34,9 +34,9 @@ const verifyIdentity = DEV_AUTH_BYPASS
   ? (idToken, name) => Promise.resolve(`dev:${(name || 'anon').trim().toLowerCase() || 'anon'}`)
   : (idToken) => firebaseAdmin.verifyPhoneToken(idToken)
 
-// Profile photos — persistent (no TTL, unlike the screenshot/file-transfer stores
-// above), stored as plain files on the VM's disk. Small scale, no need for a DB
-// blob or cloud storage.
+// Profile photos — persistent (no TTL, unlike the file-transfer store below),
+// stored as plain files on the VM's disk. Small scale, no need for a DB blob or
+// cloud storage.
 const UPLOADS_DIR        = path.join(__dirname, 'uploads')
 const PROFILE_PHOTOS_DIR = path.join(UPLOADS_DIR, 'profiles')
 const MAX_PHOTO_MB       = 5
@@ -133,55 +133,11 @@ const fileStore = new Map()
 const MAX_CONCURRENT_UPLOADS = 5
 let activeUploads = 0
 
-// Screenshot store: id → { iv, authTag, ciphertext, userId, userName, ts }
-// Keyed by userId for list lookup: screenshotIndex userId → [id, ...]
-// Encrypted at rest (AES-256-GCM) — plaintext is never stored. Key is persisted via
-// store.getOrCreateSecret so it survives process restarts (same durable-storage pattern
-// already used for transactions/browsing/call-logs); SCREENSHOT_ENC_KEY still wins if
-// explicitly set, for deployment flexibility.
-const screenshotStore = new Map()
-const screenshotIndex = new Map()  // userId → [id, ...]
-const SCREENSHOT_TTL  = 24 * 60 * 60 * 1000  // 24 h
-const SCREENSHOT_KEY  = process.env.SCREENSHOT_ENC_KEY
-  ? Buffer.from(process.env.SCREENSHOT_ENC_KEY, 'base64')
-  : Buffer.from(store.getOrCreateSecret('screenshot_key'), 'hex')
-
 // Per-session upload token — proves "I am the live WS connection for this userId" to the
-// HTTP profile-photo/screenshot POST endpoints below, which (being raw POSTs, not the WS
-// itself) otherwise have no way to authenticate the caller. Same persisted-secret pattern
-// as SCREENSHOT_KEY above, so the HMAC stays valid across process restarts.
+// HTTP profile-photo POST endpoint below, which (being a raw POST, not the WS itself)
+// otherwise has no way to authenticate the caller. Persisted via store.getOrCreateSecret
+// so the HMAC stays valid across process restarts.
 const UPLOAD_TOKEN_SECRET = store.getOrCreateSecret('upload_token_secret')
-
-function encryptScreenshot(data) {
-  const iv = crypto.randomBytes(12)
-  const cipher = crypto.createCipheriv('aes-256-gcm', SCREENSHOT_KEY, iv)
-  const ciphertext = Buffer.concat([cipher.update(data), cipher.final()])
-  return { iv, authTag: cipher.getAuthTag(), ciphertext }
-}
-
-function decryptScreenshot(shot) {
-  const decipher = crypto.createDecipheriv('aes-256-gcm', SCREENSHOT_KEY, shot.iv)
-  decipher.setAuthTag(shot.authTag)
-  return Buffer.concat([decipher.update(shot.ciphertext), decipher.final()])
-}
-
-function storeScreenshot(userId, userName, data) {
-  const id = `${userId}-${Date.now()}`
-  const { iv, authTag, ciphertext } = encryptScreenshot(data)
-  screenshotStore.set(id, { iv, authTag, ciphertext, userId, userName, ts: Date.now() })
-  if (!screenshotIndex.has(userId)) screenshotIndex.set(userId, [])
-  screenshotIndex.get(userId).push(id)
-  // Auto-delete after 24 h
-  setTimeout(() => {
-    screenshotStore.delete(id)
-    const list = screenshotIndex.get(userId)
-    if (list) {
-      const idx = list.indexOf(id)
-      if (idx !== -1) list.splice(idx, 1)
-    }
-  }, SCREENSHOT_TTL)
-  return id
-}
 
 const MIME = {
   '.html': 'text/html', '.js': 'application/javascript',
@@ -284,11 +240,15 @@ const server = http.createServer(async (req, res) => {
       const name       = decodeURIComponent(req.headers['x-file-name'] || 'file')
       const mime       = req.headers['content-type'] || 'application/octet-stream'
 
-      // fromUserId is client-supplied and used to attribute the file_ready notification —
-      // only trust it if it actually matches a currently-connected user session, otherwise
-      // any device could impersonate another child's uploads.
-      if (fromUserId && !users.has(fromUserId)) {
-        res.writeHead(403); res.end('Unknown or disconnected user session'); return
+      // Same per-session upload token proof as the profile-photo endpoint below —
+      // fromUserId/adminId are client-supplied headers with no inherent trust (userId is
+      // broadcast in plaintext to every connected client via auth_ok/users_list), so the
+      // previous "does fromUserId match SOME live session" check was defeatable by anyone
+      // who simply knew a live child's userId. The token is minted fresh per WS connection
+      // and sent only to that connection's own auth_ok reply, never broadcast.
+      const presentedToken = req.headers['x-upload-token'] || ''
+      if (!fromUserId || !verifyUploadToken(fromUserId, presentedToken)) {
+        res.writeHead(403); res.end('Invalid or missing upload token'); return
       }
 
       // Cap total concurrent in-flight uploads — each one buffers up to MAX_FILE_MB in
@@ -383,67 +343,6 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
-    // ── Screenshot upload from child ─────────────────────────────────────────
-    // Gated by the per-session upload token (X-Upload-Token) issued at WS auth time — see
-    // verifyUploadToken() above. Previously this endpoint trusted the bare :userId path
-    // segment with NO check at all, and userId is broadcast in plaintext to every
-    // connected client (auth_ok's own `users` field, and every users_list broadcast), so
-    // any authenticated family member could learn a sibling's userId and inject a
-    // fabricated screenshot attributed to them.
-    if (req.method === 'POST' && urlPath.startsWith('/api/screenshot/')) {
-      const userId   = urlPath.replace('/api/screenshot/', '')
-      const presentedToken = req.headers['x-upload-token'] || ''
-      if (!verifyUploadToken(userId, presentedToken)) {
-        res.writeHead(403); res.end('Invalid or missing upload token'); return
-      }
-      const userName = decodeURIComponent(req.headers['x-user-name'] || 'User')
-      const chunks = []; let total = 0
-      req.on('data', c => { total += c.length; if (total < 5 * 1024 * 1024) chunks.push(c) })
-      req.on('end', () => {
-        const data = Buffer.concat(chunks)
-        storeScreenshot(userId, userName, data)
-        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true }))
-      })
-      req.on('error', () => { res.writeHead(500); res.end() })
-      return
-    }
-
-    // ── Screenshot list for admin ────────────────────────────────────────────
-    if (req.method === 'GET' && urlPath.startsWith('/api/screenshots/')) {
-      const authStatus = checkAdminAuth(req)
-      if (authStatus === 'locked') { res.writeHead(429); res.end('Too many attempts — try again later'); return }
-      if (authStatus !== 'ok') { res.writeHead(403); res.end('Forbidden'); return }
-      const userId = urlPath.replace('/api/screenshots/', '')
-      const ids = screenshotIndex.get(userId) || []
-      const list = ids.map(id => {
-        const s = screenshotStore.get(id)
-        return s ? { id, ts: s.ts, size: s.ciphertext.length } : null
-      }).filter(Boolean).sort((a, b) => b.ts - a.ts)
-      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ screenshots: list }))
-      return
-    }
-
-    // ── Single screenshot download ───────────────────────────────────────────
-    if (req.method === 'GET' && urlPath.startsWith('/api/screenshot/')) {
-      const authStatus = checkAdminAuth(req)
-      if (authStatus === 'locked') { res.writeHead(429); res.end('Too many attempts — try again later'); return }
-      if (authStatus !== 'ok') { res.writeHead(403); res.end('Forbidden'); return }
-      const id = urlPath.replace('/api/screenshot/', '')
-      const shot = screenshotStore.get(id)
-      if (!shot) { res.writeHead(404); res.end('Not found or expired'); return }
-      try {
-        const data = decryptScreenshot(shot)
-        res.writeHead(200, { ...CORS, 'Content-Type': 'image/webp', 'Content-Length': data.length })
-        res.end(data)
-      } catch (e) {
-        res.writeHead(500, { ...CORS, 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Could not decrypt screenshot' }))
-      }
-      return
-    }
-
     // ── Profile photo upload (self-service) ──────────────────────────────────
     // Gated by the per-session upload token (X-Upload-Token) issued at WS auth time — see
     // verifyUploadToken() above. Unlike the WS connection (which knows exactly who
@@ -499,8 +398,8 @@ const server = http.createServer(async (req, res) => {
 
     // ── Profile photo download ────────────────────────────────────────────────
     // Ungated on purpose — it's just a family member's own display photo, not
-    // sensitive monitoring data like screenshots/file transfers, so there's no
-    // reason a child should need the admin PIN to see their own picture.
+    // sensitive monitoring data like file transfers, so there's no reason a
+    // child should need the admin PIN to see their own picture.
     if (req.method === 'GET' && urlPath.startsWith('/api/profile-photo/')) {
       const userId = decodeURIComponent(urlPath.replace('/api/profile-photo/', ''))
       if (!isValidUserId(userId)) { res.writeHead(400); res.end('Invalid userId'); return }
@@ -653,6 +552,17 @@ function send(ws, msg) {
 
 function broadcastToAdmins(msg) {
   for (const [, m] of admins) send(m.ws, msg)
+}
+
+// Shared by device_list_get's reply and register_fcm_token's broadcast below, so an
+// admin panel already open sees a newly-registered device without needing to reconnect.
+function buildDeviceList() {
+  return store.getAllDeviceTokens().map((d) => ({
+    userId: d.user_id,
+    name: d.name,
+    updatedAt: d.updated_at,
+    online: users.has(d.user_id),
+  }))
 }
 
 function broadcastAll(msg) {
@@ -851,7 +761,7 @@ wss.on('connection', (ws, req) => {
           return
         }
         // Not one of the above — fall through to the admin handlers below
-        // (transactions_get, browsing_get, etc.)
+        // (transactions_get, call_log_get, etc.)
       }
 
       // ── Admin commands ── transactions ─────────────
@@ -889,21 +799,6 @@ wss.on('connection', (ws, req) => {
         return
       }
 
-      // ── Admin commands ── browsing activity ─────────
-      if (meta.role === 'admin' && msg.type === 'browsing_get') {
-        const list = store.getList(store.TABLES.BROWSING_HISTORY, msg.userId)
-        send(ws, { type: 'browsing_list', userId: msg.userId, entries: list })
-        return
-      }
-
-      // Admin-only: wipe all browsing history for a child. No client UI wired up to this
-      // yet — a "Delete history" button in AdminBrowsingView.jsx is a follow-up.
-      if (meta.role === 'admin' && msg.type === 'browsing_delete_all') {
-        store.deleteAllForOwner(store.TABLES.BROWSING_HISTORY, msg.userId)
-        broadcastToAdmins({ type: 'browsing_cleared', userId: msg.userId })
-        return
-      }
-
       // ── Admin commands ── call log ───────────────────
       if (meta.role === 'admin' && msg.type === 'call_log_get') {
         const list = store.getList(store.TABLES.CALL_LOGS, msg.userId)
@@ -916,6 +811,28 @@ wss.on('connection', (ws, req) => {
       if (meta.role === 'admin' && msg.type === 'call_log_delete_all') {
         store.deleteAllForOwner(store.TABLES.CALL_LOGS, msg.userId)
         broadcastToAdmins({ type: 'call_log_cleared', userId: msg.userId })
+        return
+      }
+
+      // ── Admin commands ── wake a killed app ──────────
+      // Unlike every other admin command above, this one's target doesn't need to be
+      // currently connected — device_tokens is the durable roster (see
+      // register_fcm_token above) that survives a killed app or a server restart, unlike
+      // the in-memory `users` Map every other admin view reads from.
+      if (meta.role === 'admin' && msg.type === 'device_list_get') {
+        send(ws, { type: 'device_list', devices: buildDeviceList() })
+        return
+      }
+
+      if (meta.role === 'admin' && msg.type === 'wake_user') {
+        const device = store.getDeviceToken(msg.userId)
+        if (!device || !device.fcm_token) {
+          send(ws, { type: 'wake_result', userId: msg.userId, ok: false, reason: 'No device registered' })
+          return
+        }
+        firebaseAdmin.sendWakeUp(device.fcm_token)
+          .then(() => send(ws, { type: 'wake_result', userId: msg.userId, ok: true }))
+          .catch((e) => send(ws, { type: 'wake_result', userId: msg.userId, ok: false, reason: e.message }))
         return
       }
 
@@ -1327,23 +1244,24 @@ wss.on('connection', (ws, req) => {
           return
         }
 
-        // Browsing domain captured by the native DNS monitor — store + broadcast to admins.
-        // Same bg-connection attribution as transactions: DnsMonitorVpnService talks to the
-        // server via KeepAliveService's background socket, not the foreground session.
-        if (msg.type === 'browsing_add') {
-          const uid = meta.isBg ? meta.primaryId : meta.userId
-          const entry = { ...msg.entry, userId: uid, userName: meta.name }
-          store.appendItem(store.TABLES.BROWSING_HISTORY, uid, entry)
-          broadcastToAdmins({ type: 'browsing_new', entry, fromUserId: uid, fromUserName: meta.name })
-          return
-        }
-
         // Call log entry captured by the native ContentObserver — store + broadcast to admins.
         if (msg.type === 'call_log_add') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
           const entry = { ...msg.entry, userId: uid, userName: meta.name }
           store.appendItem(store.TABLES.CALL_LOGS, uid, entry)
           broadcastToAdmins({ type: 'call_log_new', entry, fromUserId: uid, fromUserName: meta.name })
+          return
+        }
+
+        // FCM push token, registered by the native app right after auth_ok (or queued and
+        // flushed there if it wasn't connected yet — see KeepAliveService.java). This same
+        // row doubles as the durable "known family members" roster for the admin's
+        // "Wake up" action (device_list_get below) — it's the only place a family member's
+        // identity persists independent of whether they're currently connected.
+        if (msg.type === 'register_fcm_token') {
+          const uid = meta.isBg ? meta.primaryId : meta.userId
+          store.upsertDeviceToken(uid, msg.token, meta.name)
+          broadcastToAdmins({ type: 'device_list', devices: buildDeviceList() })
           return
         }
 
