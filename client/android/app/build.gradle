@@ -72,7 +72,7 @@ dependencies {
     implementation 'com.google.firebase:firebase-auth:24.0.1'
     // Wakes a killed KeepAliveService on admin demand (see FamilyWatchMessagingService) —
     // a data-only high-priority push, not a visible notification.
-    implementation 'com.google.firebase:firebase-messaging:24.1.4'
+    implementation 'com.google.firebase:firebase-messaging:24.1.2'
 }
 
 apply from: 'capacitor.build.gradle'
