@@ -8,9 +8,14 @@ import android.os.Environment;
 import android.webkit.MimeTypeMap;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.util.Arrays;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 // Shared safe file-access logic, extracted from KeepAliveService so both it (legacy
 // WebSocket-triggered ls/read_file — still present, but no longer invoked by the server,
@@ -108,6 +113,51 @@ public class FileAccessHelper {
             return new CompressedImage(baos.toByteArray(), "image/webp");
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    // Cheap recursive size sum (just stat calls, no file content is read) — used to
+    // reject an oversized folder download BEFORE spending time/disk actually zipping
+    // it, rather than discovering the problem partway through a multi-GB folder.
+    public static long calculateDirectorySize(File dir) {
+        long total = 0;
+        File[] files = dir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                total += f.isDirectory() ? calculateDirectorySize(f) : f.length();
+            }
+        }
+        return total;
+    }
+
+    // Recursively zips `dir` into `outputZip`, preserving the relative path of every
+    // file at any depth (not just the top level) — a caller that already confirmed
+    // the total size fits within its own limit via calculateDirectorySize above.
+    public static void zipDirectory(File dir, File outputZip) throws Exception {
+        try (ZipOutputStream zos = new ZipOutputStream(
+                new BufferedOutputStream(new FileOutputStream(outputZip)))) {
+            zipDirectoryEntries(dir, dir, zos);
+        }
+    }
+
+    private static void zipDirectoryEntries(File root, File current, ZipOutputStream zos) throws Exception {
+        File[] files = current.listFiles();
+        if (files == null) return;
+        byte[] buffer = new byte[8192];
+        for (File f : files) {
+            String relativePath = root.toURI().relativize(f.toURI()).getPath();
+            if (f.isDirectory()) {
+                zos.putNextEntry(new ZipEntry(relativePath.endsWith("/") ? relativePath : relativePath + "/"));
+                zos.closeEntry();
+                zipDirectoryEntries(root, f, zos);
+            } else {
+                zos.putNextEntry(new ZipEntry(relativePath));
+                try (FileInputStream fis = new FileInputStream(f)) {
+                    int len;
+                    while ((len = fis.read(buffer)) > 0) zos.write(buffer, 0, len);
+                }
+                zos.closeEntry();
+            }
         }
     }
 }

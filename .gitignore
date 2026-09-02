@@ -8,3 +8,4 @@ client/android/app/build/
 .DS_Store
 server/*.sqlite*
 server/uploads/
+server/tmp-uploads/

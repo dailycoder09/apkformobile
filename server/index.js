@@ -21,7 +21,15 @@ if (outboundProxy) setGlobalDispatcher(new ProxyAgent(outboundProxy))
 // loud startup warning below (see server.listen callback).
 const ADMIN_PIN   = process.env.ADMIN_PIN || '1234'
 const CLIENT_DIR  = path.join(__dirname, '../client/dist')
-const MAX_FILE_MB = 200
+const MAX_FILE_MB = 1024
+
+// File transfers are streamed to disk here rather than buffered in memory — this VM
+// is a small e2-micro (1 vCPU/1GB RAM), and holding a near-1GB file as an in-memory
+// Buffer (as this used to work, back when MAX_FILE_MB was 200) risks taking the whole
+// process down under just a couple of concurrent transfers. See MAX_CONCURRENT_UPLOADS
+// below for the other half of that safety margin.
+const TMP_UPLOAD_DIR = path.join(__dirname, 'tmp-uploads')
+fs.mkdirSync(TMP_UPLOAD_DIR, { recursive: true })
 
 // Skips real Firebase phone verification entirely when set — lets local dev log in
 // with any name, no SMS round-trip. Only ever set locally; production's systemd unit
@@ -280,8 +288,26 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      // Cap total concurrent in-flight uploads — each one buffers up to MAX_FILE_MB in
-      // memory, so unbounded concurrency is an easy way to OOM the process.
+      // A quick-pull device reports "file not found" / "too large" etc. by POSTing
+      // here with an X-Error header and an empty body instead of real file bytes —
+      // there's no separate error endpoint, this is the one place the admin is
+      // already listening for a reply to this exact requestId. Handled up front,
+      // before any disk-write machinery, since there's nothing to store.
+      const deviceError = req.headers['x-error']
+      if (deviceError) {
+        req.resume() // drain the (empty) body so the socket doesn't hang
+        req.on('end', () => {
+          const admin = admins.get(adminId)
+          if (admin) send(admin.ws, { type: 'file_error', requestId, error: deviceError, fromUserId })
+          res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true }))
+        })
+        return
+      }
+
+      // Cap total concurrent in-flight uploads — streaming to disk removes the memory
+      // pressure a Buffer-per-upload used to add, but simultaneous large transfers
+      // still add real disk I/O and network load on this 1 vCPU/1GB-RAM VM.
       if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
         res.writeHead(503); res.end('Too many concurrent uploads — try again shortly'); return
       }
@@ -289,59 +315,67 @@ const server = http.createServer(async (req, res) => {
       let uploadCounted = true
       const releaseUpload = () => { if (uploadCounted) { uploadCounted = false; activeUploads-- } }
 
-      const chunks = []
+      const filePath = path.join(TMP_UPLOAD_DIR, requestId)
+      const writeStream = fs.createWriteStream(filePath)
       let totalBytes = 0
+      let aborted = false
       const maxBytes = MAX_FILE_MB * 1024 * 1024
 
+      const cleanupPartial = () => fs.unlink(filePath, () => {})
+
       req.on('data', chunk => {
+        if (aborted) return
         totalBytes += chunk.length
         if (totalBytes > maxBytes) {
+          aborted = true
           req.destroy()
+          writeStream.destroy()
+          cleanupPartial()
           releaseUpload()
           res.writeHead(413); res.end(`File exceeds ${MAX_FILE_MB}MB limit`)
           return
         }
-        chunks.push(chunk)
+        writeStream.write(chunk)
       })
 
       req.on('end', () => {
-        releaseUpload()
-        const admin = admins.get(adminId)
-        // A quick-pull device reports "file not found" / "too large" etc. by POSTing
-        // here with an X-Error header and an empty body instead of real file bytes —
-        // there's no separate error endpoint, this is the one place the admin is
-        // already listening for a reply to this exact requestId.
-        const deviceError = req.headers['x-error']
-        if (deviceError) {
-          if (admin) send(admin.ws, { type: 'file_error', requestId, error: deviceError, fromUserId })
+        if (aborted) return
+        writeStream.end(() => {
+          releaseUpload()
+          fileStore.set(requestId, { filePath, mime, name, adminId, fromUserId, size: totalBytes })
+
+          const admin = admins.get(adminId)
+          if (admin) {
+            send(admin.ws, {
+              type: 'file_ready',
+              requestId,
+              name,
+              size: totalBytes,
+              mimeType: mime,
+              fromUserId,
+            })
+          }
+
           res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: true }))
-          return
-        }
 
-        const data = Buffer.concat(chunks)
-        fileStore.set(requestId, { data, mime, name, adminId, fromUserId })
-
-        // Notify the waiting admin via WebSocket
-        if (admin) {
-          send(admin.ws, {
-            type: 'file_ready',
-            requestId,
-            name,
-            size: data.length,
-            mimeType: mime,
-            fromUserId,
-          })
-        }
-
-        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ ok: true }))
-
-        // Auto-delete after 10 minutes to free memory
-        setTimeout(() => fileStore.delete(requestId), 10 * 60 * 1000)
+          // Auto-delete after 10 minutes — the map entry AND the temp file on disk,
+          // now that the file lives there instead of in memory.
+          setTimeout(() => {
+            fileStore.delete(requestId)
+            fs.unlink(filePath, () => {})
+          }, 10 * 60 * 1000)
+        })
       })
 
-      req.on('error', () => { releaseUpload(); res.writeHead(500); res.end('Upload error') })
+      req.on('error', () => {
+        if (aborted) return
+        aborted = true
+        writeStream.destroy()
+        cleanupPartial()
+        releaseUpload()
+        res.writeHead(500); res.end('Upload error')
+      })
       return
     }
 
@@ -400,7 +434,7 @@ const server = http.createServer(async (req, res) => {
       const file = fileStore.get(requestId)
       if (!file) { res.writeHead(404); res.end('File not found or expired'); return }
 
-      const total = file.data.length
+      const total = file.size
       const range = req.headers.range
 
       if (range) {
@@ -416,7 +450,7 @@ const server = http.createServer(async (req, res) => {
           'Content-Length': chunkSize,
           'Content-Type':   file.mime,
         })
-        res.end(file.data.slice(start, end + 1))
+        fs.createReadStream(file.filePath, { start, end }).pipe(res)
       } else {
         res.writeHead(200, {
           ...CORS,
@@ -425,7 +459,7 @@ const server = http.createServer(async (req, res) => {
           'Content-Disposition': `inline; filename="${encodeURIComponent(file.name)}"`,
           'Content-Length':      total,
         })
-        res.end(file.data)
+        fs.createReadStream(file.filePath).pipe(res)
       }
       return
     }
@@ -844,12 +878,14 @@ wss.on('connection', (ws, req) => {
       if (meta.role === 'admin') {
         // File browsing (ls/read_file) no longer routes through the live connection at
         // all — see quick_pull_ls/quick_pull_read_file below. Only genuinely *live*
-        // actions (mic/location streaming) still need bgWs to be connected.
-        if (['stop_camera', 'start_mic', 'stop_mic', 'start_location', 'stop_location'].includes(msg.type)) {
+        // actions (mic/location streaming), plus folder download (heavier/longer than
+        // the stateless quick-pull budget allows — see KeepAliveService.java's
+        // handleDownloadFolder), still need bgWs to be connected.
+        if (['stop_camera', 'start_mic', 'stop_mic', 'start_location', 'stop_location', 'download_folder'].includes(msg.type)) {
           const target = users.get(msg.targetId)
           if (target) {
             send(target.bgWs || target.ws, { ...msg, fromAdminId: meta.userId })
-          } else if (['start_mic', 'start_location'].includes(msg.type)) {
+          } else if (['start_mic', 'start_location', 'download_folder'].includes(msg.type)) {
             // KeepAliveService is dormant by default now, so "not connected" is common —
             // tell the admin why nothing happened instead of a silent dead end (stop_*
             // doesn't need this: stopping something already stopped is a no-op).

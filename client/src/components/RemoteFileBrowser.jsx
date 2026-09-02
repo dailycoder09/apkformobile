@@ -53,6 +53,43 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
   const timeoutRef            = useRef({}) // requestId → timer
   const lsRequestRef          = useRef(null) // latest outstanding ls requestId, to ignore a stale timeout
   const lsTimeoutRef          = useRef(null)
+  const folderDownloadRequestRef = useRef(null) // latest outstanding folder-download requestId
+  const pathRef               = useRef([]) // mirrors `path` for use inside long-lived callbacks below
+
+  useEffect(() => { pathRef.current = path }, [path])
+
+  // ── Thumbnail previews — reuses the same quick_pull_read_file(preview:true) path
+  // openFile already uses for the modal, just routed to a per-entry slot instead.
+  // Each thumbnail is still a full FCM round-trip, so a small concurrency-capped
+  // queue is used rather than firing one request per image at once.
+  const [thumbnails, setThumbnails] = useState({}) // entryName → { status: 'loading'|'ready'|'error', url }
+  const thumbQueueRef      = useRef([])   // entry names still waiting for a slot
+  const thumbRequestsRef   = useRef({})   // requestId → entry name
+  const thumbActiveCountRef = useRef(0)
+  const MAX_CONCURRENT_THUMBS = 3
+
+  const advanceThumbQueue = useCallback(() => {
+    while (thumbActiveCountRef.current < MAX_CONCURRENT_THUMBS && thumbQueueRef.current.length > 0) {
+      const entryName = thumbQueueRef.current.shift()
+      thumbActiveCountRef.current++
+      const requestId = Math.random().toString(36).slice(2)
+      thumbRequestsRef.current[requestId] = entryName
+      sendMsg({ type: 'quick_pull_read_file', targetId: targetUser.id, path: [...pathRef.current, entryName], requestId, preview: true })
+    }
+  }, [sendMsg, targetUser.id])
+
+  // Fresh queue every time a new folder listing loads
+  useEffect(() => {
+    thumbQueueRef.current = []
+    thumbRequestsRef.current = {}
+    thumbActiveCountRef.current = 0
+    setThumbnails({})
+    if (!entries) return
+    thumbQueueRef.current = entries
+      .filter((e) => e.kind === 'file' && e.mimeType?.startsWith('image/'))
+      .map((e) => e.name)
+    advanceThumbQueue()
+  }, [entries, advanceThumbQueue])
 
   // Stateless quick-pull — the server sends one FCM push containing the request, the
   // device does the work in a brief non-persistent handler and posts the result
@@ -94,6 +131,20 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
         return
       }
 
+      // download_folder needs a live connection (unlike quick_pull_ls/read_file) — see
+      // server/index.js's routing. Only one folder download is ever in flight at a
+      // time in this UI, tracked via folderDownloadRequestRef.
+      if (msg.type === 'target_offline' && msg.userId === targetUser.id && msg.action === 'download_folder') {
+        const requestId = folderDownloadRequestRef.current
+        if (requestId && pendingRef.current[requestId]) {
+          delete pendingRef.current[requestId]
+          clearTimeout(timeoutRef.current[requestId])
+          delete timeoutRef.current[requestId]
+        }
+        setPreview({ error: `${targetUser.name}'s device must be online to download a folder.`, filePath: pathRef.current, mimeType: 'application/zip', isFolder: true })
+        return
+      }
+
       if (msg.fromUserId !== targetUser.id) return
 
       // ── Directory listing ──────────────────────────────────────────────
@@ -112,6 +163,17 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
 
       // ── File ready — server notifies us with the download URL ──────────
       if (msg.type === 'file_ready') {
+        // Thumbnail request, not a modal preview/download — route to its own slot.
+        const thumbName = thumbRequestsRef.current[msg.requestId]
+        if (thumbName) {
+          delete thumbRequestsRef.current[msg.requestId]
+          thumbActiveCountRef.current = Math.max(0, thumbActiveCountRef.current - 1)
+          const thumbUrl = `${location.origin}/api/file/${msg.requestId}?pin=${encodeURIComponent(adminPin || '')}`
+          setThumbnails((t) => ({ ...t, [thumbName]: { status: 'ready', url: thumbUrl } }))
+          advanceThumbQueue()
+          return
+        }
+
         // Defense in depth on top of the server's own upload-token check: ignore a
         // requestId this admin session never actually asked for, rather than trusting the
         // event just because fromUserId matched.
@@ -150,14 +212,23 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
 
       // ── File error from child ──────────────────────────────────────────
       if (msg.type === 'file_error') {
+        const thumbName = thumbRequestsRef.current[msg.requestId]
+        if (thumbName) {
+          delete thumbRequestsRef.current[msg.requestId]
+          thumbActiveCountRef.current = Math.max(0, thumbActiveCountRef.current - 1)
+          setThumbnails((t) => ({ ...t, [thumbName]: { status: 'error' } }))
+          advanceThumbQueue()
+          return
+        }
+
         const pending = pendingRef.current[msg.requestId]
         delete pendingRef.current[msg.requestId]
         clearTimeout(timeoutRef.current[msg.requestId])
         delete timeoutRef.current[msg.requestId]
-        setPreview({ error: msg.error || 'Transfer failed', filePath: pending?.filePath, mimeType: pending?.mimeType })
+        setPreview({ error: msg.error || 'Transfer failed', filePath: pending?.filePath, mimeType: pending?.mimeType, isFolder: pending?.isFolder })
       }
     })
-  }, [addListener, targetUser.id])
+  }, [addListener, targetUser.id, adminPin, advanceThumbQueue])
 
   const enterDir  = (name) => requestLs([...path, name])
   const navigateTo = (index) => requestLs(path.slice(0, index))
@@ -178,7 +249,34 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
     }, 30000)
   }
 
+  // Downloads the current folder (recursively — every subfolder included) as a zip.
+  // Reuses the exact same file_ready/file_error handling as a single-file download
+  // (forceDownload:true already triggers a direct download with no modal preview) —
+  // the only difference is a much longer timeout, since zipping+uploading a folder
+  // over mobile data can realistically take several minutes, not seconds.
+  const downloadFolder = () => {
+    const requestId = Math.random().toString(36).slice(2)
+    folderDownloadRequestRef.current = requestId
+    const folderName = path.length ? path[path.length - 1] : 'root'
+    pendingRef.current[requestId] = { name: `${folderName}.zip`, mimeType: 'application/zip', filePath: path, forceDownload: true, isFolder: true }
+    setPreview({ loading: true, name: `${folderName}.zip`, requestId, filePath: path, isFolder: true })
+    sendMsg({ type: 'download_folder', targetId: targetUser.id, path, requestId })
+
+    timeoutRef.current[requestId] = setTimeout(() => {
+      if (pendingRef.current[requestId]) {
+        delete pendingRef.current[requestId]
+        setPreview({ error: 'Folder download timed out. Check device connection.', filePath: path, mimeType: 'application/zip', isFolder: true })
+      }
+    }, 15 * 60 * 1000)
+  }
+
   const retryFile = () => {
+    if (preview?.isFolder) {
+      // preview.filePath here is the *folder's* path, not a file — re-run the same
+      // folder download rather than treating its last segment as a filename.
+      downloadFolder()
+      return
+    }
     if (preview?.filePath) {
       const entry = { name: preview.filePath[preview.filePath.length - 1], mimeType: preview.mimeType, size: preview.size }
       // Navigate to parent path first, then request
@@ -208,6 +306,7 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
       <div className="rb-header">
         <h2 className="rb-title">📱 {targetUser.name}'s Device</h2>
         {loading && <span className="rb-spinner">↻</span>}
+        <button className="rb-download-folder" onClick={downloadFolder} title="Download this folder as a zip" disabled={!entries}>⬇ Folder</button>
         <button className="rb-refresh" onClick={() => requestLs(path)} title="Refresh">⟳</button>
       </div>
 
@@ -249,7 +348,11 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
         {entries?.map((entry) => (
           <div key={entry.name} className="file-item"
             onClick={() => entry.kind === 'directory' ? enterDir(entry.name) : null}>
-            <span className="file-item-icon">{fileIcon(entry.mimeType, entry.kind)}</span>
+            {entry.kind === 'file' && thumbnails[entry.name]?.status === 'ready' ? (
+              <img src={thumbnails[entry.name].url} alt="" className="file-item-thumb" />
+            ) : (
+              <span className="file-item-icon">{fileIcon(entry.mimeType, entry.kind)}</span>
+            )}
             <span className="file-item-info">
               <span className="file-item-name">{entry.name}</span>
               <span className="file-item-detail">

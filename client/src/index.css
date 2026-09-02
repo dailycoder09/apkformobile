@@ -2081,6 +2081,20 @@ button { font-family: inherit; cursor: pointer; }
 }
 .rb-refresh:hover, .rb-refresh:active { background: var(--surface2); color: var(--text); }
 
+.rb-download-folder {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 12px;
+  border-radius: 8px;
+  min-height: 44px;
+  white-space: nowrap;
+}
+.rb-download-folder:hover, .rb-download-folder:active { background: var(--surface2); color: var(--text); }
+.rb-download-folder:disabled { opacity: 0.5; cursor: default; }
+
 .breadcrumb {
   display: flex;
   align-items: center;
@@ -2188,6 +2202,14 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 .file-item-icon { font-size: 20px; flex-shrink: 0; }
+.file-item-thumb {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--surface2);
+}
 
 .file-item-info {
   display: flex;
