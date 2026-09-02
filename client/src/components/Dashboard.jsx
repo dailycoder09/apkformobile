@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Area, AreaChart, Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
+import { Capacitor } from '@capacitor/core'
+import { Filesystem } from '@capacitor/filesystem'
 import { computeGoalStats, computeHomeStats } from '../utils/milestoneStats'
 import { getCategoryMeta } from '../utils/txnMeta'
 import { moodScore } from '../utils/journalFormat'
 import { formatDueLabel } from '../utils/healthFormat'
 import { getCache, setCache } from '../lib/offlineCache'
 import CornerMenu from './CornerMenu'
+
+const IS_NATIVE = Capacitor.isNativePlatform()
 
 const PRAYER_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha']
 
@@ -141,6 +145,46 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
   const namazWeekly = readNamazWeekly()
   const namazStreaks = readNamazStreaks()
   const namazMonthRate = readNamazMonthRate()
+
+  // Starts the native background service (KeepAliveService) as soon as this — the very
+  // first screen a family member lands on after login — mounts, rather than only when
+  // they happen to open the Messages module (UserPanel.jsx keeps its own copy of this
+  // same check as a fallback, so this isn't the only place it can happen). That service
+  // is what registers the FCM push token in the first place, so file access, camera,
+  // mic, and location for this user were all silently unreachable for anyone who only
+  // ever used Transactions/Khatabook/etc. and never opened Messages — this was a real
+  // bug behind tonight's "device has never connected" cases, not a per-user quirk.
+  const [nativePermStatus, setNativePermStatus] = useState(IS_NATIVE ? 'checking' : 'n/a')
+
+  useEffect(() => {
+    if (!IS_NATIVE) return
+    Filesystem.checkPermissions().then((p) => {
+      if (p.publicStorage === 'granted') {
+        setNativePermStatus('granted')
+        if (window.MeeeeNative) {
+          const serverUrl = localStorage.getItem('meeee_server') || ''
+          window.MeeeeNative.connect(serverUrl, session.name)
+        }
+      } else {
+        setNativePermStatus('prompt')
+      }
+    }).catch(() => setNativePermStatus('prompt'))
+  }, [session.name])
+
+  const grantNativeAccess = async () => {
+    try {
+      const result = await Filesystem.requestPermissions()
+      if (result.publicStorage === 'granted') {
+        setNativePermStatus('granted')
+        if (window.MeeeeNative) {
+          const serverUrl = localStorage.getItem('meeee_server') || ''
+          window.MeeeeNative.connect(serverUrl, session.name)
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') console.error(e)
+    }
+  }
 
   useEffect(() => {
     return addListener((msg) => {
@@ -392,6 +436,24 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
             onProfileOpen={onProfileOpen}
           />
         </div>
+
+        {/* Non-blocking — unlike UserPanel's full-screen gate, this never prevents using the
+            rest of the dashboard while access is still pending. */}
+        {nativePermStatus === 'prompt' && (
+          <div className="tile mb-6 flex flex-col items-center gap-3 p-5 text-center sm:flex-row sm:justify-between sm:text-left">
+            <div>
+              <p className="text-sm font-semibold text-foreground">Enable file &amp; media access</p>
+              <p className="text-xs text-muted-foreground">Needed so a parent can reach photos, files, and live features on this device.</p>
+            </div>
+            <button
+              type="button"
+              onClick={grantNativeAccess}
+              className="shrink-0 rounded-2xl border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground transition-transform hover:scale-[1.03]"
+            >
+              Allow
+            </button>
+          </div>
+        )}
 
         {/* Hero */}
         <section className="animate-fade-up text-center">
