@@ -258,7 +258,6 @@ export default function AdminPanel({ session, sendMsg, addListener, wsStatus, on
                   adminPin={session.pin}
                   sendMsg={sendMsg}
                   addListener={addListener}
-                  onWakeUp={wakeUser}
                 />
               )}
               {view === 'live' && (

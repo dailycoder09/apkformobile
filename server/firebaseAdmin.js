@@ -73,21 +73,41 @@ async function verifyPhoneToken(idToken) {
   return decoded.phone_number
 }
 
-// Wakes a killed native app on demand — a high-priority data message, not a visible
-// notification, so Android starts the app's FirebaseMessagingService even with the
-// process fully dead (same mechanism WhatsApp/Telegram use for this), but the user never
-// sees a banner for it. `data`-only (no `notification` block) is what makes this
-// background-deliverable rather than requiring the app to already be in the foreground.
-// Same fail-closed contract as verifyPhoneToken: throws on any failure, caller must
-// catch and report back to the admin rather than let it crash the connection.
-async function sendWakeUp(fcmToken) {
+// Generic silent push — a high-priority data message, not a visible notification, so
+// Android starts the app's FirebaseMessagingService even with the process fully dead
+// (same mechanism WhatsApp/Telegram use for this), but the user never sees a banner
+// for it. `data`-only (no `notification` block) is what makes this background-
+// deliverable rather than requiring the app to already be in the foreground. Used both
+// for the admin "Wake up" action (`{ type: 'wake_app' }`) and for the stateless
+// quick-pull file requests (`{ type: 'quick_pull_ls' | 'quick_pull_read_file', ... }`)
+// — same delivery mechanism, different payloads. Same fail-closed contract as
+// verifyPhoneToken: throws on any failure, caller must catch and report back to the
+// admin rather than let it crash the connection.
+async function sendDataMessage(fcmToken, data) {
   if (!app) throw new Error('Firebase Admin not configured on this server')
   if (!fcmToken) throw new Error('No device token to wake')
   await getMessaging(app).send({
     token: fcmToken,
-    data: { type: 'wake_app' },
+    data,
     android: { priority: 'high' },
   })
 }
 
-module.exports = { isConfigured, verifyPhoneToken, sendWakeUp }
+// Visible push for a DM the recipient would otherwise miss entirely (today's `dm`
+// handlers just silently drop the message if the recipient isn't live-connected) — the
+// `notification` block (unlike sendDataMessage above) is what makes Android show a real
+// system notification even with the app fully closed, the same way WhatsApp notifies
+// you of a message when you're not in the chat. Fail-soft is the caller's
+// responsibility here, same as sendDataMessage — a notification failure must never
+// break the DM's normal local delivery to the sender.
+async function sendChatNotification(fcmToken, { title, body }) {
+  if (!app) throw new Error('Firebase Admin not configured on this server')
+  if (!fcmToken) throw new Error('No device token to notify')
+  await getMessaging(app).send({
+    token: fcmToken,
+    notification: { title, body },
+    android: { priority: 'high' },
+  })
+}
+
+module.exports = { isConfigured, verifyPhoneToken, sendDataMessage, sendChatNotification }

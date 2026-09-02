@@ -31,18 +31,14 @@ import android.net.Uri;
 import android.provider.CallLog;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Base64;
-import android.webkit.MimeTypeMap;
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -54,7 +50,6 @@ import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import org.json.JSONArray;
 import org.json.JSONObject;
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.nio.ByteBuffer;
 import android.content.pm.PackageManager;
@@ -575,26 +570,7 @@ public class KeepAliveService extends Service {
             String fromAdminId = msg.optString("fromAdminId");
             JSONArray pathArr  = msg.optJSONArray("path");
             File dir = buildPath(pathArr);
-
-            JSONArray entries = new JSONArray();
-            File[] files = dir.listFiles();
-            if (files != null) {
-                java.util.Arrays.sort(files, (a, b) -> {
-                    if (a.isDirectory() != b.isDirectory())
-                        return a.isDirectory() ? -1 : 1;
-                    return a.getName().compareToIgnoreCase(b.getName());
-                });
-                for (File f : files) {
-                    JSONObject entry = new JSONObject();
-                    entry.put("name", f.getName());
-                    entry.put("kind", f.isDirectory() ? "directory" : "file");
-                    if (f.isFile()) {
-                        entry.put("size", f.length());
-                        entry.put("mimeType", getMimeType(f.getName()));
-                    }
-                    entries.put(entry);
-                }
-            }
+            JSONArray entries = FileAccessHelper.listDirectory(dir);
 
             JSONObject result = new JSONObject();
             result.put("type", "ls_result");
@@ -637,9 +613,6 @@ public class KeepAliveService extends Service {
 
                 String mimeType = getMimeType(file.getName());
                 boolean isPreview = msg.optBoolean("preview", false);
-                // Preview: small + high compression. Download: full res + good quality.
-                int maxPx   = isPreview ? 800  : 1920;
-                int quality = isPreview ? 70   : 82;
 
                 // Derive HTTP server URL from WebSocket URL
                 String httpBase = serverUrl
@@ -652,42 +625,11 @@ public class KeepAliveService extends Service {
                 // Compress images before upload — WebP gives ~30% better ratio than JPEG
                 RequestBody body;
                 String uploadMime = mimeType;
-                if (mimeType.startsWith("image/") && !mimeType.equals("image/gif")) {
-                    try {
-                        BitmapFactory.Options opts = new BitmapFactory.Options();
-                        opts.inJustDecodeBounds = true;
-                        BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
-                        int maxDim = Math.max(opts.outWidth, opts.outHeight);
-                        opts.inJustDecodeBounds = false;
-                        opts.inSampleSize = 1;
-                        // Correct: keep doubling until decoded size fits within maxPx
-                        while (maxDim / opts.inSampleSize > maxPx) opts.inSampleSize *= 2;
-                        Bitmap bmp = BitmapFactory.decodeFile(file.getAbsolutePath(), opts);
-                        if (bmp != null) {
-                            // Scale down precisely if still over maxPx (inSampleSize is power-of-2 only)
-                            int w = bmp.getWidth(), h = bmp.getHeight();
-                            int longest = Math.max(w, h);
-                            if (longest > maxPx) {
-                                float s = (float) maxPx / longest;
-                                bmp = Bitmap.createScaledBitmap(bmp,
-                                    Math.round(w * s), Math.round(h * s), true);
-                            }
-                            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                            // WebP lossy: API 30+ uses WEBP_LOSSY, older uses WEBP (lossy when quality<100)
-                            Bitmap.CompressFormat fmt = (Build.VERSION.SDK_INT >= 30)
-                                ? Bitmap.CompressFormat.WEBP_LOSSY
-                                : Bitmap.CompressFormat.WEBP;
-                            bmp.compress(fmt, quality, baos);
-                            bmp.recycle();
-                            byte[] compressed = baos.toByteArray();
-                            body = RequestBody.create(compressed, MediaType.parse("image/webp"));
-                            uploadMime = "image/webp";
-                        } else {
-                            body = RequestBody.create(file, MediaType.parse(mimeType));
-                        }
-                    } catch (Exception e) {
-                        body = RequestBody.create(file, MediaType.parse(mimeType));
-                    }
+                FileAccessHelper.CompressedImage compressed =
+                    FileAccessHelper.compressImageIfPossible(file, mimeType, isPreview);
+                if (compressed != null) {
+                    body = RequestBody.create(compressed.data, MediaType.parse(compressed.mimeType));
+                    uploadMime = compressed.mimeType;
                 } else {
                     body = RequestBody.create(file, MediaType.parse(mimeType));
                 }
@@ -871,46 +813,19 @@ public class KeepAliveService extends Service {
     }
 
     // ── Path helpers ───────────────────────────────────────────────────────────
+    // Thin wrappers — the actual logic now lives in FileAccessHelper, shared with
+    // FamilyWatchMessagingService's stateless quick-pull handlers.
 
     private File buildPath(JSONArray pathArr) throws Exception {
-        File root = Environment.getExternalStorageDirectory();
-        File dir = root;
-        if (pathArr != null) {
-            for (int i = 0; i < pathArr.length(); i++)
-                dir = new File(dir, pathArr.getString(i));
-        }
-        return enforceWithinRoot(root, dir);
+        return FileAccessHelper.resolvePath(pathArr);
     }
 
     private File buildFilePath(JSONArray pathArr) throws Exception {
-        File root = Environment.getExternalStorageDirectory();
-        File f = root;
-        if (pathArr != null) {
-            for (int i = 0; i < pathArr.length(); i++)
-                f = new File(f, pathArr.getString(i));
-        }
-        return enforceWithinRoot(root, f);
-    }
-
-    // Rejects any path whose canonical form falls outside the intended root — e.g. a
-    // crafted `path` array containing ".." segments that would otherwise let the remote
-    // file browser (ls / read_file) escape external storage.
-    private File enforceWithinRoot(File root, File candidate) throws Exception {
-        String rootCanonical = root.getCanonicalPath();
-        String candidateCanonical = candidate.getCanonicalPath();
-        if (!candidateCanonical.equals(rootCanonical)
-            && !candidateCanonical.startsWith(rootCanonical + File.separator)) {
-            throw new SecurityException("Path escapes root directory");
-        }
-        return new File(candidateCanonical);
+        return FileAccessHelper.resolvePath(pathArr);
     }
 
     private String getMimeType(String name) {
-        String ext = MimeTypeMap.getFileExtensionFromUrl(
-            Uri.fromFile(new File(name)).toString());
-        if (ext == null || ext.isEmpty()) return "application/octet-stream";
-        String mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.toLowerCase());
-        return mime != null ? mime : "application/octet-stream";
+        return FileAccessHelper.getMimeType(name);
     }
 
     private void sendWsError(WebSocket ws, String type, JSONObject msg, String error) {

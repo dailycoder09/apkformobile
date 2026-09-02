@@ -39,39 +39,39 @@ function fileIcon(mime, kind) {
   return '📄'
 }
 
-export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendMsg, addListener, onWakeUp }) {
+export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendMsg, addListener }) {
   const [path, setPath]       = useState([])
   const [entries, setEntries] = useState(null)
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
-  // KeepAliveService is dormant by default now, so "not connected" is the common case, not
-  // an edge case — the server tells us explicitly (target_offline) instead of us guessing
-  // from a request that never got a reply.
+  // True only when this device has never registered an FCM token at all (never logged
+  // in) — quick-pull doesn't need a live connection, so routine offline/dormant no
+  // longer applies here the way it does for Live Monitor's camera/mic/location.
   const [offline, setOffline] = useState(false)
-  const [waking, setWaking]   = useState(false)
   const pendingRef            = useRef({}) // requestId → { name, mimeType, size, filePath }
   const timeoutRef            = useRef({}) // requestId → timer
 
+  // Stateless quick-pull — the server sends one FCM push containing the request, the
+  // device does the work in a brief non-persistent handler and posts the result
+  // straight back over HTTP. No persistent connection or "online" status needed for
+  // this to work at all; see server/index.js's quick_pull_ls handling.
   const requestLs = useCallback((p) => {
     setLoading(true); setError(null); setEntries(null); setOffline(false)
-    sendMsg({ type: 'ls', targetId: targetUser.id, path: p })
+    sendMsg({ type: 'quick_pull_ls', targetId: targetUser.id, path: p })
   }, [sendMsg, targetUser.id])
-
-  const handleWakeUp = () => {
-    setWaking(true)
-    onWakeUp?.(targetUser.id)
-    setTimeout(() => setWaking(false), 4000)
-  }
 
   useEffect(() => { requestLs([]) }, [requestLs])
 
   useEffect(() => {
     return addListener((msg) => {
       // Not keyed by fromUserId like the rest of this listener — target_offline is a
-      // synthesized reply for a target that was never connected, so there's no fromUserId
-      // to match on; the server includes the userId the admin actually targeted instead.
-      if (msg.type === 'target_offline' && msg.userId === targetUser.id && msg.action === 'ls') {
+      // synthesized reply for a target the server has no way to reach at all, so there's
+      // no fromUserId to match on; the server includes the userId the admin actually
+      // targeted instead. For quick_pull_ls specifically this means the device has never
+      // registered an FCM token (never actually logged in on that device) — routine
+      // offline/dormant no longer applies, since quick-pull doesn't need a live connection.
+      if (msg.type === 'target_offline' && msg.userId === targetUser.id && msg.action === 'quick_pull_ls') {
         setLoading(false)
         setOffline(true)
         return
@@ -149,7 +149,7 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
     const filePath  = [...path, entry.name]
     pendingRef.current[requestId] = { name: entry.name, mimeType: entry.mimeType, size: entry.size, filePath, forceDownload }
     setPreview({ loading: true, name: entry.name, mimeType: entry.mimeType, size: entry.size, requestId, filePath })
-    sendMsg({ type: 'read_file', targetId: targetUser.id, path: filePath, requestId, preview: !forceDownload })
+    sendMsg({ type: 'quick_pull_read_file', targetId: targetUser.id, path: filePath, requestId, preview: !forceDownload })
 
     // Auto-fail if no response within 30 seconds
     timeoutRef.current[requestId] = setTimeout(() => {
@@ -167,7 +167,7 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
       const requestId = Math.random().toString(36).slice(2)
       pendingRef.current[requestId] = { name: entry.name, mimeType: entry.mimeType, size: entry.size, filePath: preview.filePath }
       setPreview({ loading: true, name: entry.name, mimeType: entry.mimeType, size: entry.size, requestId, filePath: preview.filePath })
-      sendMsg({ type: 'read_file', targetId: targetUser.id, path: preview.filePath, requestId })
+      sendMsg({ type: 'quick_pull_read_file', targetId: targetUser.id, path: preview.filePath, requestId })
     } else {
       setPreview(null)
     }
@@ -214,19 +214,16 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
       <div className="rb-list">
         {offline && !entries && !error && (
           <div className="rb-waiting rb-offline">
-            {targetUser.name}'s device is offline.
+            {targetUser.name}'s device has never connected.
             <p className="rb-waiting-sub">
-              It'll only take a few seconds to reconnect once woken up.
+              Files only become reachable once meeee has been opened and logged into on
+              their device at least once.
             </p>
-            <button className="rb-wake-btn" onClick={handleWakeUp} disabled={waking}>
-              {waking ? 'Waking…' : '🔔 Wake up'}
-            </button>
           </div>
         )}
         {!offline && !entries && !error && (
           <div className="rb-waiting">
-            Waiting for {targetUser.name} to respond…
-            <p className="rb-waiting-sub">Make sure meeee is running on their device.</p>
+            Fetching {targetUser.name}'s files…
           </div>
         )}
         {entries?.length === 0 && <div className="no-files">This folder is empty</div>}
