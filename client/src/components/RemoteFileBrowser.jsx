@@ -51,6 +51,8 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
   const [offline, setOffline] = useState(false)
   const pendingRef            = useRef({}) // requestId → { name, mimeType, size, filePath }
   const timeoutRef            = useRef({}) // requestId → timer
+  const lsRequestRef          = useRef(null) // latest outstanding ls requestId, to ignore a stale timeout
+  const lsTimeoutRef          = useRef(null)
 
   // Stateless quick-pull — the server sends one FCM push containing the request, the
   // device does the work in a brief non-persistent handler and posts the result
@@ -58,7 +60,21 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
   // this to work at all; see server/index.js's quick_pull_ls handling.
   const requestLs = useCallback((p) => {
     setLoading(true); setError(null); setEntries(null); setOffline(false)
-    sendMsg({ type: 'quick_pull_ls', targetId: targetUser.id, path: p })
+    const requestId = Math.random().toString(36).slice(2)
+    lsRequestRef.current = requestId
+    sendMsg({ type: 'quick_pull_ls', targetId: targetUser.id, path: p, requestId })
+
+    // The device round-trips over FCM + a separate HTTP callback — nothing here
+    // guarantees either leg completes, so without this the UI can spin on "Fetching…"
+    // forever if the push never reaches the device (see the NotRegistered/no-callback
+    // cases hit while debugging this on real MIUI hardware).
+    clearTimeout(lsTimeoutRef.current)
+    lsTimeoutRef.current = setTimeout(() => {
+      if (lsRequestRef.current === requestId) {
+        setLoading(false)
+        setError('No response from device. It may be offline or the push was not delivered.')
+      }
+    }, 30000)
   }, [sendMsg, targetUser.id])
 
   useEffect(() => { requestLs([]) }, [requestLs])
@@ -72,6 +88,7 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
       // registered an FCM token (never actually logged in on that device) — routine
       // offline/dormant no longer applies, since quick-pull doesn't need a live connection.
       if (msg.type === 'target_offline' && msg.userId === targetUser.id && msg.action === 'quick_pull_ls') {
+        clearTimeout(lsTimeoutRef.current)
         setLoading(false)
         setOffline(true)
         return
@@ -81,6 +98,7 @@ export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendM
 
       // ── Directory listing ──────────────────────────────────────────────
       if (msg.type === 'ls_result') {
+        clearTimeout(lsTimeoutRef.current)
         setLoading(false)
         if (msg.error) { setError(msg.error); return }
         setPath(msg.path || [])

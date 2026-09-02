@@ -48,6 +48,7 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.messaging.FirebaseMessaging;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.File;
@@ -440,6 +441,25 @@ public class KeepAliveService extends Service {
         } catch (Exception ignored) {}
     }
 
+    // Belt-and-suspenders re-registration on every successful connect, on top of
+    // FamilyWatchMessagingService.onNewToken(). onNewToken() only fires when FCM actually
+    // generates/rotates a token — on some OEMs (MIUI in particular) that can be delayed well
+    // past when the user has already logged in, or can otherwise drift from what the server
+    // has on file (e.g. after an uninstall/reinstall the old server-side token silently goes
+    // stale — FCM starts returning "NotRegistered" for it — with nothing to prompt a resend
+    // until this device's token happens to rotate again, which may be never). Asking for the
+    // CURRENT token here and re-sending it is idempotent (store.upsertDeviceToken) so this
+    // costs nothing when the server is already current, and self-heals when it isn't.
+    private void refreshFcmTokenRegistration() {
+        try {
+            FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
+                if (task.isSuccessful() && task.getResult() != null && nativeWs != null) {
+                    sendFcmTokenNow(task.getResult());
+                }
+            });
+        } catch (Exception ignored) {}
+    }
+
     // Registers a ContentObserver on the call log so new calls are picked up as they happen.
     // On first-ever call (no lastCallLogId saved yet), does one bounded historical backfill of
     // the most recent 200 entries rather than the entire lifetime log.
@@ -532,6 +552,7 @@ public class KeepAliveService extends Service {
                 uploadToken = msg.optString("uploadToken"); // per-connection token for HTTP uploads (profile photo)
                 flushPendingCallLogEvents(); // send anything queued while we were disconnected
                 flushPendingFcmToken();
+                refreshFcmTokenRegistration(); // re-send current token every connect — see note below
                 // Auto-resume mic if it was streaming before service was restarted
                 SharedPreferences prefs = SecurePrefs.get(this);
                 if (prefs.getBoolean("micActive", false) && !micStreaming) {

@@ -266,6 +266,7 @@ const server = http.createServer(async (req, res) => {
         adminId = pending.forAdminId
         fromUserId = pending.userId
         pendingPulls.delete(requestId) // one-shot
+        console.log(`quick-pull: file callback received requestId=${requestId} fromUserId=${fromUserId}${req.headers['x-error'] ? ` error=${req.headers['x-error']}` : ''}`)
       } else {
         // Same per-session upload token proof as the profile-photo endpoint below —
         // fromUserId/adminId are client-supplied headers with no inherent trust (userId is
@@ -372,6 +373,7 @@ const server = http.createServer(async (req, res) => {
           res.writeHead(400); res.end('Invalid JSON'); return
         }
         const admin = admins.get(pending.forAdminId)
+        console.log(`quick-pull: ls callback received requestId=${requestId} fromUserId=${pending.userId}${body.error ? ` error=${body.error}` : ''}`)
         if (admin) {
           send(admin.ws, {
             type: 'ls_result',
@@ -883,10 +885,13 @@ wss.on('connection', (ws, req) => {
           if (msg.type === 'quick_pull_read_file') {
             data.preview = msg.preview ? '1' : '0'
           }
-          firebaseAdmin.sendDataMessage(device.fcm_token, data).catch((e) => {
+          firebaseAdmin.sendDataMessage(device.fcm_token, data).then(() => {
+            console.log(`quick-pull: ${msg.type} requestId=${requestId} pushed to targetId=${msg.targetId}, awaiting device callback`)
+          }).catch((e) => {
             pendingPulls.delete(requestId)
+            console.error(`quick-pull: ${msg.type} requestId=${requestId} FCM send failed for targetId=${msg.targetId}: ${e.message}`)
             const errType = msg.type === 'quick_pull_ls' ? 'ls_result' : 'file_error'
-            send(ws, { type: errType, forAdminId: meta.userId, error: e.message, requestId, path: msg.path, entries: [] })
+            send(ws, { type: errType, forAdminId: meta.userId, fromUserId: msg.targetId, error: e.message, requestId, path: msg.path, entries: [] })
           })
           return
         }
