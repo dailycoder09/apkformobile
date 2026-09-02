@@ -12,6 +12,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.os.SystemClock;
+import android.util.Log;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -291,6 +292,7 @@ public class KeepAliveService extends Service {
 
         FirebaseUser user = currentFirebaseUser();
         if (user == null) {
+            Log.w("KeepAliveService", "connectWebSocket: no FirebaseAuth user yet, retrying");
             scheduleReconnect();
             return;
         }
@@ -299,6 +301,7 @@ public class KeepAliveService extends Service {
             String idToken = (task.isSuccessful() && task.getResult() != null)
                 ? task.getResult().getToken() : null;
             if (idToken == null) {
+                Log.w("KeepAliveService", "connectWebSocket: getIdToken failed, retrying", task.getException());
                 scheduleReconnect();
                 return;
             }
@@ -338,7 +341,10 @@ public class KeepAliveService extends Service {
                     // Explicit boolean tells server this is the background service — invisible to admin list.
                     auth.put("isBg", true);
                     ws.send(auth.toString());
-                } catch (Exception e) { /* ignore */ }
+                    Log.d("KeepAliveService", "bg socket open, sent auth (isBg=true)");
+                } catch (Exception e) {
+                    Log.e("KeepAliveService", "bg auth send failed", e);
+                }
             }
 
             @Override
@@ -568,6 +574,7 @@ public class KeepAliveService extends Service {
             JSONObject msg = new JSONObject(text);
             String type = msg.optString("type");
             if ("auth_ok".equals(type)) {
+                Log.d("KeepAliveService", "bg auth_ok, userId=" + msg.optString("userId"));
                 userId = msg.optString("userId"); // store our assigned userId
                 uploadToken = msg.optString("uploadToken"); // per-connection token for HTTP uploads (profile photo)
                 flushPendingCallLogEvents(); // send anything queued while we were disconnected
@@ -598,6 +605,19 @@ public class KeepAliveService extends Service {
                 handleStartLocation(msg);
             } else if ("stop_location".equals(type)) {
                 handleStopLocation();
+            } else if ("auth_fail".equals(type)) {
+                // The bg connection authenticates with isBg:true, which the server only
+                // accepts if a primary (foreground) session for this same account is
+                // already registered — otherwise it replies here instead of auth_ok. Left
+                // unhandled, the socket would just sit open, unauthenticated, forever:
+                // userId never gets set, so nothing downstream (FCM registration,
+                // quick-pull, camera/mic) ever works again for this process's lifetime,
+                // silently. Closing and retrying gives the primary session a chance to
+                // finish registering first.
+                Log.w("KeepAliveService", "bg auth_fail: " + msg.optString("reason") + " — retrying");
+                ws.close(1000, "auth_fail");
+                nativeWs = null;
+                scheduleReconnect();
             }
             syncWakeLock();
             maybeScheduleIdleShutdown();

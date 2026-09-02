@@ -79,9 +79,11 @@ jobs:
         run: |
           gh release create latest-build meeee.apk \
             --title "meeee v${{ steps.version.outputs.version }}" \
+            --target "${{ github.sha }}" \
             --notes "Version ${{ steps.version.outputs.version }} — latest build
           versionCode: ${{ github.run_number }}
-          versionName: ${{ steps.version.outputs.version }}" \
+          versionName: ${{ steps.version.outputs.version }}
+          commit: ${{ github.sha }}" \
             --latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
