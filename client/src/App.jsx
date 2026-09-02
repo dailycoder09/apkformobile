@@ -105,7 +105,28 @@ const DURABLE_MSG_TYPES = new Set([
   'health_reminder_add', 'health_reminder_update', 'health_reminder_delete',
   'journal_entry_add', 'journal_entry_update', 'journal_entry_delete',
   'namaz_day_set', 'namaz_qada_set',
+  // Previously missing — these silently dropped on the floor if sent while offline
+  // instead of queuing, since sendMsg() only queues messages in this Set.
+  'budget_set', 'profile_update',
 ])
+
+// The durable queue (pendingRef below) used to be memory-only — wiped by any app
+// restart, which defeats the point for a child who adds something offline and then
+// closes the app before reconnecting. Persisted here so it survives a cold start.
+const PENDING_QUEUE_KEY = 'meeee_pending_queue'
+function loadPendingQueue() {
+  try { return JSON.parse(localStorage.getItem(PENDING_QUEUE_KEY)) || [] } catch { return [] }
+}
+function savePendingQueue(queue) {
+  try { localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(queue)) } catch {}
+}
+
+// Last-known session, so a cold start with no internet can render the dashboard
+// immediately instead of falling back to the login screen while a live connection is
+// still being attempted in the background. Deliberately a flat key, not the per-userId
+// offlineCache.js helper used elsewhere — this is what tells us the userId in the first
+// place, so it can't be keyed by one.
+const CACHED_SESSION_KEY = 'meeee_cached_session'
 
 export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState(null)
@@ -121,7 +142,11 @@ export default function App() {
   const serverUrlRef   = useRef('')
   const listenersRef   = useRef([])
   const authedRef      = useRef(false) // true only once THIS socket's auth_ok has landed
-  const pendingRef     = useRef([])    // queued DURABLE_MSG_TYPES messages awaiting a live, authed socket
+  const pendingRef     = useRef(null)  // queued DURABLE_MSG_TYPES messages awaiting a live, authed socket
+  // Synchronous lazy-init (not a useEffect) so this is hydrated from localStorage before
+  // any other code in this render — including the mount-time effects below that may call
+  // login()/connect()/sendMsg() — ever gets a chance to touch pendingRef.
+  if (pendingRef.current === null) pendingRef.current = loadPendingQueue()
 
   useEffect(() => {
     const h = (e) => { e.preventDefault(); setDeferredPrompt(e) }
@@ -145,6 +170,14 @@ export default function App() {
         if (cancelled || !user) return
         const serverUrl = localStorage.getItem('meeee_server') || ''
         const name = localStorage.getItem('meeee_name') || user.displayName || 'User'
+        // Render immediately from the last-known session (if any) instead of waiting on
+        // the live connect() below — that's what actually fixes a cold start with no
+        // internet: the dashboard shows up right away from cache, and the real auth_ok
+        // (once the server is reachable) simply overwrites this with fresh values.
+        try {
+          const cached = JSON.parse(localStorage.getItem(CACHED_SESSION_KEY))
+          if (cached?.userId) setSession(cached)
+        } catch {}
         if (serverUrl) login('user', name, '', serverUrl)
       })
       .catch(() => {}) // no Firebase user yet — fall through to the phone/OTP screen
@@ -202,7 +235,26 @@ export default function App() {
         // uploadToken proves "I am this session" to the HTTP profile-photo POST
         // endpoint (see server's verifyUploadToken) — it's per-connection and only ever
         // arrives on this socket's own auth_ok, never via any broadcast.
-        setSession({ role: msg.role, userId: msg.userId, name: msg.name || 'Admin', initialUsers: msg.users || [], uploadToken: msg.uploadToken || '' })
+        setSession({
+          role: msg.role,
+          userId: msg.userId,
+          name: msg.name || 'Admin',
+          initialUsers: msg.users || [],
+          uploadToken: msg.uploadToken || '',
+          // Only for admin — needed to authenticate plain <img>/<video> GETs to
+          // /api/file/*, which can't carry the WebSocket session or custom headers.
+          pin: msg.role === 'admin' ? payload.pin : undefined,
+        })
+        // Cache a real, server-confirmed session so a future cold start with no internet
+        // can restore straight into the dashboard instead of the login screen — admin
+        // isn't cached, it always requires a live PIN-authenticated connection.
+        if (msg.role === 'user') {
+          try {
+            localStorage.setItem(CACHED_SESSION_KEY, JSON.stringify({
+              role: msg.role, userId: msg.userId, name: msg.name || 'User',
+            }))
+          } catch {}
+        }
         // This socket is now authenticated — flush anything that queued up in sendMsg()
         // while we were offline/reconnecting (see DURABLE_MSG_TYPES above) instead of
         // leaving it stranded, which is exactly what used to make added transactions
@@ -211,6 +263,7 @@ export default function App() {
         if (pendingRef.current.length) {
           const queued = pendingRef.current
           pendingRef.current = []
+          savePendingQueue([])
           queued.forEach((m) => ws.send(JSON.stringify(m)))
         }
       } else if (msg.type === 'auth_fail') {
@@ -250,6 +303,8 @@ export default function App() {
     setWsStatus('idle')
     authedRef.current = false
     pendingRef.current = [] // don't carry a queued mutation over to whoever logs in next
+    savePendingQueue([])
+    try { localStorage.removeItem(CACHED_SESSION_KEY) } catch {}
   }, [])
 
   const sendMsg = useCallback((msg) => {
@@ -257,8 +312,10 @@ export default function App() {
       wsRef.current.send(JSON.stringify(msg))
     } else if (DURABLE_MSG_TYPES.has(msg.type)) {
       // Socket is down or still (re)authenticating — don't silently drop a data-mutating
-      // message. It'll be flushed as soon as this session's next auth_ok lands.
+      // message. It'll be flushed as soon as this session's next auth_ok lands, and is
+      // persisted so it survives even a full app restart while still offline.
       pendingRef.current.push(msg)
+      savePendingQueue(pendingRef.current)
     }
   }, [])
 
@@ -389,6 +446,9 @@ export default function App() {
       )}
       {deferredPrompt && (
         <InstallPrompt onInstall={handleInstall} onDismiss={() => setDeferredPrompt(null)} />
+      )}
+      {session && wsStatus !== 'open' && (
+        <div className="offline-banner">📡 Offline — showing last saved data</div>
       )}
       {!session ? (
         !authChecked

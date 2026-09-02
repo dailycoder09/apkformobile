@@ -35,6 +35,15 @@ function renameColumnIfPresent(table, oldCol, newCol) {
   }
 }
 
+// Same idea as renameColumnIfPresent, for adding a column to a table that may already
+// exist from before this column was introduced (SQLite has no "ADD COLUMN IF NOT EXISTS").
+function addColumnIfMissing(table, col, def) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)
+  if (!cols.includes(col)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`)
+  }
+}
+
 for (const table of Object.values(TABLES)) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${table} (
@@ -102,6 +111,15 @@ db.exec(`
     updated_at INTEGER
   )
 `)
+// Last-known location, added when KeepAliveService stopped running 24/7 (dormant-by-default
+// + FCM wake-up redesign): with the background connection no longer always open, a location
+// update is only ever seen live if an admin happens to be watching that exact moment, so it's
+// persisted here on the same per-user row instead — lets the admin see "last seen near X, N
+// min ago" for an offline device rather than nothing at all.
+addColumnIfMissing('device_tokens', 'lat', 'REAL')
+addColumnIfMissing('device_tokens', 'lng', 'REAL')
+addColumnIfMissing('device_tokens', 'accuracy', 'REAL')
+addColumnIfMissing('device_tokens', 'location_updated_at', 'INTEGER')
 
 // Per-category monthly budgets — both the child (self-management) and the parent
 // (guidance/override) can set these, mirroring how transactions themselves already work:
@@ -171,6 +189,18 @@ const upsertDeviceTokenStmt = db.prepare(`
     fcm_token  = excluded.fcm_token,
     name       = excluded.name,
     updated_at = excluded.updated_at
+`)
+// A location update can arrive before the device has ever registered an FCM token (e.g. an
+// older install mid-upgrade), so this upserts the row too rather than assuming one exists —
+// same ON CONFLICT shape as upsertDeviceTokenStmt above, just touching the location columns.
+const updateDeviceLocationStmt = db.prepare(`
+  INSERT INTO device_tokens (user_id, lat, lng, accuracy, location_updated_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT(user_id) DO UPDATE SET
+    lat                 = excluded.lat,
+    lng                 = excluded.lng,
+    accuracy            = excluded.accuracy,
+    location_updated_at = excluded.location_updated_at
 `)
 
 let idSeq = 0
@@ -292,6 +322,14 @@ function upsertDeviceToken(userId, fcmToken, name) {
   return getDeviceToken(userId)
 }
 
+// Persists a device's most recent location so it's still visible ("last seen near X, N min
+// ago") after KeepAliveService has gone dormant and the live location_update stream has
+// stopped — see the device_tokens table comment above.
+function updateDeviceLocation(userId, lat, lng, accuracy) {
+  updateDeviceLocationStmt.run(userId, lat, lng, accuracy ?? null, Date.now(), Date.now())
+  return getDeviceToken(userId)
+}
+
 // Returns { category: monthlyLimit, ... } for every budget the owner has set (including
 // the reserved overall-budget category, if set) — empty object if none set yet.
 function getBudgets(ownerUserId) {
@@ -324,6 +362,7 @@ module.exports = {
   getDeviceToken,
   getAllDeviceTokens,
   upsertDeviceToken,
+  updateDeviceLocation,
   getBudgets,
   setBudget,
 }

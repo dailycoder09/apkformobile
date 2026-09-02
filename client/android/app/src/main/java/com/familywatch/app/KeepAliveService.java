@@ -65,14 +65,25 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class KeepAliveService extends Service {
 
     private static final String CHANNEL_ID = "meeee_bg";
     private static final int    NOTIF_ID   = 1001;
     private static final long   MAX_FILE_BYTES = 200L * 1024 * 1024; // 200 MB
+    // How long to sit connected with nothing happening before shutting back down to fully
+    // dormant. Not a keepalive interval — every incoming message/active session cancels this,
+    // it only ever fires once things have genuinely gone quiet (see maybeScheduleIdleShutdown).
+    private static final long   IDLE_SHUTDOWN_MS = 90 * 1000L;
 
     private PowerManager.WakeLock wakeLock;
+    // Concurrent file transfers in flight (handleReadFile runs on its own Thread per request) —
+    // counted rather than boolean since the admin's file browser can request more than one.
+    private final AtomicInteger   activeTransfers = new AtomicInteger(0);
+    // Posted with a delay any time nothing is active; cancelled the instant any message arrives
+    // or a session starts. See isBusy()/syncWakeLock()/maybeScheduleIdleShutdown().
+    private final Runnable        idleShutdownRunnable = this::shutdownIfIdle;
     private OkHttpClient          httpClient;
     private WebSocket             nativeWs;
     private Handler               handler;
@@ -141,7 +152,7 @@ public class KeepAliveService extends Service {
         } else {
             startForeground(NOTIF_ID, buildNotification());
         }
-        acquireWakeLock();
+        createWakeLock();
 
         SharedPreferences prefs = SecurePrefs.get(this);
         serverUrl = prefs.getString("serverUrl", null);
@@ -166,10 +177,22 @@ public class KeepAliveService extends Service {
         sysFilter.addAction(Intent.ACTION_USER_PRESENT);  // screen unlocked
         sysFilter.addAction("android.net.conn.CONNECTIVITY_CHANGE");
         registerReceiver(systemReceiver, sysFilter);
+
+        // Nothing active yet at this point (auth_ok hasn't arrived) — if the connection
+        // attempt above never resolves into real work, don't sit resident forever waiting.
+        maybeScheduleIdleShutdown();
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        // Re-checked (not just done once in onCreate) because MainActivity starts this
+        // service before the READ_CALL_LOG runtime-permission dialog's result is known —
+        // the first onCreate() almost always sees "not granted yet" and skips registering.
+        // Once the user actually taps Allow, MainActivity calls startService() again, which
+        // only reaches here (the service is already alive, onCreate() doesn't run twice) —
+        // this is what actually wires up the observer once permission is really granted.
+        // registerCallLogObserver() itself no-ops if already registered or still denied.
+        registerCallLogObserver();
         if (intent != null) {
             if ("CONNECT".equals(intent.getAction())) {
                 serverUrl = intent.getStringExtra("serverUrl");
@@ -180,6 +203,9 @@ public class KeepAliveService extends Service {
                         .putString("name", userName)
                         .apply();
                     shouldConnect = true;
+                    // The app was just actively opened — don't let an idle-shutdown left
+                    // over from a previous dormant period fire mid-handshake.
+                    handler.removeCallbacks(idleShutdownRunnable);
                     if (nativeWs != null) nativeWs.cancel();
                     connectWebSocket();
                 }
@@ -197,6 +223,7 @@ public class KeepAliveService extends Service {
     @Override
     public void onDestroy() {
         shouldConnect = false;
+        handler.removeCallbacks(idleShutdownRunnable);
         handleStopCamera();
         if (restarting) {
             // Service is restarting — stop hardware but preserve SharedPreferences so
@@ -220,9 +247,14 @@ public class KeepAliveService extends Service {
     @Override
     public IBinder onBind(Intent intent) { return null; }
 
-    // Restart service after app is swiped away — uses exact alarm so OEMs can't defer it
+    // Restart service after app is swiped away — but only if something genuinely active
+    // (mic/camera/location session) would otherwise be cut off mid-flight, the same way a
+    // phone call doesn't drop just because you swiped the app away. If nothing is active,
+    // let the process die naturally — FCM wake-up or the next periodic heartbeat brings it
+    // back when actually needed, rather than fighting Android to stay resident 24/7.
     @Override
     public void onTaskRemoved(Intent rootIntent) {
+        if (!isBusy()) { super.onTaskRemoved(rootIntent); return; }
         restarting = true;
         Intent restart = new Intent(getApplicationContext(), KeepAliveService.class);
         restart.setPackage(getPackageName());
@@ -491,6 +523,10 @@ public class KeepAliveService extends Service {
     // ── Message handling ───────────────────────────────────────────────────────
 
     private void handleMessage(WebSocket ws, String text) {
+        // Any incoming message means we're doing real work right now — cancel any pending
+        // idle-shutdown so it doesn't fire mid-request; the end of this method decides
+        // whether to reschedule it based on what's actually active once processing is done.
+        handler.removeCallbacks(idleShutdownRunnable);
         try {
             JSONObject msg = new JSONObject(text);
             String type = msg.optString("type");
@@ -525,6 +561,8 @@ public class KeepAliveService extends Service {
             } else if ("stop_location".equals(type)) {
                 handleStopLocation();
             }
+            syncWakeLock();
+            maybeScheduleIdleShutdown();
         } catch (Exception e) { /* ignore */ }
     }
 
@@ -571,6 +609,11 @@ public class KeepAliveService extends Service {
     // ── File upload via HTTP POST (single request, no chunking!) ──────────────
 
     private void handleReadFile(JSONObject msg) {
+        // Counted (not just relied on by the caller's own post-dispatch check) since this
+        // runs async on its own Thread — the wake lock/idle-shutdown state must reflect the
+        // transfer for its whole duration, not just the instant this method was called.
+        activeTransfers.incrementAndGet();
+        syncWakeLock();
         new Thread(() -> {
             String fromAdminId = msg.optString("fromAdminId");
             String requestId   = msg.optString("requestId",
@@ -663,6 +706,10 @@ public class KeepAliveService extends Service {
 
             } catch (Exception e) {
                 notifyAdminError(fromAdminId, requestId, e.getMessage());
+            } finally {
+                activeTransfers.decrementAndGet();
+                syncWakeLock();
+                maybeScheduleIdleShutdown();
             }
         }).start();
     }
@@ -689,6 +736,10 @@ public class KeepAliveService extends Service {
             .replaceFirst("^wss://", "https://")
             .replaceFirst("^ws://", "http://")
             .replaceFirst("/ws$", "");
+        // Repurposes the legacy Camera2 flag (already correctly reset to false in
+        // handleStopCamera below) to track the actual LiveKit-publishing state, so
+        // isBusy()/syncWakeLock() know a live camera session is in progress.
+        cameraStreaming = true;
         lkManager.startCamera(httpBase, userId != null ? userId : "", facing);
     }
 
@@ -858,12 +909,54 @@ public class KeepAliveService extends Service {
         } catch (Exception ignored) {}
     }
 
-    // ── Notification / WakeLock ────────────────────────────────────────────────
+    // ── Notification / WakeLock / idle-shutdown ─────────────────────────────────
+    // WhatsApp-style: no permanent wake lock and no fighting Android to stay resident.
+    // The lock is held only while genuinely doing work (mic/camera/location session, file
+    // transfer); the service itself shuts back down to fully dormant once nothing has
+    // happened for IDLE_SHUTDOWN_MS, relying on the admin's FCM "Wake up" push (or the
+    // periodic ServiceRestartWorker heartbeat) to bring it back when actually needed.
 
-    private void acquireWakeLock() {
+    // Reference counting off — acquire()/release() are treated as a simple "on while any
+    // session is active" gate driven by isBusy(), not Android's own increment/decrement
+    // counting (which would require every call site to pair perfectly across threads).
+    private void createWakeLock() {
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "meeee::bg");
-        wakeLock.acquire();
+        wakeLock.setReferenceCounted(false);
+    }
+
+    // True while there's real work in flight that must not be interrupted by idle-shutdown
+    // or allowed to run without the CPU staying awake.
+    private boolean isBusy() {
+        return micStreaming || cameraStreaming || locationTracking || activeTransfers.get() > 0;
+    }
+
+    private synchronized void syncWakeLock() {
+        try {
+            if (isBusy()) {
+                if (!wakeLock.isHeld()) wakeLock.acquire();
+            } else if (wakeLock.isHeld()) {
+                wakeLock.release();
+            }
+        } catch (Exception ignored) {}
+    }
+
+    // Cancels any pending idle-shutdown and, only if nothing is currently active, schedules
+    // a fresh one. Safe to call after every state change — busy sessions simply never get
+    // one scheduled.
+    private void maybeScheduleIdleShutdown() {
+        handler.removeCallbacks(idleShutdownRunnable);
+        if (!isBusy()) handler.postDelayed(idleShutdownRunnable, IDLE_SHUTDOWN_MS);
+    }
+
+    private void shutdownIfIdle() {
+        if (isBusy()) return; // something started right as this fired — safety check
+        handleStopCamera();
+        handleStopMic();
+        handleStopLocation();
+        syncWakeLock();
+        stopForeground(true);
+        stopSelf();
     }
 
     private void createChannel() {

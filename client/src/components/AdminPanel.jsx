@@ -7,6 +7,17 @@ function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
+// "5 min ago" / "3 hr ago" for an offline device's last-known-location timestamp — coarse
+// on purpose, this is a snapshot from whenever the device last checked in, not a live value.
+function formatAgo(ts) {
+  const mins = Math.max(0, Math.round((Date.now() - ts) / 60000))
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins} min ago`
+  const hrs = Math.round(mins / 60)
+  if (hrs < 24) return `${hrs} hr ago`
+  return `${Math.round(hrs / 24)} d ago`
+}
+
 // Mini DM panel for admin → specific user
 function AdminDMView({ targetUser, session, sendMsg, addListener, wsStatus, onBack }) {
   const [messages, setMessages] = useState([])
@@ -194,7 +205,12 @@ export default function AdminPanel({ session, sendMsg, addListener, wsStatus, on
                 {offlineDevices.map((d) => (
                   <li key={d.userId} className="user-item">
                     <span className="user-avatar">{(d.name || '?')[0].toUpperCase()}</span>
-                    <span className="user-item-name">{d.name || 'Unknown'}</span>
+                    <span className="user-item-name-wrap">
+                      <span className="user-item-name">{d.name || 'Unknown'}</span>
+                      {d.locationUpdatedAt && (
+                        <span className="user-item-detail">📍 last seen {formatAgo(d.locationUpdatedAt)}</span>
+                      )}
+                    </span>
                     <span className="user-item-actions">
                       {wakeStatus[d.userId] ? (
                         <span className="wake-status" title={wakeStatus[d.userId]}>{wakeStatus[d.userId]}</span>
@@ -239,8 +255,10 @@ export default function AdminPanel({ session, sendMsg, addListener, wsStatus, on
                   key={selectedUser.id}
                   targetUser={selectedUser}
                   adminId={session.userId}
+                  adminPin={session.pin}
                   sendMsg={sendMsg}
                   addListener={addListener}
+                  onWakeUp={wakeUser}
                 />
               )}
               {view === 'live' && (
@@ -250,6 +268,7 @@ export default function AdminPanel({ session, sendMsg, addListener, wsStatus, on
                   adminId={session.userId}
                   sendMsg={sendMsg}
                   addListener={addListener}
+                  onWakeUp={wakeUser}
                 />
               )}
             </div>

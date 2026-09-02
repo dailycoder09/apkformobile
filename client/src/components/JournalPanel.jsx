@@ -4,6 +4,7 @@ import SwipeCarousel from './SwipeCarousel'
 import JournalEntriesSection from './JournalEntriesSection'
 import JournalAnalyticsSection from './JournalAnalyticsSection'
 import { TAG_PALETTE, MOOD_ORDER, moodEmoji, moodLabel, moodScore } from '../utils/journalFormat'
+import { getCache, setCache } from '../lib/offlineCache'
 
 // Same "don't trust the browser's own timezone" pattern duplicated across this app's other
 // screens (KhatabookPanel.jsx, HealthTrackerPanel.jsx, MilestonePanel.jsx) — kept as its own
@@ -36,21 +37,26 @@ const EMPTY_FORM = { id: null, date: '', mood: 'okay', energy: 3, sleepHours: ''
 // "who owns what" split already established there. No admin view exists for this module at
 // all (unlike Milestones/Health) — never broadcast, never surfaced to a parent.
 export default function JournalPanel({ session, sendMsg, addListener, onHome, onProfileOpen }) {
-  const [entries, setEntries] = useState([])
+  // Seeded from cache so something real renders even offline, before the live replies
+  // (or lack thereof) arrive. namaz_data's cache entry is shared with NamazTracker.jsx —
+  // same raw shape, either screen can populate or refresh it.
+  const [entries, setEntries] = useState(() => getCache('journal_data', session.userId)?.entries || [])
   const [sheetMode, setSheetMode] = useState(null) // null | 'add' | 'edit'
   const [form, setForm] = useState(EMPTY_FORM)
   // Read-only cross-reference against Namaz's per-day prayer log (namaz_days, see
   // NamazTracker.jsx) — fetched here purely to compute the "Mood & Prayer" correlation tile
   // below. Journal never writes to this data, only reads it.
-  const [namazDays, setNamazDays] = useState([])
+  const [namazDays, setNamazDays] = useState(() => getCache('namaz_data', session.userId)?.days || [])
 
   useEffect(() => {
     return addListener((msg) => {
       if (msg.type === 'journal_data') {
         setEntries(msg.entries || [])
+        setCache('journal_data', session.userId, { entries: msg.entries || [] })
       }
       if (msg.type === 'namaz_data') {
         setNamazDays(msg.days || [])
+        setCache('namaz_data', session.userId, { days: msg.days || [], qada: msg.qada })
       }
     })
   }, [addListener])

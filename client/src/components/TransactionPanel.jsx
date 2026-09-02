@@ -4,6 +4,7 @@ import { CATEGORIES, getCategoryMeta, loadCustomCategories, addCustomCategory, l
 import { parsePhonePeStatementCsv } from '../utils/phonePeStatement'
 import { parseHdfcStatementCsv } from '../utils/hdfcStatement'
 import { detectRecurring } from '../utils/recurringDetection'
+import { getCache, setCache } from '../lib/offlineCache'
 import CornerMenu from './CornerMenu'
 
 // Supported statement formats, tried in order — auto-detected from file content so the
@@ -205,14 +206,16 @@ function FilterGroup({ label, options, selected, exclude, onToggleOption, onTogg
 }
 
 export default function TransactionPanel({ session, sendMsg, addListener, onHome, onProfileOpen }) {
-  const [txns, setTxns]       = useState([])
+  // Seeded from cache so something real renders even offline, before the live
+  // transactions_get/budget_get replies below (or lack thereof) arrive.
+  const [txns, setTxns]       = useState(() => getCache('transactions', session.userId) || [])
   const [tab, setTab]         = useState('all')
   const [sheetMode, setSheetMode] = useState(null) // null | 'add' | 'edit'
   const [form, setForm]       = useState(EMPTY_FORM)
   const [bulkKeyword, setBulkKeyword] = useState('')
   // Server-synced budgets: { [category]: monthlyLimit }, overall budget keyed by the
   // reserved OVERALL_BUDGET_CATEGORY. Both this user and their parent can set entries.
-  const [budgets, setBudgets] = useState({})
+  const [budgets, setBudgets] = useState(() => getCache('budgets', session.userId) || {})
   const [budgetSheet, setBudgetSheet] = useState(null) // null | { category, label }
   const [budgetInput, setBudgetInput] = useState('')
   const [analyticsRange, setAnalyticsRange] = useState('month')
@@ -252,30 +255,47 @@ export default function TransactionPanel({ session, sendMsg, addListener, onHome
   // Listen for incoming transaction confirmations (own), new ones from server, edits, deletes, and history
   useEffect(() => {
     return addListener((msg) => {
+      // Every branch here is a server-confirmed state change (not an optimistic local
+      // one), so it's also cached — keeps offline viewing fresh as of the last time this
+      // screen was actually online, without a separate sync step.
       if (msg.type === 'transaction_new' && msg.fromUserId === session.userId) {
         setTxns(prev => {
           const exists = prev.find(t => t.id === msg.transaction.id)
-          return exists ? prev : [msg.transaction, ...prev]
+          const next = exists ? prev : [msg.transaction, ...prev]
+          setCache('transactions', session.userId, next)
+          return next
         })
       }
       if (msg.type === 'transaction_updated' && msg.fromUserId === session.userId) {
-        setTxns(prev => prev.map(t => t.id === msg.transaction.id ? msg.transaction : t))
+        setTxns(prev => {
+          const next = prev.map(t => t.id === msg.transaction.id ? msg.transaction : t)
+          setCache('transactions', session.userId, next)
+          return next
+        })
       }
       if (msg.type === 'transaction_deleted' && msg.fromUserId === session.userId) {
-        setTxns(prev => prev.filter(t => t.id !== msg.id))
+        setTxns(prev => {
+          const next = prev.filter(t => t.id !== msg.id)
+          setCache('transactions', session.userId, next)
+          return next
+        })
       }
       if (msg.type === 'transactions_list' && msg.userId === session.userId) {
         setTxns(prev => {
           const ids = new Set(prev.map(t => t.id))
           const merged = [...prev, ...(msg.transactions || []).filter(t => !ids.has(t.id))]
-          return merged.sort((a, b) => b.date - a.date)
+          merged.sort((a, b) => b.date - a.date)
+          setCache('transactions', session.userId, merged)
+          return merged
         })
       }
       if (msg.type === 'transactions_cleared' && msg.userId === session.userId) {
         setTxns([])
+        setCache('transactions', session.userId, [])
       }
       if (msg.type === 'budgets' && msg.userId === session.userId) {
         setBudgets(msg.budgets || {})
+        setCache('budgets', session.userId, msg.budgets || {})
       }
     })
   }, [addListener, session.userId])

@@ -6,6 +6,7 @@ import { Celebrate } from './Celebrate'
 import SwipeCarousel from './SwipeCarousel'
 import MilestoneAgendaSection from './MilestoneAgendaSection'
 import MilestoneAnalyticsSection from './MilestoneAnalyticsSection'
+import { getCache, setCache } from '../lib/offlineCache'
 
 const prefersReducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -125,9 +126,12 @@ const EMPTY_TASK_FORM = { id: null, goalId: '', title: '', description: '', date
 const UNCATEGORIZED_ID = '__uncategorized__'
 
 export default function MilestonePanel({ session, sendMsg, addListener, onHome, onProfileOpen }) {
-  const [milestones, setMilestones] = useState([])
-  const [goals, setGoals] = useState([])
-  const [tasks, setTasks] = useState([])
+  // Seeded from cache so something real renders even offline, before milestone_data_get's
+  // reply (or lack thereof) arrives.
+  const cachedMilestoneData = getCache('milestone_data', session.userId)
+  const [milestones, setMilestones] = useState(() => cachedMilestoneData?.milestones || [])
+  const [goals, setGoals] = useState(() => cachedMilestoneData?.goals || [])
+  const [tasks, setTasks] = useState(() => cachedMilestoneData?.tasks || [])
   const [activeMilestoneId, setActiveMilestoneId] = useState(null)
   const [openGoals, setOpenGoals] = useState({})
   const [showArchived, setShowArchived] = useState(false)
@@ -156,6 +160,9 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome, 
         setMilestones(msg.milestones || [])
         setGoals(msg.goals || [])
         setTasks(msg.tasks || [])
+        setCache('milestone_data', session.userId, {
+          milestones: msg.milestones || [], goals: msg.goals || [], tasks: msg.tasks || [],
+        })
       }
     })
   }, [addListener])

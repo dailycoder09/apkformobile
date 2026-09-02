@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { getCache, setCache } from '../lib/offlineCache'
 
 // Same-origin in the browser, absolute host in the native app — meeee_server is set by
 // Login.jsx on every user login, same pattern used for the update-check fetch in App.jsx.
@@ -7,10 +8,13 @@ function httpBase() {
 }
 
 export default function ProfilePage({ session, sendMsg, addListener }) {
-  const [profile, setProfile] = useState(null)
-  const [firstName, setFirstName] = useState('')
-  const [lastName, setLastName] = useState('')
-  const [email, setEmail] = useState('')
+  // Seeded from cache so something real renders even offline, before profile_get's reply
+  // (or lack thereof) arrives.
+  const cachedProfile = getCache('profile', session.userId)
+  const [profile, setProfile] = useState(() => cachedProfile || null)
+  const [firstName, setFirstName] = useState(() => cachedProfile?.firstName || '')
+  const [lastName, setLastName] = useState(() => cachedProfile?.lastName || '')
+  const [email, setEmail] = useState(() => cachedProfile?.email || '')
   const [photoFile, setPhotoFile] = useState(null)
   const [photoPreview, setPhotoPreview] = useState('')
   const [saving, setSaving] = useState(false)
@@ -25,6 +29,7 @@ export default function ProfilePage({ session, sendMsg, addListener }) {
         setFirstName(msg.profile.firstName || '')
         setLastName(msg.profile.lastName || '')
         setEmail(msg.profile.email || '')
+        setCache('profile', session.userId, msg.profile)
       }
     })
   }, [addListener, session.userId])

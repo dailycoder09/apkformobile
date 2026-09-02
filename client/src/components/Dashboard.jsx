@@ -4,6 +4,7 @@ import { computeGoalStats, computeHomeStats } from '../utils/milestoneStats'
 import { getCategoryMeta } from '../utils/txnMeta'
 import { moodScore } from '../utils/journalFormat'
 import { formatDueLabel } from '../utils/healthFormat'
+import { getCache, setCache } from '../lib/offlineCache'
 import CornerMenu from './CornerMenu'
 
 const PRAYER_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha']
@@ -111,20 +112,26 @@ const CATEGORY_ICON = {
 }
 
 export default function Dashboard({ session, onSelect, sendMsg, addListener, showProfile, onProfileOpen }) {
-  const [txns, setTxns] = useState([])
-  const [khataContacts, setKhataContacts] = useState([])
-  const [khataEntries, setKhataEntries] = useState([])
-  const [goals, setGoals] = useState([])
-  const [tasks, setTasks] = useState([])
+  // Seeded from the same caches each screen's own panel writes to (offlineCache.js), so a
+  // cold start with no internet shows real last-known numbers on every bento tile instead
+  // of all zeros, before the live *_get replies below (or lack thereof) arrive.
+  const cachedMilestoneData = getCache('milestone_data', session.userId)
+  const cachedLedgerData    = getCache('ledger_data', session.userId)
+  const cachedHealthData    = getCache('health_data', session.userId)
+  const [txns, setTxns] = useState(() => getCache('transactions', session.userId) || [])
+  const [khataContacts, setKhataContacts] = useState(() => cachedLedgerData?.contacts || [])
+  const [khataEntries, setKhataEntries] = useState(() => cachedLedgerData?.entries || [])
+  const [goals, setGoals] = useState(() => cachedMilestoneData?.goals || [])
+  const [tasks, setTasks] = useState(() => cachedMilestoneData?.tasks || [])
   // Only fetched for the Streaks strip below — Journal's own streak/entries logic lives in
   // JournalPanel.jsx; this is a separate, minimal copy of just the streak math, same
   // "each screen keeps its own small derivation" convention as readNamazStreaks above.
-  const [journalEntries, setJournalEntries] = useState([])
+  const [journalEntries, setJournalEntries] = useState(() => getCache('journal_data', session.userId)?.entries || [])
   // Fetched fresh here (Dashboard never loaded Health data before) purely for the Health
   // bento tile's sick-days/next-reminder stats — HealthTrackerPanel.jsx owns the real
   // add/edit/mark-done flows, this is a read-only summary same as Journal's above.
-  const [healthEpisodes, setHealthEpisodes] = useState([])
-  const [healthReminders, setHealthReminders] = useState([])
+  const [healthEpisodes, setHealthEpisodes] = useState(() => cachedHealthData?.episodes || [])
+  const [healthReminders, setHealthReminders] = useState(() => cachedHealthData?.reminders || [])
   // Bumped when a 'namaz_data' reply hydrates localStorage below, purely to force a
   // re-render — namazCount/namazWeekly/etc. are plain localStorage reads on every render
   // rather than state, so without this they'd only pick up the hydrated values on some
@@ -139,24 +146,37 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
     return addListener((msg) => {
       if (msg.type === 'transactions_list' && msg.userId === session.userId) {
         setTxns(msg.transactions || [])
+        setCache('transactions', session.userId, msg.transactions || [])
       }
       if (msg.type === 'transaction_new' && msg.fromUserId === session.userId) {
-        setTxns(prev => (prev.find(t => t.id === msg.transaction.id) ? prev : [msg.transaction, ...prev]))
+        setTxns(prev => {
+          const next = prev.find(t => t.id === msg.transaction.id) ? prev : [msg.transaction, ...prev]
+          setCache('transactions', session.userId, next)
+          return next
+        })
       }
       if (msg.type === 'ledger_data') {
         setKhataContacts(msg.contacts || [])
         setKhataEntries(msg.entries || [])
+        setCache('ledger_data', session.userId, { contacts: msg.contacts || [], entries: msg.entries || [] })
       }
       if (msg.type === 'milestone_data') {
         setGoals(msg.goals || [])
         setTasks(msg.tasks || [])
+        // Full shape (including milestones, which this screen doesn't itself track) so this
+        // write doesn't clobber what MilestonePanel.jsx's own cache write expects to find.
+        setCache('milestone_data', session.userId, {
+          milestones: msg.milestones || [], goals: msg.goals || [], tasks: msg.tasks || [],
+        })
       }
       if (msg.type === 'journal_data') {
         setJournalEntries(msg.entries || [])
+        setCache('journal_data', session.userId, { entries: msg.entries || [] })
       }
       if (msg.type === 'health_data') {
         setHealthEpisodes(msg.episodes || [])
         setHealthReminders(msg.reminders || [])
+        setCache('health_data', session.userId, { episodes: msg.episodes || [], reminders: msg.reminders || [] })
       }
       // Namaz/Qada now persist server-side (see NamazTracker.jsx), but this screen's own
       // stat helpers (readNamazAll/readNamazWeekly/readNamazStreaks/readNamazMonthRate,

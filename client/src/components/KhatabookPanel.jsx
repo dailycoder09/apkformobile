@@ -6,6 +6,7 @@ import KhatabookEntriesSection from './KhatabookEntriesSection'
 import KhatabookAnalyticsSection from './KhatabookAnalyticsSection'
 import KhatabookContactPage from './KhatabookContactPage'
 import { formatINR, formatShortDate } from '../utils/khataFormat'
+import { getCache, setCache } from '../lib/offlineCache'
 
 // Same "don't trust the browser's own timezone" pattern already used in TransactionPanel.jsx
 // / AdminTransactionView.jsx / MilestonePanel.jsx — duplicated rather than shared, matching
@@ -40,8 +41,11 @@ const EMPTY_ENTRY_FORM = { id: null, type: 'gave', amount: '', note: '', date: '
 // free-text people, not linked to real FamilyWatch accounts, and this data is never
 // surfaced to a parent's admin view (unlike transactions/budgets).
 export default function KhatabookPanel({ session, sendMsg, addListener, onHome, onProfileOpen }) {
-  const [contacts, setContacts] = useState([])
-  const [entries, setEntries] = useState([])
+  // Seeded from cache so something real renders even offline, before ledger_data_get's
+  // reply (or lack thereof) arrives.
+  const cachedLedgerData = getCache('ledger_data', session.userId)
+  const [contacts, setContacts] = useState(() => cachedLedgerData?.contacts || [])
+  const [entries, setEntries] = useState(() => cachedLedgerData?.entries || [])
   const [selectedContactId, setSelectedContactId] = useState(null)
 
   // Mobile-only navigation flag: true only when a contact row was actually tapped in the
@@ -67,6 +71,9 @@ export default function KhatabookPanel({ session, sendMsg, addListener, onHome, 
       if (msg.type === 'ledger_data') {
         setContacts(msg.contacts || [])
         setEntries(msg.entries || [])
+        setCache('ledger_data', session.userId, {
+          contacts: msg.contacts || [], entries: msg.entries || [],
+        })
       }
     })
   }, [addListener])

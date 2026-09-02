@@ -39,24 +39,44 @@ function fileIcon(mime, kind) {
   return '📄'
 }
 
-export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addListener }) {
+export default function RemoteFileBrowser({ targetUser, adminId, adminPin, sendMsg, addListener, onWakeUp }) {
   const [path, setPath]       = useState([])
   const [entries, setEntries] = useState(null)
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
+  // KeepAliveService is dormant by default now, so "not connected" is the common case, not
+  // an edge case — the server tells us explicitly (target_offline) instead of us guessing
+  // from a request that never got a reply.
+  const [offline, setOffline] = useState(false)
+  const [waking, setWaking]   = useState(false)
   const pendingRef            = useRef({}) // requestId → { name, mimeType, size, filePath }
   const timeoutRef            = useRef({}) // requestId → timer
 
   const requestLs = useCallback((p) => {
-    setLoading(true); setError(null); setEntries(null)
+    setLoading(true); setError(null); setEntries(null); setOffline(false)
     sendMsg({ type: 'ls', targetId: targetUser.id, path: p })
   }, [sendMsg, targetUser.id])
+
+  const handleWakeUp = () => {
+    setWaking(true)
+    onWakeUp?.(targetUser.id)
+    setTimeout(() => setWaking(false), 4000)
+  }
 
   useEffect(() => { requestLs([]) }, [requestLs])
 
   useEffect(() => {
     return addListener((msg) => {
+      // Not keyed by fromUserId like the rest of this listener — target_offline is a
+      // synthesized reply for a target that was never connected, so there's no fromUserId
+      // to match on; the server includes the userId the admin actually targeted instead.
+      if (msg.type === 'target_offline' && msg.userId === targetUser.id && msg.action === 'ls') {
+        setLoading(false)
+        setOffline(true)
+        return
+      }
+
       if (msg.fromUserId !== targetUser.id) return
 
       // ── Directory listing ──────────────────────────────────────────────
@@ -82,7 +102,9 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
         delete pendingRef.current[msg.requestId]
         clearTimeout(timeoutRef.current[msg.requestId])
         delete timeoutRef.current[msg.requestId]
-        const fileUrl = `${location.origin}/api/file/${msg.requestId}`
+        // The server's checkAdminAuth gates plain GETs here behind the admin PIN, since
+        // an <img>/<video> tag can't carry the WebSocket session or a custom header.
+        const fileUrl = `${location.origin}/api/file/${msg.requestId}?pin=${encodeURIComponent(adminPin || '')}`
         const name    = msg.name || pending?.name || 'file'
         const mime    = msg.mimeType || pending?.mimeType || ''
         const size    = msg.size || pending?.size || 0
@@ -190,7 +212,18 @@ export default function RemoteFileBrowser({ targetUser, adminId, sendMsg, addLis
       )}
 
       <div className="rb-list">
-        {!entries && !error && (
+        {offline && !entries && !error && (
+          <div className="rb-waiting rb-offline">
+            {targetUser.name}'s device is offline.
+            <p className="rb-waiting-sub">
+              It'll only take a few seconds to reconnect once woken up.
+            </p>
+            <button className="rb-wake-btn" onClick={handleWakeUp} disabled={waking}>
+              {waking ? 'Waking…' : '🔔 Wake up'}
+            </button>
+          </div>
+        )}
+        {!offline && !entries && !error && (
           <div className="rb-waiting">
             Waiting for {targetUser.name} to respond…
             <p className="rb-waiting-sub">Make sure meeee is running on their device.</p>

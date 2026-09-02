@@ -3,6 +3,7 @@ import { PageShell } from './PageShell'
 import SwipeCarousel from './SwipeCarousel'
 import HealthEpisodesSection from './HealthEpisodesSection'
 import HealthAnalyticsSection from './HealthAnalyticsSection'
+import { getCache, setCache } from '../lib/offlineCache'
 
 // Same "don't trust the browser's own timezone" pattern duplicated across this app's other
 // screens (KhatabookPanel.jsx, MilestonePanel.jsx, TransactionPanel.jsx) — kept as its own
@@ -56,10 +57,13 @@ const EMPTY_EPISODE_FORM = {
 const EMPTY_REMINDER_FORM = { id: null, title: '', dueDate: '', repeats: false, repeatDays: '30', notes: '' }
 
 export default function HealthTrackerPanel({ session, sendMsg, addListener, onHome, onProfileOpen }) {
-  const [episodes, setEpisodes] = useState([])
+  // Seeded from cache so something real renders even offline, before health_data_get's
+  // reply (or lack thereof) arrives.
+  const cachedHealthData = getCache('health_data', session.userId)
+  const [episodes, setEpisodes] = useState(() => cachedHealthData?.episodes || [])
   const [sheetMode, setSheetMode] = useState(null) // null | 'add' | 'edit'
   const [form, setForm] = useState(EMPTY_EPISODE_FORM)
-  const [reminders, setReminders] = useState([])
+  const [reminders, setReminders] = useState(() => cachedHealthData?.reminders || [])
   const [reminderSheetMode, setReminderSheetMode] = useState(null) // null | 'add' | 'edit'
   const [reminderForm, setReminderForm] = useState(EMPTY_REMINDER_FORM)
 
@@ -68,6 +72,9 @@ export default function HealthTrackerPanel({ session, sendMsg, addListener, onHo
       if (msg.type === 'health_data') {
         setEpisodes(msg.episodes || [])
         setReminders(msg.reminders || [])
+        setCache('health_data', session.userId, {
+          episodes: msg.episodes || [], reminders: msg.reminders || [],
+        })
       }
     })
   }, [addListener])
