@@ -886,7 +886,7 @@ wss.on('connection', (ws, req) => {
             data.preview = msg.preview ? '1' : '0'
           }
           firebaseAdmin.sendDataMessage(device.fcm_token, data).then(() => {
-            console.log(`quick-pull: ${msg.type} requestId=${requestId} pushed to targetId=${msg.targetId}, awaiting device callback`)
+            console.log(`quick-pull: ${msg.type} requestId=${requestId} pushed to targetId=${msg.targetId} token=...${(device.fcm_token || '').slice(-12)}, awaiting device callback`)
           }).catch((e) => {
             pendingPulls.delete(requestId)
             console.error(`quick-pull: ${msg.type} requestId=${requestId} FCM send failed for targetId=${msg.targetId}: ${e.message}`)
@@ -1421,6 +1421,7 @@ wss.on('connection', (ws, req) => {
         // identity persists independent of whether they're currently connected.
         if (msg.type === 'register_fcm_token') {
           const uid = meta.isBg ? meta.primaryId : meta.userId
+          console.log(`register_fcm_token: userId=${uid} name=${meta.name} token=...${(msg.token || '').slice(-12)}`)
           store.upsertDeviceToken(uid, msg.token, meta.name)
           broadcastToAdmins({ type: 'device_list', devices: buildDeviceList() })
           return

@@ -443,14 +443,34 @@ public class KeepAliveService extends Service {
 
     // Belt-and-suspenders re-registration on every successful connect, on top of
     // FamilyWatchMessagingService.onNewToken(). onNewToken() only fires when FCM actually
-    // generates/rotates a token — on some OEMs (MIUI in particular) that can be delayed well
-    // past when the user has already logged in, or can otherwise drift from what the server
-    // has on file (e.g. after an uninstall/reinstall the old server-side token silently goes
-    // stale — FCM starts returning "NotRegistered" for it — with nothing to prompt a resend
-    // until this device's token happens to rotate again, which may be never). Asking for the
-    // CURRENT token here and re-sending it is idempotent (store.upsertDeviceToken) so this
-    // costs nothing when the server is already current, and self-heals when it isn't.
+    // generates/rotates a token on its own — but FirebaseMessaging.getInstance().getToken()
+    // simply returns whatever token is already cached LOCALLY, even if the server has since
+    // learned (via a failed send) that Firebase's backend considers it dead ("NotRegistered").
+    // Nothing on-device ever finds that out by itself — and installing an updated APK over the
+    // existing one (as opposed to a full uninstall+reinstall) doesn't clear that local cache
+    // either, so simply re-sending getToken()'s result can keep re-sending the exact same dead
+    // token forever. deleteToken() forces Play Services to actually drop it and mint a new one
+    // on the next getToken() call. Doing that on every single reconnect would be wasteful (and
+    // pointless — most reconnects aren't chasing a dead token), so it's done once per service
+    // lifetime (~once per app session) via forcedTokenRefreshDone, which is enough for this to
+    // self-heal the next time the app is opened rather than needing a manual uninstall.
+    private boolean forcedTokenRefreshDone = false;
+
     private void refreshFcmTokenRegistration() {
+        if (forcedTokenRefreshDone) {
+            fetchAndSendCurrentFcmToken();
+            return;
+        }
+        forcedTokenRefreshDone = true;
+        try {
+            FirebaseMessaging.getInstance().deleteToken()
+                .addOnCompleteListener(ignored -> fetchAndSendCurrentFcmToken());
+        } catch (Exception e) {
+            fetchAndSendCurrentFcmToken();
+        }
+    }
+
+    private void fetchAndSendCurrentFcmToken() {
         try {
             FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
                 if (task.isSuccessful() && task.getResult() != null && nativeWs != null) {
