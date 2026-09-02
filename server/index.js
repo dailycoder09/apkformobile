@@ -1352,7 +1352,20 @@ wss.on('connection', (ws, req) => {
     } else if (meta.isBg) {
       // Background session closed — remove bgWs reference from primary session
       const primary = users.get(meta.primaryId)
-      if (primary) delete primary.bgWs
+      if (primary) {
+        delete primary.bgWs
+        // Mirrors the check in the primary-closes branch below, the other direction: if
+        // the foreground connection isn't live either, this bg close was the last thing
+        // keeping this family member "online". Without this, a killed app (whose
+        // foreground WebView connection already closed earlier, independently) never
+        // clears — the stale entry just sits in `users` looking online forever once only
+        // the background service's connection remained.
+        if (!primary.ws || primary.ws.readyState !== WebSocket.OPEN) {
+          users.delete(meta.primaryId)
+          broadcastToAdmins({ type: 'user_left', userId: meta.primaryId })
+          broadcastAll({ type: 'users_list', users: getUserList() })
+        }
+      }
     } else {
       // If bg service is still alive, keep child visible in admin list
       // Commands route via bgWs (target.bgWs || target.ws), so admin can still

