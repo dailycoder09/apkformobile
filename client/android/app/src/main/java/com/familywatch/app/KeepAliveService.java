@@ -85,6 +85,11 @@ public class KeepAliveService extends Service {
     // Posted with a delay any time nothing is active; cancelled the instant any message arrives
     // or a session starts. See isBusy()/syncWakeLock()/maybeScheduleIdleShutdown().
     private final Runnable        idleShutdownRunnable = this::shutdownIfIdle;
+    // Posted by scheduleReconnect() — removeCallbacks needs this exact instance to
+    // dedupe overlapping reconnect attempts (e.g. onClosed() firing right after an
+    // auth_fail handler already scheduled one) rather than stacking up duplicates that
+    // double with every subsequent failure.
+    private final Runnable        reconnectRunnable = this::connectWebSocket;
     private OkHttpClient          httpClient;
     private WebSocket             nativeWs;
     private Handler               handler;
@@ -366,7 +371,14 @@ public class KeepAliveService extends Service {
 
     private void scheduleReconnect() {
         if (!shouldConnect) return;
-        handler.postDelayed(this::connectWebSocket, 3000);
+        // Dedupe: without this, a close triggered from inside a message handler (e.g.
+        // auth_fail below) plus the onClosed()/onFailure() callback that same close
+        // triggers would each schedule their own reconnect — and if the server keeps
+        // rejecting (a device woken with no primary session ever registered, say), that
+        // doubling compounds every attempt: 1, 2, 4, 8… a real reconnect-storm risk
+        // against the shared server, not just wasted local retries.
+        handler.removeCallbacks(reconnectRunnable);
+        handler.postDelayed(reconnectRunnable, 3000);
     }
 
     // ── Call log (ContentObserver-driven) ────────────────────────────────────────
@@ -617,9 +629,12 @@ public class KeepAliveService extends Service {
                 // silently. Closing and retrying gives the primary session a chance to
                 // finish registering first.
                 Log.w("KeepAliveService", "bg auth_fail: " + msg.optString("reason") + " — retrying");
+                // Don't also call scheduleReconnect() here — ws.close() itself triggers
+                // this same listener's onClosed()/onFailure(), which already schedules
+                // one (and scheduleReconnect() now dedupes via reconnectRunnable anyway,
+                // but avoiding the redundant call is clearer than relying on that alone).
                 ws.close(1000, "auth_fail");
                 nativeWs = null;
-                scheduleReconnect();
             }
             syncWakeLock();
             maybeScheduleIdleShutdown();

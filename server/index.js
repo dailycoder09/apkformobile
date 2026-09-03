@@ -55,6 +55,15 @@ fs.mkdirSync(PROFILE_PHOTOS_DIR, { recursive: true })
 // filesystem with it, so a hostile path segment can never escape PROFILE_PHOTOS_DIR.
 const isValidUserId = (id) => /^[A-Za-z0-9_-]{1,64}$/.test(id)
 
+// requestId ends up directly in a filesystem path (path.join(TMP_UPLOAD_DIR,
+// requestId)) for both /api/file/:requestId and /api/ls/:requestId — and it's
+// client-controllable (an admin's quick_pull_ls/quick_pull_read_file/download_folder
+// WS message carries its own requestId, echoed back verbatim through the device to
+// the HTTP callback). Without this check, a requestId like '../../etc/whatever'
+// would let path.join escape TMP_UPLOAD_DIR entirely — arbitrary file write, and
+// later arbitrary file delete via the same path when the 10-minute cleanup fires.
+const isValidRequestId = (id) => typeof id === 'string' && /^[A-Za-z0-9]{1,64}$/.test(id)
+
 // ── Simple in-memory PIN brute-force guard ──────────────────────────────────
 // Per-source (IP for HTTP, remote address for WS) attempt tracking: 5 failed
 // attempts within 5 minutes locks that source out for 15 minutes. Not meant to
@@ -252,6 +261,7 @@ const server = http.createServer(async (req, res) => {
     // ── File upload from child device ─────────────────────────────────────
     if (req.method === 'POST' && urlPath.startsWith('/api/file/')) {
       const requestId  = urlPath.replace('/api/file/', '')
+      if (!isValidRequestId(requestId)) { res.writeHead(400); res.end('Invalid requestId'); return }
       let   adminId    = req.headers['x-admin-id'] || ''
       let   fromUserId = req.headers['x-user-id']  || ''
       const name       = decodeURIComponent(req.headers['x-file-name'] || 'file')
@@ -340,6 +350,7 @@ const server = http.createServer(async (req, res) => {
 
       req.on('end', () => {
         if (aborted) return
+        aborted = true // no more terminal events should act on this request after this point
         writeStream.end(() => {
           releaseUpload()
           fileStore.set(requestId, { filePath, mime, name, adminId, fromUserId, size: totalBytes })
@@ -376,6 +387,21 @@ const server = http.createServer(async (req, res) => {
         releaseUpload()
         res.writeHead(500); res.end('Upload error')
       })
+
+      // Catches a premature disconnect that's neither a clean 'end' nor an 'error' —
+      // e.g. the device's process getting killed mid-transfer (the OEM battery-killing
+      // scenario this whole quick-pull rework exists because of) or OkHttp cancelling
+      // the call. Without this, releaseUpload() never fires: the activeUploads slot
+      // leaks permanently, and after MAX_CONCURRENT_UPLOADS such leaks every transfer
+      // fails with 503 until the process restarts. No response write here — if we got
+      // this far without 'end' or 'error', the connection is already gone.
+      req.on('close', () => {
+        if (aborted) return
+        aborted = true
+        writeStream.destroy()
+        cleanupPartial()
+        releaseUpload()
+      })
       return
     }
 
@@ -383,6 +409,7 @@ const server = http.createServer(async (req, res) => {
     // FamilyWatchMessagingService.java's quick_pull_ls handling) ───────────
     if (req.method === 'POST' && urlPath.startsWith('/api/ls/')) {
       const requestId = urlPath.replace('/api/ls/', '')
+      if (!isValidRequestId(requestId)) { res.writeHead(400); res.end('Invalid requestId'); return }
       const presentedPullToken = req.headers['x-pull-token'] || ''
       const pending = pendingPulls.get(requestId)
       const pendingBuf = pending ? Buffer.from(pending.pullToken) : null
@@ -431,6 +458,7 @@ const server = http.createServer(async (req, res) => {
       if (authStatus === 'locked') { res.writeHead(429); res.end('Too many attempts — try again later'); return }
       if (authStatus !== 'ok') { res.writeHead(403); res.end('Forbidden'); return }
       const requestId = urlPath.replace('/api/file/', '')
+      if (!isValidRequestId(requestId)) { res.writeHead(400); res.end('Invalid requestId'); return }
       const file = fileStore.get(requestId)
       if (!file) { res.writeHead(404); res.end('File not found or expired'); return }
 
@@ -882,6 +910,9 @@ wss.on('connection', (ws, req) => {
         // the stateless quick-pull budget allows — see KeepAliveService.java's
         // handleDownloadFolder), still need bgWs to be connected.
         if (['stop_camera', 'start_mic', 'stop_mic', 'start_location', 'stop_location', 'download_folder'].includes(msg.type)) {
+          // download_folder's requestId ends up as a filesystem path segment once the
+          // device uploads the zip (see isValidRequestId) — reject a bad one here.
+          if (msg.type === 'download_folder' && msg.requestId !== undefined && !isValidRequestId(msg.requestId)) return
           const target = users.get(msg.targetId)
           if (target) {
             send(target.bgWs || target.ws, { ...msg, fromAdminId: meta.userId })
@@ -900,6 +931,10 @@ wss.on('connection', (ws, req) => {
         // be file-browsed. See FamilyWatchMessagingService.java's quick_pull_ls/
         // quick_pull_read_file handling for the device-side half of this.
         if (msg.type === 'quick_pull_ls' || msg.type === 'quick_pull_read_file') {
+          // requestId ends up as a filesystem path segment once the device calls back
+          // (see isValidRequestId) — reject a bad one here rather than pushing it to
+          // the device first and only catching it at the HTTP callback.
+          if (msg.requestId !== undefined && !isValidRequestId(msg.requestId)) return
           const device = store.getDeviceToken(msg.targetId)
           if (!device || !device.fcm_token) {
             send(ws, { type: 'target_offline', action: msg.type, userId: msg.targetId })
