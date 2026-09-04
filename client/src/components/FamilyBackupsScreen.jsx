@@ -69,7 +69,10 @@ export default function FamilyBackupsScreen({ onHome }) {
   useEffect(() => {
     fetch(`${httpBase()}/api/device-backup/devices`)
       .then((r) => r.json())
-      .then((d) => setDevices(d.deviceIds || []))
+      // `devices` (added alongside the older `deviceIds`) carries each device's
+      // most-recently-reported display name — falls back to the bare id for any
+      // device that backed up before this existed, or hasn't reported a name yet.
+      .then((d) => setDevices(d.devices || (d.deviceIds || []).map((id) => ({ deviceId: id, name: '' }))))
       .catch(() => {})
   }, [])
 
@@ -295,16 +298,16 @@ export default function FamilyBackupsScreen({ onHome }) {
           <p className="mt-3 text-sm text-muted-foreground">No device has backed up yet.</p>
         ) : (
           <div className="mt-3 flex flex-wrap gap-2">
-            {devices.map((id) => (
+            {devices.map(({ deviceId, name }) => (
               <button
-                key={id}
+                key={deviceId}
                 type="button"
-                onClick={() => loadChunks(id)}
+                onClick={() => loadChunks(deviceId)}
                 className={`rounded-full px-3 py-1.5 text-sm font-medium ${
-                  selectedDevice === id ? 'bg-foreground text-background' : 'bg-secondary text-secondary-foreground'
+                  selectedDevice === deviceId ? 'bg-foreground text-background' : 'bg-secondary text-secondary-foreground'
                 }`}
               >
-                {id}
+                {name || deviceId}
               </button>
             ))}
           </div>
@@ -313,7 +316,9 @@ export default function FamilyBackupsScreen({ onHome }) {
 
       {selectedDevice && (
         <Tile>
-          <TileLabel>Backups for {selectedDevice}</TileLabel>
+          <TileLabel>
+            Backups for {devices.find((d) => d.deviceId === selectedDevice)?.name || selectedDevice}
+          </TileLabel>
           {loadingChunks ? (
             <p className="mt-3 text-sm text-muted-foreground">Loading…</p>
           ) : chunks.length === 0 ? (

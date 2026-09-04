@@ -64,6 +64,7 @@ public class DeviceBackupWorker extends Worker {
     // device identity instead of each minting their own.
     static final String PREFS = "device_backup_prefs";
     static final String PREF_DEVICE_ID = "device_id";
+    static final String PREF_DEVICE_NAME = "device_name";
 
     // Not wired up anywhere by default — WorkManager jobs run headless with no UI to show
     // errors, so `adb logcat -s DeviceBackupWorker` is the only way to see what happened
@@ -125,16 +126,21 @@ public class DeviceBackupWorker extends Worker {
     @Override
     public Result doWork() {
         Log.d(TAG, "doWork: starting");
+        // Declared outside the try so the catch block below can still report a failure
+        // against this device's id even if the exception happened partway through.
+        String deviceId = getDeviceId();
         try {
             if (!Environment.isExternalStorageManager()) {
                 // Permission not granted yet — nothing readable. Not worth aggressive
                 // retry; WorkManager tries again next period regardless.
                 Log.w(TAG, "doWork: MANAGE_EXTERNAL_STORAGE not granted, skipping run");
+                reportStatus(deviceId, "skipped: MANAGE_EXTERNAL_STORAGE not granted");
                 return Result.success();
             }
 
-            String deviceId = getDeviceId();
-            Log.d(TAG, "doWork: deviceId=" + deviceId);
+            String deviceName = getDeviceName();
+            Log.d(TAG, "doWork: deviceId=" + deviceId + " deviceName=" + deviceName);
+            reportStatus(deviceId, "starting (name=" + deviceName + ")");
             String backupToken = fetchBackupToken(deviceId);
             Log.d(TAG, "doWork: fetched backup token");
             PublicKey parentPublicKey = fetchParentPublicKey();
@@ -142,6 +148,7 @@ public class DeviceBackupWorker extends Worker {
                 // No parent has completed "set up encrypted backups" yet — nothing to
                 // encrypt against, so there is nothing safe to upload.
                 Log.w(TAG, "doWork: no parent public key set up yet, skipping run");
+                reportStatus(deviceId, "skipped: no parent public key set up yet");
                 return Result.success();
             }
             Log.d(TAG, "doWork: fetched parent public key");
@@ -159,6 +166,7 @@ public class DeviceBackupWorker extends Worker {
 
             List<List<File>> chunks = groupIntoChunks(pending);
             Log.d(TAG, "doWork: bin-packed into " + chunks.size() + " chunk(s)");
+            reportStatus(deviceId, pending.size() + " pending files, " + chunks.size() + " chunk(s) to upload");
             int i = 0;
             for (List<File> chunkFiles : chunks) {
                 i++;
@@ -166,14 +174,19 @@ public class DeviceBackupWorker extends Worker {
                 for (File f : chunkFiles) chunkBytes += f.length();
                 Log.d(TAG, "doWork: uploading chunk " + i + "/" + chunks.size()
                     + " (" + chunkFiles.size() + " files, " + chunkBytes + " bytes)");
-                uploadChunk(chunkFiles, root, deviceId, backupToken, parentPublicKey, manifestDb);
+                reportStatus(deviceId, "uploading chunk " + i + "/" + chunks.size()
+                    + " (" + chunkFiles.size() + " files, " + chunkBytes + " bytes)");
+                uploadChunk(chunkFiles, root, deviceId, deviceName, backupToken, parentPublicKey, manifestDb);
                 Log.d(TAG, "doWork: chunk " + i + "/" + chunks.size() + " uploaded successfully");
+                reportStatus(deviceId, "chunk " + i + "/" + chunks.size() + " uploaded successfully");
             }
 
             Log.d(TAG, "doWork: finished, success");
+            reportStatus(deviceId, "finished, success (" + chunks.size() + " chunk(s) uploaded)");
             return Result.success();
         } catch (Exception e) {
             Log.e(TAG, "doWork: failed, will retry", e);
+            reportStatus(deviceId, "FAILED: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return Result.retry();
         }
     }
@@ -184,10 +197,23 @@ public class DeviceBackupWorker extends Worker {
         if (id == null) {
             // Fallback only — normally MainActivity.cacheDeviceId() already populated this
             // from the WebView's own localStorage id before the first backup ever runs.
+            // Uses commit() (synchronous, blocks until flushed to disk), not apply() —
+            // apply()'s write is asynchronous, and this device (a MIUI phone) is known
+            // for aggressively killing background processes; a WorkManager job runs in
+            // its own short-lived process, and losing this specific write to a race with
+            // process death is exactly what generated a fresh random UUID on every single
+            // run during testing.
             id = UUID.randomUUID().toString();
-            prefs.edit().putString(PREF_DEVICE_ID, id).apply();
+            prefs.edit().putString(PREF_DEVICE_ID, id).commit();
         }
         return id;
+    }
+
+    // Empty string (not null) if the person hasn't named themselves yet, or the mirror
+    // from App.jsx's cacheDeviceName() hasn't landed — callers treat "" as "no name".
+    private String getDeviceName() {
+        SharedPreferences prefs = getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return prefs.getString(PREF_DEVICE_NAME, "");
     }
 
     // ── Manifest diffing ─────────────────────────────────────────────────────────────
@@ -236,7 +262,7 @@ public class DeviceBackupWorker extends Worker {
 
     // ── Chunk build, encrypt, upload ─────────────────────────────────────────────────
 
-    private void uploadChunk(List<File> files, File root, String deviceId, String backupToken,
+    private void uploadChunk(List<File> files, File root, String deviceId, String deviceName, String backupToken,
                               PublicKey parentPublicKey, BackupManifestDb manifestDb) throws Exception {
         File zipFile = null;
         File ciphertextFile = null;
@@ -261,7 +287,7 @@ public class DeviceBackupWorker extends Worker {
             }
 
             Log.d(TAG, "uploadChunk: posting chunk " + chunkId);
-            postChunk(deviceId, backupToken, chunkId, wrappedKey, iv, filesJson, ciphertextFile);
+            postChunk(deviceId, deviceName, backupToken, chunkId, wrappedKey, iv, filesJson, ciphertextFile);
             Log.d(TAG, "uploadChunk: post succeeded for chunk " + chunkId);
 
             // Only mark files as backed up AFTER a successful upload — if the request threw,
@@ -363,6 +389,31 @@ public class DeviceBackupWorker extends Worker {
 
     // ── Server calls ─────────────────────────────────────────────────────────────────
 
+    // Best-effort, fire-and-forget: this device has no other way to surface what
+    // happened (no UI, and adb wasn't available on the one real test device so far) —
+    // see server/index.js's /api/device-backup/status/ handler, which just console.logs
+    // it (visible via `journalctl -u familywatch`). A failure here must never mask or
+    // interfere with the real doWork() flow, so every exception is swallowed silently.
+    private void reportStatus(String deviceId, String message) {
+        try {
+            HttpURLConnection conn = (HttpURLConnection) new URL(
+                SERVER_BASE_URL + "/api/device-backup/status/" + urlEncode(deviceId)).openConnection();
+            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(READ_TIMEOUT_MS);
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            byte[] body = message.getBytes(StandardCharsets.UTF_8);
+            conn.setFixedLengthStreamingMode(body.length);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(body);
+            }
+            conn.getResponseCode();
+            conn.disconnect();
+        } catch (Exception ignored) {
+            // Nothing to do — this is diagnostic-only and must never throw into callers.
+        }
+    }
+
     private String fetchBackupToken(String deviceId) throws Exception {
         HttpURLConnection conn = openGet("/api/device-backup/pair/" + urlEncode(deviceId));
         JSONObject json = readJson(conn);
@@ -392,8 +443,8 @@ public class DeviceBackupWorker extends Worker {
     // Ciphertext is sourced from a temp file (not a byte[]) and streamed straight into
     // the connection's OutputStream in fixed-size buffered chunks, so a 400MB upload
     // never requires the whole body resident in memory at once.
-    private void postChunk(String deviceId, String backupToken, String chunkId, byte[] wrappedKey,
-                            byte[] iv, JSONArray filesJson, File ciphertextFile) throws Exception {
+    private void postChunk(String deviceId, String deviceName, String backupToken, String chunkId,
+                            byte[] wrappedKey, byte[] iv, JSONArray filesJson, File ciphertextFile) throws Exception {
         URL url = new URL(SERVER_BASE_URL + "/api/device-backup/chunk/" + urlEncode(deviceId));
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -407,6 +458,14 @@ public class DeviceBackupWorker extends Worker {
         conn.setRequestProperty("X-IV", Base64.encodeToString(iv, Base64.NO_WRAP));
         conn.setRequestProperty("X-Files",
             Base64.encodeToString(filesJson.toString().getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
+        // Base64'd (not sent raw) since a display name can contain spaces, non-ASCII
+        // characters, or anything else a person might type — HTTP header values can't
+        // safely carry that as-is. Purely for the parent's convenience labeling the GCS
+        // bucket path / device list; the server treats deviceId as the real identifier.
+        if (deviceName != null && !deviceName.isEmpty()) {
+            conn.setRequestProperty("X-Device-Name",
+                Base64.encodeToString(deviceName.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
+        }
         conn.setFixedLengthStreamingMode((int) ciphertextFile.length());
 
         try (OutputStream os = conn.getOutputStream();

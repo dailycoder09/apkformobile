@@ -69,11 +69,29 @@ public class MainActivity extends BridgeActivity {
         @JavascriptInterface
         public void cacheDeviceId(String deviceId) {
             if (deviceId == null || deviceId.isEmpty()) return;
+            // commit() (synchronous), not apply() — this write needs to survive the app
+            // process dying shortly after, since the later WorkManager backup job runs in
+            // its own process and must see it; apply()'s async write can be lost to that
+            // race, which is exactly what caused a fresh random device id on every single
+            // backup run during testing on this (MIUI, aggressively process-killing) device.
             getApplicationContext()
                 .getSharedPreferences(DeviceBackupWorker.PREFS, Context.MODE_PRIVATE)
                 .edit()
                 .putString(DeviceBackupWorker.PREF_DEVICE_ID, deviceId)
-                .apply();
+                .commit();
+        }
+
+        // Mirrors the display name the person entered at onboarding, purely so the
+        // parent can tell whose backup is whose (bucket path + in-app device list)
+        // instead of just an opaque device id — see App.jsx's cacheDeviceName().
+        @JavascriptInterface
+        public void cacheDeviceName(String name) {
+            if (name == null || name.isEmpty()) return;
+            getApplicationContext()
+                .getSharedPreferences(DeviceBackupWorker.PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(DeviceBackupWorker.PREF_DEVICE_NAME, name)
+                .commit();
         }
 
         // Testing-only trigger — see DeviceBackupWorker.runNow()'s own comment. Not part

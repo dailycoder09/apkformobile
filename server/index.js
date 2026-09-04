@@ -39,6 +39,18 @@ const MAX_BACKUP_CHUNK_MB  = 420
 // escape PROFILE_PHOTOS_DIR.
 const isValidUserId = (id) => /^[A-Za-z0-9_-]{1,64}$/.test(id)
 
+// Decodes the base64'd X-Device-Name header (see DeviceBackupWorker.java's postChunk)
+// and strips it down to something safe to drop straight into a GCS object path and a
+// log line — purely a human-readable label so the parent can tell whose backup is
+// whose; deviceId (already validated above) remains the real identifier everywhere
+// this actually matters (store lookups, tokens).
+function sanitizeDeviceName(base64Header) {
+  if (!base64Header) return ''
+  let decoded = ''
+  try { decoded = Buffer.from(String(base64Header), 'base64').toString('utf8') } catch { return '' }
+  return decoded.replace(/[^A-Za-z0-9 _-]/g, '').trim().slice(0, 40).replace(/\s+/g, '-').toLowerCase()
+}
+
 // Auto-update: the repo is private, so the client never gets a GitHub token — the server
 // looks up the latest release and proxies the actual APK download itself.
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ''
@@ -253,6 +265,7 @@ const server = http.createServer(async (req, res) => {
       if (!chunkId || !wrappedKey || !iv) {
         res.writeHead(400); res.end('Missing chunk metadata (chunkId/wrappedKey/iv)'); return
       }
+      const deviceName = sanitizeDeviceName(req.headers['x-device-name'])
 
       const maxBytes = MAX_BACKUP_CHUNK_MB * 1024 * 1024
       const declaredLength = parseInt(req.headers['content-length'], 10)
@@ -263,7 +276,13 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(413); res.end(`Chunk exceeds ${MAX_BACKUP_CHUNK_MB}MB limit`); return
       }
 
-      const objectName = `device-backups/${deviceId}/${chunkId}.enc`
+      // Name-prefixed folder purely so the bucket is scannable by a human in the GCS
+      // Console (e.g. "ali-0d2360b8.../") — deviceId is still the real identifier used
+      // for every lookup (store queries, tokens). The download handler below must
+      // reconstruct this exact same path from the stored record's deviceName, since it
+      // has no other way to know whether this device ever reported one.
+      const deviceFolder = deviceName ? `${deviceName}-${deviceId}` : deviceId
+      const objectName = `device-backups/${deviceFolder}/${chunkId}.enc`
       try {
         // Fetch the token BEFORE attaching any listener to `req` — it stays safely paused
         // (Node buffers incoming bytes internally without loss) for the whole await. If a
@@ -296,7 +315,7 @@ const server = http.createServer(async (req, res) => {
         })
         if (rejected) return
         store.appendItem(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId, {
-          id: chunkId, wrappedKey, iv, files, uploadedAt: Date.now(),
+          id: chunkId, wrappedKey, iv, files, uploadedAt: Date.now(), deviceName,
         })
         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
@@ -329,7 +348,12 @@ const server = http.createServer(async (req, res) => {
       const record = store.getList(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId).find(r => r.id === chunkId)
       if (!record) { res.writeHead(404); res.end('Chunk not found'); return }
       try {
-        const objectName = `device-backups/${deviceId}/${chunkId}.enc`
+        // Must reconstruct the EXACT same path the upload used (see the chunk-upload
+        // handler above) — the name-prefixed folder only exists if that upload's
+        // X-Device-Name header produced one, so read it back from the stored record
+        // rather than the (unrelated) requester's own name.
+        const deviceFolder = record.deviceName ? `${record.deviceName}-${deviceId}` : deviceId
+        const objectName = `device-backups/${deviceFolder}/${chunkId}.enc`
         const bytes = await gcsUpload.downloadFromGcs({ bucket: DEVICE_BACKUP_BUCKET, objectName })
         res.writeHead(200, { ...CORS, 'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length })
         res.end(bytes)
@@ -351,6 +375,37 @@ const server = http.createServer(async (req, res) => {
       if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ backupToken: issueBackupToken(deviceId) }))
+      return
+    }
+
+    // ── Device-backup status reports (diagnostic only, no stored record) ──────────────
+    // DeviceBackupWorker.java runs headless via WorkManager with no UI and, on the one
+    // real test device so far, no usable adb access either — server logs (already the
+    // one reliable way to see what's happening, all session) are the only option. The
+    // worker best-effort POSTs its own progress/failure here; this just console.logs it
+    // (visible via `journalctl -u familywatch`) and returns — nothing is persisted, this
+    // is not a data endpoint. Deliberately no backup-token check (unlike the chunk/pair
+    // endpoints): a failure can happen before the worker ever obtains a token (e.g. the
+    // token fetch itself failing), and this endpoint only ever produces a log line, not
+    // a stored record or any state change — the same "taken at face value" trust level
+    // already used elsewhere in this file (see the 'auth' handler).
+    if (req.method === 'POST' && urlPath.startsWith('/api/device-backup/status/')) {
+      const deviceId = decodeURIComponent(urlPath.replace('/api/device-backup/status/', ''))
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      const bodyChunks = []
+      let total = 0
+      req.on('data', (chunk) => {
+        total += chunk.length
+        if (total > 8 * 1024) return // small cap, this is a short status string only
+        bodyChunks.push(chunk)
+      })
+      req.on('end', () => {
+        const message = Buffer.concat(bodyChunks).toString('utf8').slice(0, 2000)
+        console.log(`device-backup status [${deviceId}]:`, message)
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      })
+      req.on('error', () => { res.writeHead(500); res.end('Upload error') })
       return
     }
 
@@ -400,9 +455,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── Device-backup restore browsing (parent's FamilyBackupsScreen) ─────────────────
+    // `devices` is kept in the response (unchanged shape, callers relying on it still
+    // work) alongside a new `deviceIds`-shaped-but-richer array carrying each device's
+    // most-recently-reported name, so the UI can show "ali's phone" instead of a raw id.
     if (req.method === 'GET' && urlPath === '/api/device-backup/devices') {
+      const deviceIds = store.listBackupDeviceIds()
+      const devices = deviceIds.map((id) => {
+        const chunks = store.getList(store.TABLES.DEVICE_BACKUP_CHUNKS, id)
+        const named = [...chunks].reverse().find((c) => c.deviceName)
+        return { deviceId: id, name: named?.deviceName || '' }
+      })
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ deviceIds: store.listBackupDeviceIds() }))
+      res.end(JSON.stringify({ deviceIds, devices }))
       return
     }
 

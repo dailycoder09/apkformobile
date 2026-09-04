@@ -21,6 +21,15 @@ const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__
 const IS_NATIVE = Capacitor.isNativePlatform()
 const NAME_KEY = 'meeee_name'
 
+// Mirrors the display name into native SharedPreferences, same reasoning as
+// localData.js's getDeviceId() mirroring the device id: DeviceBackupWorker.java runs
+// via WorkManager, independent of this WebView, and needs a human-readable label to
+// send alongside its device id so the parent can tell whose backup is whose (both in
+// the GCS bucket path and the in-app device list) instead of just an opaque UUID.
+function cacheDeviceName(name) {
+  try { window.MeeeeNative?.cacheDeviceName?.(name) } catch {}
+}
+
 function compareVersions(a, b) {
   const pa = a.split('.').map(Number)
   const pb = b.split('.').map(Number)
@@ -124,6 +133,7 @@ export default function App() {
       const deviceId = await getDeviceId()
       const name = localStorage.getItem(NAME_KEY)
       if (name) {
+        cacheDeviceName(name)
         if (!cancelled) { setSession({ userId: deviceId, name }); setBooting(false) }
         return
       }
@@ -154,6 +164,7 @@ export default function App() {
 
   const login = useCallback((name) => {
     localStorage.setItem(NAME_KEY, name)
+    cacheDeviceName(name)
     getDeviceId().then((deviceId) => setSession({ userId: deviceId, name }))
   }, [])
 
@@ -168,6 +179,7 @@ export default function App() {
       const profile = await getProfile()
       const name = profile?.firstName || 'You'
       localStorage.setItem(NAME_KEY, name)
+      cacheDeviceName(name)
       const deviceId = await getDeviceId()
       setSession({ userId: deviceId, name })
     } catch (e) {
