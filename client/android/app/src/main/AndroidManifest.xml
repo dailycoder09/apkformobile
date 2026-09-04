@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:allowBackup="false"
@@ -36,6 +37,21 @@
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
 
+        <!-- DeviceBackupWorker.java promotes itself to a foreground service (via
+             setForegroundAsync) while uploading a chunk — a large/slow upload can easily
+             exceed WorkManager's ordinary ~10-minute background execution window, and a
+             foreground service (with a visible "Backing up..." notification, same
+             mechanism WhatsApp/Google Photos use for their own media backup) is Android's
+             sanctioned way to run longer than that reliably. This overrides WorkManager's
+             own SystemForegroundService entry to declare the "dataSync" type, which
+             targetSdk 36 (Android 14+) requires be declared explicitly — starting a
+             foreground service of an undeclared type throws a SecurityException at
+             runtime on API 34+. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
     </application>
 
     <!-- Network -->
@@ -66,5 +82,19 @@
 
     <!-- In-app update: install a newly downloaded APK -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- DeviceBackupWorker.java's foreground-service promotion during a chunk upload —
+         see the SystemForegroundService override above. FOREGROUND_SERVICE_DATA_SYNC is
+         the Android 14+ typed permission required alongside the generic one now that FGS
+         permissions are split by type. POST_NOTIFICATIONS controls whether the "Backing
+         up..." notification is actually visible (Android 13+); the foreground-service
+         execution-time benefit itself does not depend on it, but the person won't see any
+         progress without it. No runtime request flow wired up for it yet — usually
+         already granted from this app's existing FCM/notification usage elsewhere, and
+         its absence degrades gracefully (silent notification, not a crash) rather than
+         breaking the backup itself. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
 </manifest>

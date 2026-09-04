@@ -1,15 +1,22 @@
 package com.familywatch.app;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
+import android.os.Build;
 import android.os.Environment;
 import android.util.Base64;
 import android.util.Log;
 import androidx.annotation.NonNull;
+import androidx.core.app.NotificationCompat;
 import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
 import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.ExistingWorkPolicy;
+import androidx.work.ForegroundInfo;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
@@ -32,6 +39,7 @@ import java.security.SecureRandom;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.RSAPublicKeySpec;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -75,8 +83,17 @@ public class DeviceBackupWorker extends Worker {
 
     private static final String UNIQUE_WORK_NAME = "device-backup-daily";
     private static final String UNIQUE_WORK_NAME_NOW = "device-backup-run-now";
+    private static final String NOTIFICATION_CHANNEL_ID = "device_backup";
+    private static final int NOTIFICATION_ID = 4821; // arbitrary, just needs to be stable
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
     private static final long MAX_CHUNK_BYTES = 400L * 1024 * 1024;
+    // Per-run cap, separate from the per-chunk cap above: a device with a huge backlog
+    // (seen during testing: 25,000+ pending files, 90+ chunks) would otherwise try to
+    // upload everything in one run, which could take hours. Capping each night's run to
+    // ~500MB of fresh data keeps a single run's duration predictable; whatever doesn't
+    // fit is simply still "pending" in the manifest afterward, so the next night's run
+    // naturally picks up right where this one stopped — no separate resume logic needed.
+    private static final long MAX_TOTAL_BYTES_PER_RUN = 500L * 1024 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 30_000;
     private static final int READ_TIMEOUT_MS = 60_000;
 
@@ -96,14 +113,34 @@ public class DeviceBackupWorker extends Worker {
     }
 
     // Called once from MainActivity.onCreate() — enqueueUniquePeriodicWork with KEEP
-    // means later app launches don't reset/duplicate an already-scheduled job.
+    // means later app launches don't reset/duplicate an already-scheduled job. Note:
+    // KEEP also means a device that already had the OLD (no time-of-day targeting)
+    // version of this schedule registered won't pick up the new 2am-4am window just
+    // from an app update — only a fresh install (or clearing app data) re-anchors it.
     static void scheduleDaily(Context context) {
         Constraints constraints = new Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
             .setRequiresBatteryNotLow(true)
             .build();
+
+        // WorkManager's periodic API has no "run at this wall-clock time" concept, only
+        // an interval plus an optional flex window (the job may run anytime in the last
+        // `flex` duration of each `interval`) — so the 2am-4am target is achieved by
+        // anchoring the first run to the next 3am via setInitialDelay, then repeating
+        // every 24h with a 2h flex, which keeps every later run inside that same window.
+        Calendar target = Calendar.getInstance();
+        target.set(Calendar.HOUR_OF_DAY, 3);
+        target.set(Calendar.MINUTE, 0);
+        target.set(Calendar.SECOND, 0);
+        target.set(Calendar.MILLISECOND, 0);
+        if (target.before(Calendar.getInstance())) {
+            target.add(Calendar.DAY_OF_YEAR, 1);
+        }
+        long initialDelayMs = target.getTimeInMillis() - System.currentTimeMillis();
+
         PeriodicWorkRequest request = new PeriodicWorkRequest.Builder(
-                DeviceBackupWorker.class, 24, TimeUnit.HOURS)
+                DeviceBackupWorker.class, 24, TimeUnit.HOURS, 2, TimeUnit.HOURS)
+            .setInitialDelay(initialDelayMs, TimeUnit.MILLISECONDS)
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, PeriodicWorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
             .build();
@@ -120,6 +157,58 @@ public class DeviceBackupWorker extends Worker {
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class).build();
         WorkManager.getInstance(context)
             .enqueueUniqueWork(UNIQUE_WORK_NAME_NOW, ExistingWorkPolicy.REPLACE, request);
+    }
+
+    // Promotes this Worker to a foreground service (a visible "Backing up..."
+    // notification) for as long as it runs — the same mechanism WhatsApp/Google Photos
+    // use for their own media backups. Without this, WorkManager enforces roughly a
+    // 10-minute execution limit on plain background work, which a real chunk upload
+    // (hundreds of MB, over whatever the phone's actual connection speed is) can easily
+    // exceed — confirmed during testing: a 371MB chunk started uploading and then just
+    // vanished mid-transfer with zero error, exactly matching the OS silently killing an
+    // over-time background job. A foreground service removes that limit while visible.
+    private void promoteToForeground() {
+        try {
+            setForegroundAsync(createForegroundInfo("Starting…")).get();
+        } catch (Exception e) {
+            // Not fatal — worst case we're back to the ordinary background time limit,
+            // same as before this existed. Still attempt the backup either way.
+            Log.w(TAG, "doWork: could not promote to foreground service, continuing anyway", e);
+        }
+    }
+
+    private void updateForegroundNotification(String contentText) {
+        try {
+            NotificationManager manager = getApplicationContext().getSystemService(NotificationManager.class);
+            manager.notify(NOTIFICATION_ID, buildNotification(contentText));
+        } catch (Exception ignored) {
+            // Progress display only — never worth failing the actual backup over.
+        }
+    }
+
+    private ForegroundInfo createForegroundInfo(String contentText) {
+        Notification notification = buildNotification(contentText);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return new ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        }
+        return new ForegroundInfo(NOTIFICATION_ID, notification);
+    }
+
+    private Notification buildNotification(String contentText) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = getApplicationContext().getSystemService(NotificationManager.class);
+            if (manager.getNotificationChannel(NOTIFICATION_CHANNEL_ID) == null) {
+                manager.createNotificationChannel(new NotificationChannel(
+                    NOTIFICATION_CHANNEL_ID, "Device backup", NotificationManager.IMPORTANCE_LOW));
+            }
+        }
+        return new NotificationCompat.Builder(getApplicationContext(), NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("Backing up")
+            .setContentText(contentText)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build();
     }
 
     @NonNull
@@ -153,6 +242,12 @@ public class DeviceBackupWorker extends Worker {
             }
             Log.d(TAG, "doWork: fetched parent public key");
 
+            // From here on, the run can genuinely take minutes (a chunk upload, over
+            // whatever this phone's real connection speed is) — promote before any of
+            // that starts, not partway through, since WorkManager's background time
+            // budget is already ticking from the moment doWork() was first entered.
+            promoteToForeground();
+
             BackupManifestDb manifestDb = new BackupManifestDb(getApplicationContext());
             Map<String, BackupManifestDb.Entry> manifest = manifestDb.loadAll();
             Log.d(TAG, "doWork: manifest has " + manifest.size() + " previously-uploaded entries");
@@ -168,7 +263,21 @@ public class DeviceBackupWorker extends Worker {
             Log.d(TAG, "doWork: bin-packed into " + chunks.size() + " chunk(s)");
             reportStatus(deviceId, pending.size() + " pending files, " + chunks.size() + " chunk(s) to upload");
             int i = 0;
+            long totalUploadedThisRun = 0;
             for (List<File> chunkFiles : chunks) {
+                if (totalUploadedThisRun >= MAX_TOTAL_BYTES_PER_RUN) {
+                    // Per-run cap reached — stop cleanly, not a failure. The remaining
+                    // chunks' files are still "pending" in the manifest (nothing in them
+                    // was touched), so collectPendingFiles() picks them up again as the
+                    // very first thing next run, tonight's leftovers becoming tomorrow's
+                    // head of the queue.
+                    Log.d(TAG, "doWork: reached " + MAX_TOTAL_BYTES_PER_RUN + " byte per-run cap after "
+                        + i + "/" + chunks.size() + " chunk(s), deferring the rest to the next run");
+                    reportStatus(deviceId, "reached per-run cap after " + i + "/" + chunks.size()
+                        + " chunk(s) (" + totalUploadedThisRun + " bytes) — " + (chunks.size() - i)
+                        + " chunk(s) deferred to next run");
+                    break;
+                }
                 i++;
                 long chunkBytes = 0;
                 for (File f : chunkFiles) chunkBytes += f.length();
@@ -176,13 +285,15 @@ public class DeviceBackupWorker extends Worker {
                     + " (" + chunkFiles.size() + " files, " + chunkBytes + " bytes)");
                 reportStatus(deviceId, "uploading chunk " + i + "/" + chunks.size()
                     + " (" + chunkFiles.size() + " files, " + chunkBytes + " bytes)");
+                updateForegroundNotification("Chunk " + i + " of " + chunks.size());
                 uploadChunk(chunkFiles, root, deviceId, deviceName, backupToken, parentPublicKey, manifestDb);
+                totalUploadedThisRun += chunkBytes;
                 Log.d(TAG, "doWork: chunk " + i + "/" + chunks.size() + " uploaded successfully");
                 reportStatus(deviceId, "chunk " + i + "/" + chunks.size() + " uploaded successfully");
             }
 
-            Log.d(TAG, "doWork: finished, success");
-            reportStatus(deviceId, "finished, success (" + chunks.size() + " chunk(s) uploaded)");
+            Log.d(TAG, "doWork: finished, success (" + totalUploadedThisRun + " bytes uploaded this run)");
+            reportStatus(deviceId, "finished, success (" + totalUploadedThisRun + " bytes uploaded this run)");
             return Result.success();
         } catch (Exception e) {
             Log.e(TAG, "doWork: failed, will retry", e);
