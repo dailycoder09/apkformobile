@@ -1,29 +1,25 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Capacitor } from '@capacitor/core'
-import { FirebaseAuthentication } from '@capacitor-firebase/authentication'
-import { Room } from 'livekit-client'
 import Login from './components/Login'
-import AdminPanel from './components/AdminPanel'
-import UserPanel from './components/UserPanel'
-import HomeScreen from './components/HomeScreen'
 import Dashboard from './components/Dashboard'
-import AdminTransactionView from './components/AdminTransactionView'
-import AdminCallLogView from './components/AdminCallLogView'
 import TransactionPanel from './components/TransactionPanel'
 import KhatabookPanel from './components/KhatabookPanel'
 import MilestonePanel from './components/MilestonePanel'
-import AdminMilestoneView from './components/AdminMilestoneView'
-import HealthTrackerPanel from './components/HealthTrackerPanel'
-import AdminHealthView from './components/AdminHealthView'
+import HealthHubScreen from './components/HealthHubScreen'
 import JournalPanel from './components/JournalPanel'
+import FamilyBackupsScreen from './components/FamilyBackupsScreen'
 import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
 import NamazTracker from './components/NamazTracker'
 import ProfilePage from './components/ProfilePage'
 import TourPage from './components/TourPage'
+import { getDeviceId, getProfile } from './lib/localData'
+import { handleLocalMessage } from './lib/localTransport'
+import { checkForExistingBackup, restoreFromDocumentsBackup, scheduleAutoBackup } from './lib/backup'
 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
 const IS_NATIVE = Capacitor.isNativePlatform()
+const NAME_KEY = 'meeee_name'
 
 function compareVersions(a, b) {
   const pa = a.split('.').map(Number)
@@ -39,7 +35,6 @@ function compareVersions(a, b) {
 export function notify(title, body) {
   if (!('Notification' in window)) return
   if (Notification.permission !== 'granted') return
-  // Only pop when window is not focused (don't interrupt active users)
   if (!document.hidden) return
   try {
     new Notification(title, { body, icon: '/icons/icon.svg', badge: '/icons/icon.svg' })
@@ -73,80 +68,42 @@ function ComingSoon({ title, icon, onHome }) {
   )
 }
 
-function buildWsUrl(serverUrl) {
-  if (serverUrl) {
-    const base = serverUrl.trim().replace(/\/$/, '')
-    const wsBase = base.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://')
-    return wsBase.endsWith('/ws') ? wsBase : `${wsBase}/ws`
-  }
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${location.host}/ws`
+// Restore-from-backup offer, shown before onboarding only when a previous install's
+// backup file is found on this device (see client/src/lib/backup.js) — the answer to
+// "how do I get my data back after reinstalling" for a fully-offline app with no
+// server copy.
+function RestorePrompt({ backupInfo, onRestore, onSkip, busy }) {
+  const dateLabel = backupInfo?.exportedAt
+    ? new Date(backupInfo.exportedAt).toLocaleString()
+    : 'an earlier install'
+  return (
+    <div className="login-screen">
+      <div className="login-card">
+        <div className="login-card-inner">
+          <div className="login-logo" />
+          <h1 className="login-title">Welcome back</h1>
+          <p className="login-subtitle">Found a backup from {dateLabel} on this device.</p>
+          <button type="button" className="login-btn" onClick={onRestore} disabled={busy}>
+            {busy ? 'Restoring…' : 'Restore my data'}
+          </button>
+          <button type="button" className="login-link-btn" onClick={onSkip} disabled={busy}>
+            Start fresh instead
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
-
-// Message types that mutate the user's own durable data (transactions). Losing one of
-// these to a momentary disconnect isn't a stale live-monitor frame, it's data loss — a
-// screen lock / network handoff / app-swipe-away on a real phone can easily land right
-// on top of "tap Add", and until now sendMsg() below just silently swallowed the send
-// if the socket wasn't OPEN yet, with no queue and no retry. The optimistic local UI
-// update in TransactionPanel happened regardless, so the transaction looked saved right
-// up until the next full reload re-fetched from the server and it was simply never
-// there. Everything else sent via sendMsg (camera/mic/location streaming, chat, file
-// transfer chunks) is intentionally NOT queued here — those are either naturally lossy
-// live data or have their own in-band framing, and replaying a backlog of them after a
-// reconnect would itself be a bug (e.g. blasting stale audio/location on resume).
-const DURABLE_MSG_TYPES = new Set([
-  'transaction_add', 'transaction_update', 'transaction_delete', 'transaction_delete_all',
-  'ledger_contact_add', 'ledger_contact_update', 'ledger_contact_delete',
-  'ledger_entry_add', 'ledger_entry_update', 'ledger_entry_delete',
-  'milestone_milestone_add', 'milestone_milestone_update', 'milestone_milestone_delete',
-  'milestone_goal_add', 'milestone_goal_update', 'milestone_goal_delete',
-  'milestone_task_add', 'milestone_task_update', 'milestone_task_delete', 'milestone_tasks_bulk_add',
-  'health_episode_add', 'health_episode_update', 'health_episode_delete',
-  'health_reminder_add', 'health_reminder_update', 'health_reminder_delete',
-  'journal_entry_add', 'journal_entry_update', 'journal_entry_delete',
-  'namaz_day_set', 'namaz_qada_set',
-  // Previously missing — these silently dropped on the floor if sent while offline
-  // instead of queuing, since sendMsg() only queues messages in this Set.
-  'budget_set', 'profile_update',
-])
-
-// The durable queue (pendingRef below) used to be memory-only — wiped by any app
-// restart, which defeats the point for a child who adds something offline and then
-// closes the app before reconnecting. Persisted here so it survives a cold start.
-const PENDING_QUEUE_KEY = 'meeee_pending_queue'
-function loadPendingQueue() {
-  try { return JSON.parse(localStorage.getItem(PENDING_QUEUE_KEY)) || [] } catch { return [] }
-}
-function savePendingQueue(queue) {
-  try { localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(queue)) } catch {}
-}
-
-// Last-known session, so a cold start with no internet can render the dashboard
-// immediately instead of falling back to the login screen while a live connection is
-// still being attempted in the background. Deliberately a flat key, not the per-userId
-// offlineCache.js helper used elsewhere — this is what tells us the userId in the first
-// place, so it can't be keyed by one.
-const CACHED_SESSION_KEY = 'meeee_cached_session'
 
 export default function App() {
   const [deferredPrompt, setDeferredPrompt] = useState(null)
-  const [wsStatus, setWsStatus]   = useState('idle')
-  const [session, setSession]     = useState(null)
-  const [module, setModule]       = useState(null)  // null=home | 'messages' | 'transactions' | 'namaz' | 'workout'
+  const [session, setSession] = useState(null)
+  const [module, setModule] = useState(null) // null=home | 'transactions' | 'namaz' | ...
   const [updateInfo, setUpdateInfo] = useState(null)
-  const [loginError, setLoginError] = useState(null)
-  const [authChecked, setAuthChecked] = useState(false)
-  const wsRef          = useRef(null)
-  const reconnectRef   = useRef(null)
-  const authPayloadRef = useRef(null)
-  const serverUrlRef   = useRef('')
-  const listenersRef   = useRef([])
-  const authedRef      = useRef(false) // true only once THIS socket's auth_ok has landed
-  const pendingRef     = useRef(null)  // queued DURABLE_MSG_TYPES messages awaiting a live, authed socket
-  // Synchronous lazy-init (not a useEffect) so this is hydrated from localStorage before
-  // any other code in this render — including the mount-time effects below that may call
-  // login()/connect()/sendMsg() — ever gets a chance to touch pendingRef.
-  if (pendingRef.current === null) pendingRef.current = loadPendingQueue()
+  const [booting, setBooting] = useState(true)
+  const [backupInfo, setBackupInfo] = useState(null) // set only if a restorable backup was found on first launch
+  const [restoring, setRestoring] = useState(false)
+  const listenersRef = useRef([])
 
   useEffect(() => {
     const h = (e) => { e.preventDefault(); setDeferredPrompt(e) }
@@ -156,36 +113,30 @@ export default function App() {
 
   useEffect(() => { requestNotificationPermission() }, [])
 
-  // A previously-registered child should never see the phone/OTP screens again — Firebase
-  // persists the signed-in phone-auth user across app restarts on its own, so on mount we
-  // just ask it whether someone's already signed in and, if so, reconnect straight away
-  // (connect() below fetches a fresh ID token itself). Admin has no equivalent persisted
-  // login — every admin session starts at the PIN form in Login.jsx (previously an
-  // ephemeral ?pin= URL param instead; removed since a bookmarked/shared/logged URL with
-  // the PIN in it granted instant access with no further check).
+  // No login, no server round-trip to establish identity — a single persisted device
+  // id (see localData.js) stands in for what used to be a Firebase-verified userId.
+  // A saved display name means onboarding already happened; otherwise, before
+  // showing the one-time name prompt, check whether a backup file from a previous
+  // install exists on this device (native only) and offer to restore it first.
   useEffect(() => {
     let cancelled = false
-    FirebaseAuthentication.getCurrentUser()
-      .then(({ user }) => {
-        if (cancelled || !user) return
-        const serverUrl = localStorage.getItem('meeee_server') || ''
-        const name = localStorage.getItem('meeee_name') || user.displayName || 'User'
-        // Render immediately from the last-known session (if any) instead of waiting on
-        // the live connect() below — that's what actually fixes a cold start with no
-        // internet: the dashboard shows up right away from cache, and the real auth_ok
-        // (once the server is reachable) simply overwrites this with fresh values.
-        try {
-          const cached = JSON.parse(localStorage.getItem(CACHED_SESSION_KEY))
-          if (cached?.userId) setSession(cached)
-        } catch {}
-        if (serverUrl) login('user', name, '', serverUrl)
-      })
-      .catch(() => {}) // no Firebase user yet — fall through to the phone/OTP screen
-      .finally(() => { if (!cancelled) setAuthChecked(true) })
+    ;(async () => {
+      const deviceId = await getDeviceId()
+      const name = localStorage.getItem(NAME_KEY)
+      if (name) {
+        if (!cancelled) { setSession({ userId: deviceId, name }); setBooting(false) }
+        return
+      }
+      const found = await checkForExistingBackup()
+      if (cancelled) return
+      if (found) setBackupInfo(found)
+      setBooting(false)
+    })()
     return () => { cancelled = true }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 
-  // Check for updates on native app startup
+  // Check for updates on native app startup — best-effort; silently does nothing if
+  // there's no reachable server (this app no longer depends on one for anything else).
   useEffect(() => {
     if (!IS_NATIVE) return
     const serverUrl = localStorage.getItem('meeee_server') || ''
@@ -198,125 +149,53 @@ export default function App() {
           setUpdateInfo({ apkUrl: data.apkUrl })
         }
       })
-      .catch(() => {}) // silently ignore if offline
+      .catch(() => {})
   }, [])
 
-  const connect = useCallback((payload, serverUrl) => {
-    clearTimeout(reconnectRef.current)
-    wsRef.current?.close()
-    setWsStatus('connecting')
-    authedRef.current = false
+  const login = useCallback((name) => {
+    localStorage.setItem(NAME_KEY, name)
+    getDeviceId().then((deviceId) => setSession({ userId: deviceId, name }))
+  }, [])
 
-    const ws = new WebSocket(buildWsUrl(serverUrl || serverUrlRef.current))
-    wsRef.current = ws
-
-    ws.onopen = async () => {
-      setWsStatus('open')
-      let toSend = payload
-      // ID tokens expire hourly — fetch a CURRENT one on every (re)connect rather than
-      // reusing whatever was current when the user first logged in. The Firebase SDK
-      // caches/auto-refreshes internally, so this is cheap and never returns a stale token.
-      if (payload.role === 'user') {
-        try {
-          const { token } = await FirebaseAuthentication.getIdToken()
-          toSend = { ...payload, idToken: token }
-        } catch {
-          // Not signed in / token fetch failed — send as-is and let the server's
-          // auth_fail response surface the problem.
-        }
-      }
-      ws.send(JSON.stringify(toSend))
+  const handleRestore = useCallback(async () => {
+    setRestoring(true)
+    try {
+      await restoreFromDocumentsBackup()
+      // The backup covers IndexedDB tables, not the separate `meeee_name` localStorage
+      // key (wiped along with everything else on an uninstall) — fall back to the
+      // restored profile's first name, since that's the closest thing to a saved
+      // display name that actually made it into the backup.
+      const profile = await getProfile()
+      const name = profile?.firstName || 'You'
+      localStorage.setItem(NAME_KEY, name)
+      const deviceId = await getDeviceId()
+      setSession({ userId: deviceId, name })
+    } catch (e) {
+      console.error('restore failed', e)
+    } finally {
+      setRestoring(false)
+      setBackupInfo(null)
     }
-
-    ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data)
-      if (msg.type === 'auth_ok') {
-        setLoginError(null)
-        // uploadToken proves "I am this session" to the HTTP profile-photo POST
-        // endpoint (see server's verifyUploadToken) — it's per-connection and only ever
-        // arrives on this socket's own auth_ok, never via any broadcast.
-        setSession({
-          role: msg.role,
-          userId: msg.userId,
-          name: msg.name || 'Admin',
-          initialUsers: msg.users || [],
-          uploadToken: msg.uploadToken || '',
-          // Only for admin — needed to authenticate plain <img>/<video> GETs to
-          // /api/file/*, which can't carry the WebSocket session or custom headers.
-          pin: msg.role === 'admin' ? payload.pin : undefined,
-        })
-        // Cache a real, server-confirmed session so a future cold start with no internet
-        // can restore straight into the dashboard instead of the login screen — admin
-        // isn't cached, it always requires a live PIN-authenticated connection.
-        if (msg.role === 'user') {
-          try {
-            localStorage.setItem(CACHED_SESSION_KEY, JSON.stringify({
-              role: msg.role, userId: msg.userId, name: msg.name || 'User',
-            }))
-          } catch {}
-        }
-        // This socket is now authenticated — flush anything that queued up in sendMsg()
-        // while we were offline/reconnecting (see DURABLE_MSG_TYPES above) instead of
-        // leaving it stranded, which is exactly what used to make added transactions
-        // vanish after a reconnect.
-        authedRef.current = true
-        if (pendingRef.current.length) {
-          const queued = pendingRef.current
-          pendingRef.current = []
-          savePendingQueue([])
-          queued.forEach((m) => ws.send(JSON.stringify(m)))
-        }
-      } else if (msg.type === 'auth_fail') {
-        setLoginError(msg.reason || 'Authentication failed')
-        ws.close()
-        setWsStatus('idle')
-        return
-      }
-      listenersRef.current.forEach((fn) => fn(msg))
-    }
-
-    ws.onclose = () => {
-      setWsStatus('closed')
-      authedRef.current = false
-      if (authPayloadRef.current) {
-        reconnectRef.current = setTimeout(() => connect(authPayloadRef.current), 3000)
-      }
-    }
-
-    ws.onerror = () => ws.close()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const login = useCallback((role, name, pin, serverUrl) => {
-    serverUrlRef.current = serverUrl || ''
-    const payload = role === 'admin'
-      ? { type: 'auth', role: 'admin', pin }
-      : { type: 'auth', role: 'user', name }
-    authPayloadRef.current = payload
-    connect(payload, serverUrl)
-  }, [connect])
+  }, [])
 
   const logout = useCallback(() => {
-    authPayloadRef.current = null
-    clearTimeout(reconnectRef.current)
-    wsRef.current?.close()
+    // "Logout" no longer means "sign out of a server session" — there isn't one.
+    // Clearing the saved name just re-triggers onboarding; the actual data in
+    // IndexedDB is untouched (this is not a data-wipe action).
+    localStorage.removeItem(NAME_KEY)
     setSession(null)
-    setWsStatus('idle')
-    authedRef.current = false
-    pendingRef.current = [] // don't carry a queued mutation over to whoever logs in next
-    savePendingQueue([])
-    try { localStorage.removeItem(CACHED_SESSION_KEY) } catch {}
   }, [])
 
+  // Every mutating message also kicks a debounced local backup (see backup.js) so the
+  // on-disk backup file stays current without the user needing to remember to export.
   const sendMsg = useCallback((msg) => {
-    if (authedRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg))
-    } else if (DURABLE_MSG_TYPES.has(msg.type)) {
-      // Socket is down or still (re)authenticating — don't silently drop a data-mutating
-      // message. It'll be flushed as soon as this session's next auth_ok lands, and is
-      // persisted so it survives even a full app restart while still offline.
-      pendingRef.current.push(msg)
-      savePendingQueue(pendingRef.current)
-    }
+    const emit = (reply) => listenersRef.current.forEach((fn) => fn(reply))
+    handleLocalMessage(msg, emit).then(() => {
+      if (msg.type.endsWith('_add') || msg.type.endsWith('_update') || msg.type.endsWith('_delete')
+        || msg.type.endsWith('_set') || msg.type.endsWith('_delete_all') || msg.type.endsWith('_bulk_add')) {
+        scheduleAutoBackup()
+      }
+    })
   }, [])
 
   const addListener = useCallback((fn) => {
@@ -324,119 +203,11 @@ export default function App() {
     return () => { listenersRef.current = listenersRef.current.filter((f) => f !== fn) }
   }, [])
 
-  // ── Live monitor — browser-side camera / mic / location (always-on after login) ──
-
-  useEffect(() => {
-    if (!session || session.role !== 'user' || IS_NATIVE) return
-
-    let lkRoom     = null   // active LiveKit room
-    let micStream  = null, micCtx = null, micProcessor = null
-    let geoWatch   = null
-
-    const stopLiveKit = () => {
-      if (lkRoom) { lkRoom.disconnect(); lkRoom = null }
-    }
-    const stopMic = () => {
-      micProcessor?.disconnect(); micProcessor = null
-      micCtx?.close(); micCtx = null
-      micStream?.getTracks().forEach(t => t.stop()); micStream = null
-    }
-    const stopLoc = () => {
-      if (geoWatch != null) { navigator.geolocation.clearWatch(geoWatch); geoWatch = null }
-    }
-
-    const remove = addListener(async (msg) => {
-      if (!msg.fromAdminId) return
-
-      // ── start_camera — publish via LiveKit ─────────────────────────
-      if (msg.type === 'start_camera') {
-        stopLiveKit()
-        const facingMode = msg.facing === 'front' ? 'user' : 'environment'
-        try {
-          const r = await fetch(`/api/lk-token?room=${encodeURIComponent(session.userId)}&identity=${encodeURIComponent(session.userId)}`)
-          if (!r.ok) throw new Error('token fetch failed')
-          const { token, url } = await r.json()
-          const room = new Room()
-          lkRoom = room
-          await room.connect(url, token)
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode, width: { ideal: 854 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
-            audio: false,
-          })
-          const [videoTrack] = stream.getVideoTracks()
-          await room.localParticipant.publishTrack(videoTrack)
-        } catch { /* permission denied or LiveKit not configured — JPEG fallback still works */ }
-      }
-
-      // ── stop_camera — disconnect LiveKit room ───────────────────────
-      if (msg.type === 'stop_camera') stopLiveKit()
-
-      if (msg.type === 'start_mic') {
-        stopMic()
-        const fromAdmin = msg.fromAdminId
-        try {
-          const sampleRate = 16000
-          micStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              sampleRate,
-              channelCount: 1,
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            }
-          })
-          micCtx = new AudioContext({ sampleRate })
-          const src = micCtx.createMediaStreamSource(micStream)
-          micProcessor = micCtx.createScriptProcessor(8192, 1, 1)
-          micProcessor.onaudioprocess = (e) => {
-            const f32 = e.inputBuffer.getChannelData(0)
-            const i16 = new Int16Array(f32.length)
-            for (let i = 0; i < f32.length; i++)
-              i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32768))
-            const bytes = new Uint8Array(i16.buffer)
-            let bin = ''
-            for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
-            sendMsg({ type: 'audio_chunk', forAdminId: fromAdmin, data: btoa(bin), sampleRate })
-          }
-          src.connect(micProcessor)
-          micProcessor.connect(micCtx.destination)
-        } catch { /* permission denied */ }
-      }
-
-      if (msg.type === 'stop_mic') stopMic()
-
-      if (msg.type === 'start_location') {
-        stopLoc()
-        const fromAdmin = msg.fromAdminId
-        if (!navigator.geolocation) return
-        geoWatch = navigator.geolocation.watchPosition(
-          pos => sendMsg({ type: 'location_update', forAdminId: fromAdmin,
-            lat: pos.coords.latitude, lng: pos.coords.longitude,
-            accuracy: pos.coords.accuracy, ts: pos.timestamp }),
-          () => {},
-          { enableHighAccuracy: true, maximumAge: 10000 }
-        )
-      }
-
-      if (msg.type === 'stop_location') stopLoc()
-    })
-
-    return () => { stopLiveKit(); stopMic(); stopLoc(); remove() }
-  }, [session, addListener, sendMsg])
-
   const handleInstall = () => {
     deferredPrompt.prompt()
     deferredPrompt.userChoice.then(() => setDeferredPrompt(null))
   }
 
-  // CornerMenu used to mount once, fixed, at the App root above every screen — every page
-  // then had to reserve extra top padding just so its own title wouldn't render underneath
-  // it. It now mounts INLINE in each screen's own header instead (PageShell, NamazTracker,
-  // TransactionPanel, HomeScreen, Dashboard), so these are threaded down as plain props for
-  // each of those call sites to render their own <CornerMenu> with, instead of one shared
-  // instance here. showProfile is computed per screen (only non-admin sessions get the
-  // "Profile" item; the check used to also hide it while already ON the profile screen, but
-  // ProfilePage never mounts one of these itself, so that no longer applies).
   const onProfileOpen = () => setModule('profile')
 
   return (
@@ -447,58 +218,46 @@ export default function App() {
       {deferredPrompt && (
         <InstallPrompt onInstall={handleInstall} onDismiss={() => setDeferredPrompt(null)} />
       )}
-      {session && wsStatus !== 'open' && (
-        <div className="offline-banner">📡 Offline — showing last saved data</div>
-      )}
-      {!session ? (
-        !authChecked
-          ? <div className="auto-login-screen"><div className="auto-login-spinner">◌</div></div>
-          : <Login onLogin={login} status={wsStatus} error={loginError} />
+      {booting ? (
+        <div className="auto-login-screen"><div className="auto-login-spinner">◌</div></div>
+      ) : !session ? (
+        backupInfo ? (
+          <RestorePrompt
+            backupInfo={backupInfo}
+            busy={restoring}
+            onRestore={handleRestore}
+            onSkip={() => setBackupInfo(null)}
+          />
+        ) : (
+          <Login onLogin={login} />
+        )
       ) : (
         <>
           {!module ? (
-            session.role === 'admin'
-              ? <HomeScreen session={session} onSelect={setModule} sendMsg={sendMsg} addListener={addListener} showProfile={false} onProfileOpen={onProfileOpen} />
-              : <Dashboard session={session} onSelect={setModule} sendMsg={sendMsg} addListener={addListener} showProfile onProfileOpen={onProfileOpen} />
-          ) : module === 'messages' ? (
-            session.role === 'admin'
-              ? <AdminPanel session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
-              : <UserPanel  session={session} sendMsg={sendMsg} addListener={addListener} wsStatus={wsStatus} onLogout={logout} onHome={() => setModule(null)} />
+            <Dashboard session={session} onSelect={setModule} sendMsg={sendMsg} addListener={addListener} showProfile onProfileOpen={onProfileOpen} />
           ) : module === 'transactions' ? (
-            session.role === 'admin'
-              ? <AdminTransactionView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
-              : <TransactionPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
-          ) : module === 'calllog' ? (
-            session.role === 'admin'
-              ? <AdminCallLogView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
-              : null
+            <TransactionPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
           ) : module === 'namaz' ? (
             <NamazTracker session={session} sendMsg={sendMsg} addListener={addListener} onProfileOpen={onProfileOpen} />
           ) : module === 'khatabook' || module === 'khatabook-app' ? (
             <KhatabookPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
           ) : module === 'milestone' ? (
-            session.role === 'admin'
-              ? <AdminMilestoneView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
-              : <MilestonePanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
+            <MilestonePanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
           ) : module === 'health' ? (
-            session.role === 'admin'
-              ? <AdminHealthView initialUsers={session.initialUsers || []} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} />
-              : <HealthTrackerPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
+            <HealthHubScreen onHome={() => setModule(null)} />
           ) : module === 'journal' ? (
-            <JournalPanel session={session} sendMsg={sendMsg} addListener={addListener} onHome={() => setModule(null)} onProfileOpen={onProfileOpen} />
+            <JournalPanel onHome={() => setModule(null)} />
+          ) : module === 'family-backups' ? (
+            <FamilyBackupsScreen onHome={() => setModule(null)} />
           ) : module === 'profile' ? (
-            session.role === 'admin'
-              ? null
-              : <ProfilePage session={session} sendMsg={sendMsg} addListener={addListener} />
+            <ProfilePage session={session} sendMsg={sendMsg} addListener={addListener} onLogout={logout} />
           ) : module === 'workout' ? (
             <ComingSoon title="Workout" icon="💪" onHome={() => setModule(null)} />
           ) : module === 'tour' ? (
             <TourPage onHome={() => setModule(null)} onSelect={setModule} />
           ) : null}
 
-          {session.role !== 'admin' && (
-            <BottomNav active={module} onNavigate={setModule} />
-          )}
+          <BottomNav active={module} onNavigate={setModule} />
         </>
       )}
     </div>

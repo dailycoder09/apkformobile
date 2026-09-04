@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Area, AreaChart, Bar as RechartsBar, BarChart, CartesianGrid, Cell, Pie, PieChart,
   ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -22,8 +23,258 @@ const DESTRUCTIVE_COLOR = 'oklch(0.556 0.185 25)'
 
 // Page 2 of the mobile split: settlement score, charts and badges. Pure presentational, same
 // data KhatabookPanel.jsx already computes — see KhatabookEntriesSection.jsx for why this is
-// a plain props-in component rather than owning any state of its own.
-export default function KhatabookAnalyticsSection({
+// a plain props-in component rather than owning any state of its own. Mobile and desktop are
+// two distinct top-level branches (same convention KhatabookEntriesSection.jsx established):
+// mobile folds related charts into fewer, denser bento-style tiles per the user's "less
+// cards" request, desktop keeps the original one-tile-per-chart grid untouched.
+export default function KhatabookAnalyticsSection(props) {
+  return (
+    <div className="px-1">
+      <MobileFlat {...props} />
+      <DesktopCards {...props} />
+    </div>
+  )
+}
+
+// ── Mobile: bento-style consolidation — settlement score and the receivable/payable split
+// share one hero tile (score is the headline, the pie rides along as a small side visual
+// with its own numbers in the footer) instead of two separate tiles, and the two
+// per-contact balance charts share a second tile behind a small tab switch instead of
+// sitting one after another as full-width cards. Given-vs-got and Badges stay as their own
+// tiles — each is a genuinely distinct view, not a repeat of the same stat. Net: 4 tiles
+// instead of the previous 6, matching Dashboard.jsx's "one card per concept" bento density.
+function MobileFlat({
+  settleScore,
+  settledCount,
+  contacts,
+  entries,
+  totals,
+  pieData,
+  selectedContact,
+  selectedBalance,
+  balanceFlow,
+  topContacts,
+  sixMonthTrend,
+  badges,
+}) {
+  const hasBalances = totals.youllGet > 0 || totals.youllPay > 0
+  const trendTotals = sixMonthTrend.reduce(
+    (acc, m) => ({ gave: acc.gave + m.gave, got: acc.got + m.got }),
+    { gave: 0, got: 0 }
+  )
+
+  return (
+    <div className="sm:hidden">
+      <Tile className="grain">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <TileLabel>Settlement Score</TileLabel>
+            <p className="num mt-2 text-4xl font-extrabold text-gradient-gold">
+              {settleScore}<span className="text-base font-medium text-muted-foreground">/100</span>
+            </p>
+          </div>
+          {/* Receivable/payable pie, shrunk to a side visual rather than its own tile — the
+              exact split is still spelled out in ₹ in the footer row below, so nothing the
+              old dedicated tile communicated is actually lost. */}
+          {hasBalances && (
+            <div className="size-[72px] shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={pieData} dataKey="value" innerRadius={20} outerRadius={34} paddingAngle={4} stroke="none">
+                    <Cell fill={SUCCESS_COLOR} />
+                    <Cell fill={DESTRUCTIVE_COLOR} />
+                  </Pie>
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+        <div className="mt-4">
+          <Bar value={settleScore} tone="gold" />
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3 border-t border-foreground/10 pt-3">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-success">
+            <span className="size-2 shrink-0 rounded-full bg-success" />
+            {formatINR(totals.youllGet)}
+          </span>
+          <span className="shrink-0 text-[11px] text-muted-foreground">
+            {settledCount}/{contacts.length} settled · {entries.length} entries
+          </span>
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-destructive">
+            <span className="size-2 shrink-0 rounded-full bg-destructive" />
+            {formatINR(totals.youllPay)}
+          </span>
+        </div>
+      </Tile>
+
+      <BalancesTile
+        selectedContact={selectedContact}
+        selectedBalance={selectedBalance}
+        balanceFlow={balanceFlow}
+        topContacts={topContacts}
+      />
+
+      <Tile className="mt-4">
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined text-lg text-gold">insights</span>
+          <TileLabel>Given vs Got — 6 Months</TileLabel>
+        </div>
+        {entries.length === 0 ? (
+          <p className="mt-8 text-center text-sm text-muted-foreground">Log entries to see your trend.</p>
+        ) : (
+          <>
+            <div className="mt-3 flex items-center gap-4">
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-destructive">
+                <span className="size-2 shrink-0 rounded-full bg-destructive" /> Gave {formatINRCompact(trendTotals.gave)}
+              </span>
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-success">
+                <span className="size-2 shrink-0 rounded-full bg-success" /> Got {formatINRCompact(trendTotals.got)}
+              </span>
+            </div>
+            <div className="mt-2 h-[180px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={sixMonthTrend} barGap={6}>
+                  <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
+                  <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: 'var(--color-muted-foreground)' }} />
+                  <YAxis tickFormatter={formatINRCompact} tickLine={false} axisLine={false} width={40} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
+                  <Tooltip {...tip} formatter={(v) => formatINR(v)} />
+                  <RechartsBar dataKey="gave" name="You gave" radius={[8, 8, 0, 0]} fill={DESTRUCTIVE_COLOR} barSize={18} />
+                  <RechartsBar dataKey="got" name="You got" radius={[8, 8, 0, 0]} fill={SUCCESS_COLOR} barSize={18} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
+      </Tile>
+
+      <Tile className="mt-4">
+        <div className="flex items-center gap-2">
+          <span className="material-symbols-outlined text-lg text-gold">military_tech</span>
+          <TileLabel>Badges</TileLabel>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          {badges.map(b => (
+            <Badge3D
+              key={b.id}
+              title={b.label}
+              hint={b.hint}
+              earned={b.earned}
+              icon={<span className="material-symbols-outlined text-base">{b.icon}</span>}
+            />
+          ))}
+        </div>
+      </Tile>
+    </div>
+  )
+}
+
+// One tile, two tab-switched charts — balance flow for whichever contact is selected vs.
+// the top-5 open balances across everyone. Both are "who owes what" views of the same
+// balances data, so a small segmented control inside one tile replaces what used to be two
+// full-width cards stacked back to back. `tab` is local, presentational-only UI state (which
+// chart is currently visible) — it doesn't touch KhatabookPanel's data model.
+function BalancesTile({ selectedContact, selectedBalance, balanceFlow, topContacts }) {
+  const [tab, setTab] = useState('flow')
+
+  return (
+    <Tile className="mt-4">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="material-symbols-outlined text-lg text-gold">handshake</span>
+          <TileLabel>Balances</TileLabel>
+        </div>
+        <div className="flex shrink-0 rounded-full bg-secondary p-0.5 text-[11px] font-semibold">
+          <button
+            type="button"
+            onClick={() => setTab('flow')}
+            className={`rounded-full px-3 py-1.5 transition-colors ${tab === 'flow' ? 'bg-card text-foreground shadow-[var(--shadow-tile)]' : 'text-muted-foreground'}`}
+          >
+            Contact
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('top')}
+            className={`rounded-full px-3 py-1.5 transition-colors ${tab === 'top' ? 'bg-card text-foreground shadow-[var(--shadow-tile)]' : 'text-muted-foreground'}`}
+          >
+            Top 5
+          </button>
+        </div>
+      </div>
+
+      {tab === 'flow' ? (
+        !selectedContact ? (
+          <p className="mt-8 text-center text-sm text-muted-foreground">Select a contact to see their balance flow.</p>
+        ) : balanceFlow.length === 0 ? (
+          <p className="mt-8 text-center text-sm text-muted-foreground">No entries yet for {selectedContact.name}.</p>
+        ) : (
+          <>
+            <div className="mt-3 flex items-baseline gap-2">
+              <p className={`num text-2xl font-extrabold ${selectedBalance > 0 ? 'text-success' : selectedBalance < 0 ? 'text-destructive' : 'text-muted-foreground'}`}>
+                {formatINR(Math.abs(selectedBalance))}
+              </p>
+              <p className="min-w-0 truncate text-xs text-muted-foreground">
+                {selectedContact.name} · {selectedBalance === 0 ? 'settled' : selectedBalance > 0 ? 'owes you' : 'you owe'}
+              </p>
+            </div>
+            <div className="mt-1 h-[150px]">
+              <ResponsiveContainer width="100%" height="100%">
+                {/* Distinct gradient id from DesktopCards's own "khataFlow" below — both
+                    trees are always mounted (CSS just hides one per breakpoint), so a
+                    shared <linearGradient id> would let one instance's fill leak into the
+                    other via the SVG url(#...) reference. */}
+                <AreaChart key={selectedContact.id} data={balanceFlow} margin={{ top: 10, right: 8, left: 8, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="khataFlowMobile" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={selectedBalance >= 0 ? SUCCESS_COLOR : DESTRUCTIVE_COLOR} stopOpacity={0.5} />
+                      <stop offset="100%" stopColor={selectedBalance >= 0 ? SUCCESS_COLOR : DESTRUCTIVE_COLOR} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <YAxis
+                    hide
+                    domain={[
+                      (dataMin) => Math.min(0, dataMin) - (Math.abs(dataMin) * 0.15 || 10),
+                      (dataMax) => Math.max(0, dataMax) + (Math.abs(dataMax) * 0.15 || 10),
+                    ]}
+                  />
+                  <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
+                  <ReferenceLine y={0} stroke="var(--color-muted-foreground)" strokeDasharray="4 4" strokeOpacity={0.6} />
+                  <Tooltip {...tip} formatter={(v) => formatINR(v)} />
+                  <Area
+                    type="stepAfter"
+                    dataKey="balance"
+                    stroke={selectedBalance >= 0 ? SUCCESS_COLOR : DESTRUCTIVE_COLOR}
+                    strokeWidth={2.5}
+                    fill="url(#khataFlowMobile)"
+                    dot={{ r: 3.5, strokeWidth: 0, fill: selectedBalance >= 0 ? SUCCESS_COLOR : DESTRUCTIVE_COLOR }}
+                    activeDot={{ r: 5 }}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )
+      ) : topContacts.length === 0 ? (
+        <p className="mt-8 text-center text-sm text-muted-foreground">No open balances yet.</p>
+      ) : (
+        <div className="mt-3 h-[190px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={topContacts} barGap={6}>
+              <CartesianGrid strokeDasharray="3 6" stroke="var(--color-border)" vertical={false} />
+              <XAxis dataKey="name" tickLine={false} axisLine={false} tick={{ fontSize: 11, fill: 'var(--color-muted-foreground)' }} />
+              <YAxis tickFormatter={formatINRCompact} tickLine={false} axisLine={false} width={40} tick={{ fontSize: 10, fill: 'var(--color-muted-foreground)' }} />
+              <Tooltip {...tip} formatter={(v) => formatINR(v)} />
+              <RechartsBar dataKey="owed" name="You'll get" radius={[8, 8, 0, 0]} fill={SUCCESS_COLOR} barSize={16} />
+              <RechartsBar dataKey="owe" name="You'll pay" radius={[8, 8, 0, 0]} fill={DESTRUCTIVE_COLOR} barSize={16} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </Tile>
+  )
+}
+
+// ── Desktop: original boxed-Tile treatment, unchanged. ──
+function DesktopCards({
   settleScore,
   settledCount,
   contacts,
@@ -38,7 +289,7 @@ export default function KhatabookAnalyticsSection({
   badges,
 }) {
   return (
-    <div className="px-1">
+    <div className="hidden sm:block">
       {/* Settlement score + receivable/payable split — always visible, no toggle. */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Tile>

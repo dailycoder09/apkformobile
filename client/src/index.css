@@ -22,7 +22,7 @@
   --accent:       #818cf8;
   --accent-dark:  #6366f1;
   --gold:         #f59e0b;
-  --radius-xl:    24px;
+  --legacy-radius-xl: 24px;
   --page-bg-from: #f6f4ff;
   --page-bg-to:   #ece7fb;
   --card-bg:      #ffffff;
@@ -93,7 +93,7 @@
    work as designed. Note: avoid apostrophes and dash-asterisk patterns in comments in
    this file - both have been observed to break the Lightning CSS build pipeline even
    inside a comment block. */
-:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *, .mile-screen, .mile-screen *, .khata-screen, .khata-screen *, .health-screen, .health-screen *, .journal-screen, .journal-screen *) {
+:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *, .mile-screen, .mile-screen *, .khata-screen, .khata-screen *, .health-screen, .health-screen *, .journal-screen, .journal-screen *, .family-backups-screen, .family-backups-screen *) {
   margin: 0;
   padding: 0;
 }
@@ -108,8 +108,17 @@ html {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+  /* This app used to be a WhatsApp-style dark chat app (--bg/--text above are that old
+     palette) - now that chat/admin are gone, every remaining screen (Dashboard, Namaz,
+     Transactions, Khatabook, Milestones, Health, Journal, Login) paints its own explicit
+     light background over its full area, so --bg/--text were only ever visible peeking
+     through gaps (e.g. the bottom nav's own padding) rather than being an intentional
+     app-wide dark theme. Using the same light tokens the Tailwind-rewritten screens
+     already use (tailwind.css's @theme block) instead of the leftover dark ones.
+     Fallback hex values are that theme's actual current values, in case this file is
+     ever parsed before tailwind.css defines them. */
+  background: var(--color-background, #fdfbf6);
+  color: var(--color-foreground, #3a3226);
   width: 100%;
   /* Use small viewport height — avoids browser chrome overlap on mobile */
   height: 100svh;
@@ -257,7 +266,7 @@ button { font-family: inherit; cursor: pointer; }
 
 .login-card {
   background: var(--card-bg);
-  border-radius: var(--radius-xl);
+  border-radius: var(--legacy-radius-xl);
   padding: 40px 28px;
   width: 100%;
   max-width: 400px;
@@ -3905,69 +3914,26 @@ button { font-family: inherit; cursor: pointer; }
    stuck on Finance's rose regardless of the picked color. */
 .khata-screen .add-txn-submit,
 .mile-screen .add-txn-submit,
-.health-screen .add-txn-submit,
-.journal-screen .add-txn-submit {
+.health-screen .add-txn-submit {
   background: var(--gradient-gold);
   color: var(--color-accent-foreground);
   box-shadow: var(--shadow-glow);
 }
 .khata-screen .add-txn-submit:active,
 .mile-screen .add-txn-submit:active,
-.health-screen .add-txn-submit:active,
-.journal-screen .add-txn-submit:active {
+.health-screen .add-txn-submit:active {
   box-shadow: none;
 }
 .khata-screen .add-input:focus,
 .mile-screen .add-input:focus,
-.health-screen .add-input:focus,
-.journal-screen .add-input:focus {
+.health-screen .add-input:focus {
   border-color: var(--color-gold);
 }
 .khata-screen .add-txn-delete,
 .mile-screen .add-txn-delete,
-.health-screen .add-txn-delete,
-.journal-screen .add-txn-delete {
+.health-screen .add-txn-delete {
   color: var(--color-destructive);
   border-color: var(--color-destructive-soft);
-}
-
-/* Journal reuses Finance's .cat-chip tag-select primitive (category-grid/cat-chip) for its
-   multi-select tag chips — that control was previously Finance-only and hardcoded to the
-   fixed rose brand, so give Journal's instance the same live-theme override the shared
-   sheet primitives above already get, rather than leaving tag chips stuck on rose. */
-.journal-screen .cat-chip.active {
-  border-color: var(--color-gold);
-  color: var(--color-gold);
-  background: var(--color-gold-soft);
-}
-
-/* Journal's 5-way mood picker reuses the .type-toggle layout primitive but needs 5 equal
-   columns instead of 3, plus its own emoji-over-label button shape. Semantic tone per mood
-   is pinned to the fixed success/warning/destructive tokens (never the live gold theme) so
-   mood color stays legible/consistent regardless of theme, same reasoning as Health's
-   type-btn.active.mild/moderate/severe above. Two moods share success and two share
-   destructive since the app only has 3 semantic tones for 5 mood levels; the emoji + label
-   still disambiguate great from good (and low from rough) at a glance. */
-.mood-toggle { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
-.mood-btn {
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  padding: 8px 2px;
-  background: var(--txn-card); border: 1.5px solid rgba(0,0,0,0.08);
-  border-radius: 12px; color: var(--txn-muted);
-  font-size: 10px; cursor: pointer; font-weight: 700;
-  min-height: 56px;
-}
-.mood-btn-emoji { font-size: 20px; line-height: 1; }
-.mood-btn.active.mood-great,
-.mood-btn.active.mood-good {
-  border-color: var(--color-success); color: var(--color-success); background: var(--color-success-soft);
-}
-.mood-btn.active.mood-okay {
-  border-color: var(--color-warning); color: var(--color-warning); background: var(--color-warning-soft);
-}
-.mood-btn.active.mood-low,
-.mood-btn.active.mood-rough {
-  border-color: var(--color-destructive); color: var(--color-destructive); background: var(--color-destructive-soft);
 }
 
 /* Health module 3-way severity toggle (Mild/Moderate/Severe) reuses the shared
@@ -4034,24 +4000,6 @@ button { font-family: inherit; cursor: pointer; }
   flex-direction: column;
   color: var(--txn-ink);
 }
-/* ── Journal (daily mood/notes check-in) ──────────────────────────────────── */
-/* Same app-wide "full-screen module root" contract as .khata-screen/.health-screen above. */
-.journal-screen .material-symbols-outlined {
-  font-family: 'Material Symbols Outlined';
-  font-weight: normal; font-style: normal; line-height: 1;
-  display: inline-block; vertical-align: middle;
-}
-.journal-screen {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  background: linear-gradient(160deg, var(--txn-bg-from), var(--txn-bg-to));
-  display: flex;
-  flex-direction: column;
-  color: var(--txn-ink);
-}
-
 .khata-header { display: flex; align-items: center; gap: 10px; padding: 16px 20px 8px; flex-shrink: 0; }
 .khata-home-btn {
   display: flex; align-items: center; justify-content: center;
@@ -5186,7 +5134,7 @@ button { font-family: inherit; cursor: pointer; }
   flex-direction: column;
   gap: 16px;
   background: var(--card-bg);
-  border-radius: var(--radius-xl);
+  border-radius: var(--legacy-radius-xl);
   padding: 24px 20px;
   box-shadow: var(--shadow-soft);
 }
@@ -5249,7 +5197,7 @@ button { font-family: inherit; cursor: pointer; }
    to reserve a dead band for it. Deliberately not built on the Tailwind utility layer so
    it keeps working even in screens that haven't adopted Tailwind. Uses --gradient-gold /
    --gold from tailwind.css (globally inherited custom properties, imported ahead of this
-   file in main.jsx) plus this file's own --shadow-soft / --radius-xl tokens.
+   file in main.jsx) plus this file's own --shadow-soft / --legacy-radius-xl tokens.
    The dropdown itself is portaled to <body> (see CornerMenu.jsx) and positioned with
    `fixed` + inline top/right computed from the trigger's real getBoundingClientRect() —
    several of this app's headers apply a CSS `transform` for their entrance animation
@@ -5279,7 +5227,7 @@ button { font-family: inherit; cursor: pointer; }
   position: fixed;
   width: 188px;
   background: var(--card-bg, #fff);
-  border-radius: var(--radius-xl, 18px);
+  border-radius: var(--legacy-radius-xl, 18px);
   box-shadow: var(--shadow-soft, 0 8px 24px rgba(124,109,242,0.14)), 0 24px 60px rgba(20,16,10,0.2);
   padding: 6px;
   display: flex;
@@ -5331,7 +5279,7 @@ button { font-family: inherit; cursor: pointer; }
   max-height: min(600px, calc(100vh - 90px));
   overflow-y: auto;
   background: var(--card-bg, #fff);
-  border-radius: var(--radius-xl, 24px);
+  border-radius: var(--legacy-radius-xl, 24px);
   box-shadow: var(--shadow-soft, 0 8px 24px rgba(124,109,242,0.14)), 0 24px 60px rgba(20,16,10,0.2);
   padding: 16px;
   display: flex;
@@ -5566,4 +5514,18 @@ button { font-family: inherit; cursor: pointer; }
   white-space: nowrap;
 }
 .theme-picker-saved-delete { width: 26px; height: 26px; flex-shrink: 0; }
+
+/* Journal mood emoji — a gentle continuous pulse standing in for animated emoji
+   assets, which would need either a CDN (breaks this app's offline-first design)
+   or bundled per-mood image/Lottie files we don't have. Pure CSS keeps it fully
+   offline and instant. */
+@keyframes journal-emoji-pop { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.18); } }
+.journal-emoji-animated { display: inline-block; animation: journal-emoji-pop 1.6s ease-in-out infinite; }
+
+/* Hub card illustrations (Health hub, journal-studio-style cards) - a slow, gentle
+   bob so the illustrations read as alive without competing for attention with the
+   card content. Per-card animationDelay (set inline via style, see HealthHubScreen.jsx)
+   staggers the three cards so they do not bob in lockstep. */
+@keyframes hub-illustration-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+.hub-illustration-float { animation: hub-illustration-bob 3.2s ease-in-out infinite; }
 .theme-picker-saved-delete .material-symbols-outlined { font-size: 15px; }

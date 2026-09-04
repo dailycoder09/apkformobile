@@ -1,0 +1,44 @@
+@import "tailwindcss";
+
+@theme {
+  --color-app-bg: #f3f2ef;
+  --color-app-dark: #1e2229;
+  --color-app-dark-hover: #2a2f38;
+  --color-app-lavender: #eee3eb;
+  --color-app-blue-pastel: #e1e9f1;
+  --color-app-butter-pastel: #faecd2;
+  --color-app-sage-pastel: #e0ece4;
+  --color-app-sage-fill: #c7dcce;
+  --color-app-peach-fill: #f7d2c4;
+  --color-app-neon-lime: #e1ff3b;
+
+  --font-sans: "Plus Jakarta Sans", sans-serif;
+  --font-brand: "Caveat", cursive;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+.font-brand-logo {
+  font-family: "Caveat", cursive;
+  letter-spacing: -0.02em;
+}
+
+/* Hide scrollbars for a clean native-app look, matching the reference mockup's own
+   "no-scrollbar" utility. */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}

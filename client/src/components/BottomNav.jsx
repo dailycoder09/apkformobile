@@ -16,22 +16,6 @@ const NAV_ITEMS = [
     ),
   },
   {
-    value: 'workout',
-    key: 'workout',
-    label: 'Workout',
-    icon: (
-      <path d="M6.5 8.5v7M4 10v4M17.5 8.5v7M20 10v4M8 12h8" />
-    ),
-  },
-  {
-    value: 'messages',
-    key: 'chat',
-    label: 'Chat',
-    icon: (
-      <path d="M4 5h16v10H8l-4 4V5Z" />
-    ),
-  },
-  {
     value: 'transactions',
     key: 'finance',
     label: 'Finance',
@@ -78,36 +62,37 @@ const NAV_ITEMS = [
 
 export default function BottomNav({ active, onNavigate }) {
   return (
-    <nav className="bottom-nav-shell flex shrink-0 justify-center px-4 py-2.5" style={{ paddingBottom: 'max(10px, env(safe-area-inset-bottom))' }}>
-      <div className="flex items-center gap-1 rounded-full border border-border/70 bg-popover/85 p-1.5 shadow-[var(--shadow-lift)] backdrop-blur-xl">
-        {NAV_ITEMS.map((item) => {
-          const isActive = item.value === active || (item.value === 'khatabook' && active === 'khatabook-app')
-          return (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => onNavigate(item.value)}
-              aria-label={item.label}
-              title={item.label}
-              className={`flex size-[38px] items-center justify-center rounded-full transition-colors duration-150 active:scale-90 ${
-                isActive ? 'bg-[image:var(--gradient-gold)] text-accent-foreground' : 'text-muted-foreground hover:text-foreground'
-              }`}
+    <nav
+      className="bottom-nav-shell flex shrink-0 items-center justify-between gap-1 bg-transparent px-2 py-2"
+      style={{ paddingBottom: 'max(10px, env(safe-area-inset-bottom))' }}
+    >
+      {NAV_ITEMS.map((item) => {
+        const isActive = item.value === active || (item.value === 'khatabook' && active === 'khatabook-app')
+        return (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => onNavigate(item.value)}
+            aria-label={item.label}
+            title={item.label}
+            className={`flex flex-1 flex-col items-center justify-center gap-0.5 rounded-lg py-1.5 transition-colors duration-150 active:scale-95 ${
+              isActive ? 'text-gold' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <svg
+              className="size-5 shrink-0"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
             >
-              <svg
-                className="size-5 shrink-0"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                {item.icon}
-              </svg>
-            </button>
-          )
-        })}
-      </div>
+              {item.icon}
+            </svg>
+          </button>
+        )
+      })}
     </nav>
   )
 }

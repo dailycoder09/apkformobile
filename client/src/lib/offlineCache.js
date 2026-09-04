@@ -3,7 +3,7 @@
 // localStorage (not IndexedDB): this is personal per-user JSON, not media, and a
 // synchronous read is what lets cached data render before any network round-trip even
 // starts. `kind` is the WebSocket reply message type ('transactions', 'milestone_data',
-// 'health_data', 'journal_data', 'ledger_data', 'namaz_data', 'profile', 'budgets') so
+// 'health_data', 'ledger_data', 'namaz_data', 'profile', 'budgets') so
 // every screen that fetches the same data shares one cache entry — Dashboard.jsx fetches
 // all of these itself and stays in sync with each screen's own panel automatically.
 export function getCache(kind, userId) {

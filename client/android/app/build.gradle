@@ -59,22 +59,11 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
-    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
-    implementation 'androidx.work:work-runtime:2.9.0'
     implementation "org.jetbrains.kotlin:kotlin-stdlib:2.1.0"
-    implementation 'io.livekit:livekit-android:2.7.0'
-    implementation 'androidx.security:security-crypto:1.1.0-alpha07'
-    // Declared as `implementation` (not `api`) inside the @capacitor-firebase/authentication
-    // plugin's own build.gradle, so it isn't exposed transitively — redeclare it here so
-    // MainActivity/KeepAliveService can call the native FirebaseAuth SDK directly (needed for
-    // KeepAliveService, which runs independently of the WebView/JS layer and the plugin's bridge).
-    // Version matches the plugin's own default (firebaseAuthVersion in its android/build.gradle).
-    implementation 'com.google.firebase:firebase-auth:24.0.1'
-    // Wakes a killed KeepAliveService on admin demand (see FamilyWatchMessagingService) —
-    // a data-only high-priority push, not a visible notification. 24.1.2 (not 24.1.4, which
-    // doesn't exist — verified against Google's own Maven group-index.xml) is the newest
-    // release in the same 24.x line as firebase-auth above.
-    implementation 'com.google.firebase:firebase-messaging:24.1.2'
+    // DeviceBackupWorker.java's daily background job — schedules itself via WorkManager,
+    // independent of FCM or the app being open. Not previously a dependency anywhere in
+    // this project (checked: no WorkManager artifact, direct or transitive).
+    implementation "androidx.work:work-runtime:2.9.1"
 }
 
 apply from: 'capacitor.build.gradle'

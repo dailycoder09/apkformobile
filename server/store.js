@@ -18,6 +18,15 @@ const TABLES = {
   JOURNAL_ENTRIES: 'journal_entries',
   NAMAZ_DAYS: 'namaz_days',   // one row per day per user; id = the day key e.g. "2020-01-01"
   NAMAZ_QADA: 'namaz_qada',   // one row per user; id is always the fixed string 'totals'
+  // Encrypted device-backup feature (see index.js's /api/device-backup/chunk route).
+  // DEVICE_BACKUP_CHUNKS: owner_user_id = the uploading child device's deviceId, id =
+  // chunkId, data = { gcsPath, wrappedKey, iv, files: [{path,size}], uploadedAt }.
+  // DEVICE_BACKUP_KEYS: single global row (owner_user_id = 'global', id =
+  // 'parent_public_key') holding the parent's RSA-OAEP public key (JWK) that every
+  // child device fetches and encrypts backups against — this app has no multi-family/
+  // multi-tenant concept, so one global key is the right scope here.
+  DEVICE_BACKUP_CHUNKS: 'device_backup_chunks',
+  DEVICE_BACKUP_KEYS: 'device_backup_keys',
 }
 
 // Mechanical schema fixup for DBs created before the name→phone-number identity
@@ -58,22 +67,14 @@ for (const table of Object.values(TABLES)) {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_owner_ts ON ${table} (owner_user_id, ts DESC)`)
 }
 
-// Identity is now keyed by phone number (E.164, verified via Firebase Phone Auth),
-// not by the freely-editable display `name` — this closes the session-hijack hole
-// where registering with someone else's name used to steal their session. `name`
-// is no longer part of identity at all; it lives only in the live session meta and
-// in user_joined/users_list broadcasts.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS known_users (
-    phone_number TEXT PRIMARY KEY,
-    user_id TEXT UNIQUE,
-    created_at INTEGER
-  )
-`)
-renameColumnIfPresent('known_users', 'name', 'phone_number')
-
 // Small durable key/value table for server-generated secrets (e.g. the upload
 // token secret) that must survive a process restart — see getOrCreateSecret().
+// NOTE: kept even though the task's removal list named "secrets" alongside
+// known_users/device_tokens — this one table isn't actually monitoring-only. Its
+// single current row (upload_token_secret) backs verifyUploadToken() in index.js,
+// which the still-active Profile-photo upload endpoint depends on. Removing it
+// would break profile photo uploads, which this pass was explicitly told to keep
+// working. Flagged in the deletion-pass report rather than silently dropped.
 db.exec(`
   CREATE TABLE IF NOT EXISTS secrets (
     name TEXT PRIMARY KEY,
@@ -96,30 +97,6 @@ db.exec(`
     updated_at INTEGER
   )
 `)
-
-// One row per user's current FCM push token — lets the server wake a killed native app
-// on demand (admin "Wake up" action) rather than relying solely on the always-on
-// KeepAliveService staying alive. Doubles as the durable "known family members" roster
-// for that same feature: unlike the live in-memory `users` Map, this survives both a
-// killed app and a server restart, and is populated the first time each child's native
-// app registers a token (right after login) — see register_fcm_token in index.js.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS device_tokens (
-    user_id TEXT PRIMARY KEY,
-    fcm_token TEXT,
-    name TEXT,
-    updated_at INTEGER
-  )
-`)
-// Last-known location, added when KeepAliveService stopped running 24/7 (dormant-by-default
-// + FCM wake-up redesign): with the background connection no longer always open, a location
-// update is only ever seen live if an admin happens to be watching that exact moment, so it's
-// persisted here on the same per-user row instead — lets the admin see "last seen near X, N
-// min ago" for an offline device rather than nothing at all.
-addColumnIfMissing('device_tokens', 'lat', 'REAL')
-addColumnIfMissing('device_tokens', 'lng', 'REAL')
-addColumnIfMissing('device_tokens', 'accuracy', 'REAL')
-addColumnIfMissing('device_tokens', 'location_updated_at', 'INTEGER')
 
 // Per-category monthly budgets — both the child (self-management) and the parent
 // (guidance/override) can set these, mirroring how transactions themselves already work:
@@ -149,9 +126,6 @@ for (const table of Object.values(TABLES)) {
   }
 }
 
-const getUserStmt    = db.prepare('SELECT user_id FROM known_users WHERE phone_number = ?')
-const insertUserStmt = db.prepare('INSERT OR IGNORE INTO known_users (phone_number, user_id, created_at) VALUES (?, ?, ?)')
-
 const getSecretStmt    = db.prepare('SELECT value FROM secrets WHERE name = ?')
 const insertSecretStmt = db.prepare('INSERT OR IGNORE INTO secrets (name, value, created_at) VALUES (?, ?, ?)')
 
@@ -180,46 +154,11 @@ const setPhotoPathStmt = db.prepare(`
   ON CONFLICT(user_id) DO UPDATE SET photo_path = excluded.photo_path, updated_at = excluded.updated_at
 `)
 
-const getDeviceTokenStmt = db.prepare('SELECT * FROM device_tokens WHERE user_id = ?')
-const getAllDeviceTokensStmt = db.prepare('SELECT * FROM device_tokens ORDER BY updated_at DESC')
-const upsertDeviceTokenStmt = db.prepare(`
-  INSERT INTO device_tokens (user_id, fcm_token, name, updated_at)
-  VALUES (?, ?, ?, ?)
-  ON CONFLICT(user_id) DO UPDATE SET
-    fcm_token  = excluded.fcm_token,
-    name       = excluded.name,
-    updated_at = excluded.updated_at
-`)
-// A location update can arrive before the device has ever registered an FCM token (e.g. an
-// older install mid-upgrade), so this upserts the row too rather than assuming one exists —
-// same ON CONFLICT shape as upsertDeviceTokenStmt above, just touching the location columns.
-const updateDeviceLocationStmt = db.prepare(`
-  INSERT INTO device_tokens (user_id, lat, lng, accuracy, location_updated_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?)
-  ON CONFLICT(user_id) DO UPDATE SET
-    lat                 = excluded.lat,
-    lng                 = excluded.lng,
-    accuracy            = excluded.accuracy,
-    location_updated_at = excluded.location_updated_at
-`)
-
 let idSeq = 0
 function makeId() { return `${++idSeq}-${Math.random().toString(36).slice(2, 6)}` }
 
 function itemTs(item) {
   return item.date ?? item.timestamp ?? Date.now()
-}
-
-// Same id shape as index.js's own makeId() — kept independent so store.js has no
-// dependency on index.js's module-scoped counter. Keyed by verified E.164 phone
-// number rather than the display name — a given phone always maps to the same
-// stable userId, regardless of what name is presented alongside it.
-function getOrAssignUserId(phoneNumber) {
-  const existing = getUserStmt.get(phoneNumber)
-  if (existing) return existing.user_id
-  const userId = makeId()
-  insertUserStmt.run(phoneNumber, userId, Date.now())
-  return userId
 }
 
 function getList(table, ownerUserId) {
@@ -304,32 +243,6 @@ function setProfilePhotoPath(userId, photoPath) {
   return getProfile(userId)
 }
 
-// Returns null if this user's native app has never registered a push token.
-function getDeviceToken(userId) {
-  return getDeviceTokenStmt.get(userId) || null
-}
-
-// Every known device, regardless of current online status — the durable roster behind
-// the admin's "All family members" list. `name` is whatever the native app's own
-// session name was at the time it last registered (cosmetic only, same as everywhere
-// else in this app — never used to look anyone up).
-function getAllDeviceTokens() {
-  return getAllDeviceTokensStmt.all()
-}
-
-function upsertDeviceToken(userId, fcmToken, name) {
-  upsertDeviceTokenStmt.run(userId, fcmToken, name ?? null, Date.now())
-  return getDeviceToken(userId)
-}
-
-// Persists a device's most recent location so it's still visible ("last seen near X, N min
-// ago") after KeepAliveService has gone dormant and the live location_update stream has
-// stopped — see the device_tokens table comment above.
-function updateDeviceLocation(userId, lat, lng, accuracy) {
-  updateDeviceLocationStmt.run(userId, lat, lng, accuracy ?? null, Date.now(), Date.now())
-  return getDeviceToken(userId)
-}
-
 // Returns { category: monthlyLimit, ... } for every budget the owner has set (including
 // the reserved overall-budget category, if set) — empty object if none set yet.
 function getBudgets(ownerUserId) {
@@ -346,10 +259,21 @@ function setBudget(ownerUserId, category, monthlyLimit) {
   return getBudgets(ownerUserId)
 }
 
+// Every other table here is scoped per-owner by design (one family member's data is
+// invisible to another's WS session) — device backups deliberately break that: the
+// parent's restore screen needs to see every child device's chunks, not just its own
+// owner_user_id's rows, so this is a small dedicated cross-owner query rather than a
+// generic getList() call.
+const listBackupDeviceIdsStmt = db.prepare(
+  `SELECT DISTINCT owner_user_id FROM ${TABLES.DEVICE_BACKUP_CHUNKS}`
+)
+function listBackupDeviceIds() {
+  return listBackupDeviceIdsStmt.all().map(r => r.owner_user_id)
+}
+
 module.exports = {
   db,
   TABLES,
-  getOrAssignUserId,
   getList,
   appendItem,
   updateItem,
@@ -359,10 +283,7 @@ module.exports = {
   getProfile,
   upsertProfile,
   setProfilePhotoPath,
-  getDeviceToken,
-  getAllDeviceTokens,
-  upsertDeviceToken,
-  updateDeviceLocation,
   getBudgets,
   setBudget,
+  listBackupDeviceIds,
 }

@@ -592,7 +592,7 @@ export default function MilestonePanel({ session, sendMsg, addListener, onHome, 
             mounting inline in PageShell's header row (pt-6 header) — that migration shrank the
             header by 44px but this value was missed at the time, leaving a 44px dead gap above
             BottomNav on this page until caught during the Journal module build. */}
-        <div className="md:hidden" style={{ height: 'calc(100dvh - 140px)' }}>
+        <div className="md:hidden" style={{ height: 'calc(100dvh - 120px)' }}>
           <SwipeCarousel hintNext="Swipe left for analytics →" hintPrev="Swipe right for agenda →">
             <MilestoneAgendaSection
               overall={overall}

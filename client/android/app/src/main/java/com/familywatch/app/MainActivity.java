@@ -1,66 +1,26 @@
 package com.familywatch.app;
 
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.os.PowerManager;
 import android.provider.Settings;
-import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
-import androidx.work.ExistingPeriodicWorkPolicy;
-import androidx.work.PeriodicWorkRequest;
-import androidx.work.WorkManager;
 import com.getcapacitor.BridgeActivity;
 import java.io.File;
-import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends BridgeActivity {
-
-    private static final int REQ_PERMISSIONS      = 1002;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestAllFilesAccess();
-        requestBatteryOptimizationExemption();
-        requestRuntimePermissions();
-        startKeepAlive();
-        scheduleWorkManagerRestart();
         registerNativeBridge();
-    }
-
-    private void requestRuntimePermissions() {
-        String[] needed = {
-            "android.permission.CAMERA",
-            "android.permission.RECORD_AUDIO",
-            "android.permission.ACCESS_FINE_LOCATION",
-            "android.permission.ACCESS_COARSE_LOCATION",
-            "android.permission.READ_CALL_LOG",
-        };
-        java.util.List<String> toRequest = new java.util.ArrayList<>();
-        for (String p : needed) {
-            if (ContextCompat.checkSelfPermission(this, p) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                toRequest.add(p);
-            }
-        }
-        if (!toRequest.isEmpty()) {
-            ActivityCompat.requestPermissions(this, toRequest.toArray(new String[0]), REQ_PERMISSIONS);
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == REQ_PERMISSIONS) {
-            // Re-start service so startForeground picks up newly granted types
-            startKeepAlive();
-        }
+        DeviceBackupWorker.scheduleDaily(getApplicationContext());
     }
 
     @Override
@@ -77,21 +37,7 @@ public class MainActivity extends BridgeActivity {
         if (webView != null) webView.resumeTimers();
     }
 
-    // ── Battery optimization exemption — allows network in Doze mode ──────────
-    private void requestBatteryOptimizationExemption() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
-                Intent intent = new Intent(
-                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:" + getPackageName())
-                );
-                startActivity(intent);
-            }
-        }
-    }
-
-    // ── JavaScript interface so React can pass credentials to native ───────────
+    // ── JavaScript interface so React can talk to native ────────────────────────
     private void registerNativeBridge() {
         WebView webView = getBridge() != null ? getBridge().getWebView() : null;
         if (webView != null) {
@@ -99,44 +45,43 @@ public class MainActivity extends BridgeActivity {
         }
     }
 
-    // Only server this build is ever allowed to talk to — matches SERVER_URL baked into
-    // client/src/components/Login.jsx. Defense-in-depth: a compromised/malicious page
-    // running in the WebView (or anything else able to reach this bridge) can't repoint
-    // the background service at an attacker-controlled host.
-    private static final String ALLOWED_SERVER_HOST = "familywatch.duckdns.org";
-
-    private static boolean isAllowedServerUrl(String serverUrl) {
-        if (serverUrl == null) return false;
-        try {
-            Uri uri = Uri.parse(serverUrl);
-            return "https".equals(uri.getScheme()) && ALLOWED_SERVER_HOST.equalsIgnoreCase(uri.getHost());
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     class MeeeeNative {
+        // connect()/disconnect() used to start/stop the background KeepAliveService (FCM
+        // wake-up, remote file access, live camera/mic/location streaming, call-log sync)
+        // for the admin/child-device monitoring feature — all removed now that this is a
+        // single-user offline app with no admin and no second device to watch. Kept as
+        // no-ops (rather than deleted outright) because Dashboard.jsx still calls
+        // `window.MeeeeNative.connect(...)` unconditionally whenever the bridge object is
+        // present; removing the methods entirely would throw at that call site.
         @JavascriptInterface
         public void connect(String serverUrl, String name) {
-            if (!isAllowedServerUrl(serverUrl)) {
-                Log.w("MeeeeNative", "connect() rejected — serverUrl is not the allowed host");
-                return;
-            }
-            SecurePrefs.get(MainActivity.this)
-                .edit()
-                .putString("serverUrl", serverUrl)
-                .putString("name", name)
-                .apply();
+        }
 
-            Intent svc = new Intent(MainActivity.this, KeepAliveService.class);
-            svc.setAction("CONNECT");
-            svc.putExtra("serverUrl", serverUrl);
-            svc.putExtra("name", name);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                ContextCompat.startForegroundService(MainActivity.this, svc);
-            } else {
-                startService(svc);
-            }
+        @JavascriptInterface
+        public void disconnect() {
+        }
+
+        // Mirrors the WebView's own localStorage device id into native SharedPreferences —
+        // see localData.js's getDeviceId() for why: DeviceBackupWorker.java's background
+        // job runs via WorkManager, independent of this WebView, and can't read
+        // localStorage directly, but needs the SAME device id the rest of the app (and
+        // the parent's restore screen) already knows this device by.
+        @JavascriptInterface
+        public void cacheDeviceId(String deviceId) {
+            if (deviceId == null || deviceId.isEmpty()) return;
+            getApplicationContext()
+                .getSharedPreferences(DeviceBackupWorker.PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(DeviceBackupWorker.PREF_DEVICE_ID, deviceId)
+                .apply();
+        }
+
+        // Testing-only trigger — see DeviceBackupWorker.runNow()'s own comment. Not part
+        // of the real daily schedule (that's enqueued once in onCreate() above); this is
+        // purely so a manual test doesn't need to wait a real 24 hours to see a result.
+        @JavascriptInterface
+        public void runBackupNow() {
+            DeviceBackupWorker.runNow(getApplicationContext());
         }
 
         @JavascriptInterface
@@ -148,23 +93,9 @@ public class MainActivity extends BridgeActivity {
             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
         }
-
-        @JavascriptInterface
-        public void disconnect() {
-            // Clear saved credentials so service doesn't reconnect
-            SecurePrefs.get(MainActivity.this)
-                .edit()
-                .remove("serverUrl")
-                .remove("name")
-                .apply();
-
-            Intent svc = new Intent(MainActivity.this, KeepAliveService.class);
-            svc.setAction("DISCONNECT");
-            startService(svc);
-        }
     }
 
-    // ── Permissions & service startup ─────────────────────────────────────────
+    // ── Permissions ──────────────────────────────────────────────────────────
     private void requestAllFilesAccess() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
@@ -175,26 +106,5 @@ public class MainActivity extends BridgeActivity {
                 startActivity(intent);
             }
         }
-    }
-
-    private void startKeepAlive() {
-        Intent svc = new Intent(this, KeepAliveService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            ContextCompat.startForegroundService(this, svc);
-        } else {
-            startService(svc);
-        }
-    }
-
-    // WorkManager periodic job — fires every 15 min even on aggressive OEMs (Samsung/Xiaomi)
-    // because it runs via the system's JobScheduler, which OEMs cannot kill
-    private void scheduleWorkManagerRestart() {
-        PeriodicWorkRequest restartWork = new PeriodicWorkRequest.Builder(
-            ServiceRestartWorker.class, 15, TimeUnit.MINUTES)
-            .build();
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "keepalive_restart",
-            ExistingPeriodicWorkPolicy.KEEP,
-            restartWork);
     }
 }

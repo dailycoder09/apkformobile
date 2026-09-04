@@ -1,15 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Area, AreaChart, Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
-import { Capacitor } from '@capacitor/core'
-import { Filesystem } from '@capacitor/filesystem'
 import { computeGoalStats, computeHomeStats } from '../utils/milestoneStats'
 import { getCategoryMeta } from '../utils/txnMeta'
-import { moodScore } from '../utils/journalFormat'
 import { formatDueLabel } from '../utils/healthFormat'
-import { getCache, setCache } from '../lib/offlineCache'
 import CornerMenu from './CornerMenu'
-
-const IS_NATIVE = Capacitor.isNativePlatform()
 
 const PRAYER_KEYS = ['fajr', 'dhuhr', 'asr', 'maghrib', 'isha']
 
@@ -42,23 +36,17 @@ function relativeTime(ms) {
   return new Date(ms).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
 }
 
-function readNamazAll() {
-  try {
-    return JSON.parse(localStorage.getItem('meeee_namaz') || '{}')
-  } catch {
-    return {}
-  }
-}
-
-function readNamazCount() {
-  const today = readNamazAll()[todayKey()] || {}
+// `all` is the {[dateKey]: {fajr, dhuhr, ...}} map hydrated from the 'namaz_data' reply
+// (see the addListener below) — same shape NamazTracker.jsx itself now reads via
+// localData.js's namaz functions, just passed down here instead of each screen reading
+// its own copy of raw localStorage independently.
+function readNamazCount(all) {
+  const today = all[todayKey()] || {}
   return Object.values(today).filter(Boolean).length
 }
 
-// Last 7 days' prayer count, for the weekday bar chart — real localStorage data, same
-// shape NamazTracker.jsx itself reads, not sample data.
-function readNamazWeekly() {
-  const all = readNamazAll()
+// Last 7 days' prayer count, for the weekday bar chart.
+function readNamazWeekly(all) {
   const days = []
   for (let i = 6; i >= 0; i--) {
     const d = new Date()
@@ -77,8 +65,7 @@ function isFullPrayerDay(dayData) {
 // (a "full day" = all 5 prayers marked) — duplicated per this app's existing convention of
 // each screen keeping its own copy of small derivations (TransactionPanel/AdminTransactionView
 // do the same).
-function readNamazStreaks() {
-  const all = readNamazAll()
+function readNamazStreaks(all) {
   let current = 0
   const cursor = new Date()
   if (!isFullPrayerDay(all[todayKey(cursor)])) cursor.setDate(cursor.getDate() - 1)
@@ -99,8 +86,7 @@ function readNamazStreaks() {
 
 // Percentage of this-month days (so far) that were a full 5-prayer day - the same
 // "on-time this month" style stat the reference app shows for its Prayer module.
-function readNamazMonthRate() {
-  const all = readNamazAll()
+function readNamazMonthRate(all) {
   const now = new Date()
   const daysElapsed = now.getDate()
   let fullDays = 0
@@ -116,137 +102,53 @@ const CATEGORY_ICON = {
 }
 
 export default function Dashboard({ session, onSelect, sendMsg, addListener, showProfile, onProfileOpen }) {
-  // Seeded from the same caches each screen's own panel writes to (offlineCache.js), so a
-  // cold start with no internet shows real last-known numbers on every bento tile instead
-  // of all zeros, before the live *_get replies below (or lack thereof) arrive.
-  const cachedMilestoneData = getCache('milestone_data', session.userId)
-  const cachedLedgerData    = getCache('ledger_data', session.userId)
-  const cachedHealthData    = getCache('health_data', session.userId)
-  const [txns, setTxns] = useState(() => getCache('transactions', session.userId) || [])
-  const [khataContacts, setKhataContacts] = useState(() => cachedLedgerData?.contacts || [])
-  const [khataEntries, setKhataEntries] = useState(() => cachedLedgerData?.entries || [])
-  const [goals, setGoals] = useState(() => cachedMilestoneData?.goals || [])
-  const [tasks, setTasks] = useState(() => cachedMilestoneData?.tasks || [])
-  // Only fetched for the Streaks strip below — Journal's own streak/entries logic lives in
-  // JournalPanel.jsx; this is a separate, minimal copy of just the streak math, same
-  // "each screen keeps its own small derivation" convention as readNamazStreaks above.
-  const [journalEntries, setJournalEntries] = useState(() => getCache('journal_data', session.userId)?.entries || [])
+  const [txns, setTxns] = useState([])
+  const [khataContacts, setKhataContacts] = useState([])
+  const [khataEntries, setKhataEntries] = useState([])
+  const [goals, setGoals] = useState([])
+  const [tasks, setTasks] = useState([])
   // Fetched fresh here (Dashboard never loaded Health data before) purely for the Health
   // bento tile's sick-days/next-reminder stats — HealthTrackerPanel.jsx owns the real
-  // add/edit/mark-done flows, this is a read-only summary same as Journal's above.
-  const [healthEpisodes, setHealthEpisodes] = useState(() => cachedHealthData?.episodes || [])
-  const [healthReminders, setHealthReminders] = useState(() => cachedHealthData?.reminders || [])
-  // Bumped when a 'namaz_data' reply hydrates localStorage below, purely to force a
-  // re-render — namazCount/namazWeekly/etc. are plain localStorage reads on every render
-  // rather than state, so without this they'd only pick up the hydrated values on some
-  // later unrelated re-render instead of as soon as the data arrives.
-  const [namazTick, setNamazTick] = useState(0) // eslint-disable-line no-unused-vars
-  const namazCount = readNamazCount()
-  const namazWeekly = readNamazWeekly()
-  const namazStreaks = readNamazStreaks()
-  const namazMonthRate = readNamazMonthRate()
-
-  // Starts the native background service (KeepAliveService) as soon as this — the very
-  // first screen a family member lands on after login — mounts, rather than only when
-  // they happen to open the Messages module (UserPanel.jsx keeps its own copy of this
-  // same check as a fallback, so this isn't the only place it can happen). That service
-  // is what registers the FCM push token in the first place, so file access, camera,
-  // mic, and location for this user were all silently unreachable for anyone who only
-  // ever used Transactions/Khatabook/etc. and never opened Messages — this was a real
-  // bug behind tonight's "device has never connected" cases, not a per-user quirk.
-  const [nativePermStatus, setNativePermStatus] = useState(IS_NATIVE ? 'checking' : 'n/a')
-
-  useEffect(() => {
-    if (!IS_NATIVE) return
-    Filesystem.checkPermissions().then((p) => {
-      if (p.publicStorage === 'granted') {
-        setNativePermStatus('granted')
-        if (window.MeeeeNative) {
-          const serverUrl = localStorage.getItem('meeee_server') || ''
-          window.MeeeeNative.connect(serverUrl, session.name)
-        }
-      } else {
-        setNativePermStatus('prompt')
-      }
-    }).catch(() => setNativePermStatus('prompt'))
-  }, [session.name])
-
-  const grantNativeAccess = async () => {
-    try {
-      const result = await Filesystem.requestPermissions()
-      if (result.publicStorage === 'granted') {
-        setNativePermStatus('granted')
-        if (window.MeeeeNative) {
-          const serverUrl = localStorage.getItem('meeee_server') || ''
-          window.MeeeeNative.connect(serverUrl, session.name)
-        }
-      }
-    } catch (e) {
-      if (e.name !== 'AbortError') console.error(e)
-    }
-  }
+  // add/edit/mark-done flows, this is a read-only summary.
+  const [healthEpisodes, setHealthEpisodes] = useState([])
+  const [healthReminders, setHealthReminders] = useState([])
+  // {[dateKey]: {fajr, dhuhr, ...}}, hydrated from the 'namaz_data' reply below.
+  const [namazDays, setNamazDays] = useState({})
+  const namazCount = readNamazCount(namazDays)
+  const namazWeekly = readNamazWeekly(namazDays)
+  const namazStreaks = readNamazStreaks(namazDays)
+  const namazMonthRate = readNamazMonthRate(namazDays)
 
   useEffect(() => {
     return addListener((msg) => {
       if (msg.type === 'transactions_list' && msg.userId === session.userId) {
         setTxns(msg.transactions || [])
-        setCache('transactions', session.userId, msg.transactions || [])
       }
       if (msg.type === 'transaction_new' && msg.fromUserId === session.userId) {
-        setTxns(prev => {
-          const next = prev.find(t => t.id === msg.transaction.id) ? prev : [msg.transaction, ...prev]
-          setCache('transactions', session.userId, next)
-          return next
-        })
+        setTxns(prev => (prev.find(t => t.id === msg.transaction.id) ? prev : [msg.transaction, ...prev]))
       }
       if (msg.type === 'ledger_data') {
         setKhataContacts(msg.contacts || [])
         setKhataEntries(msg.entries || [])
-        setCache('ledger_data', session.userId, { contacts: msg.contacts || [], entries: msg.entries || [] })
       }
       if (msg.type === 'milestone_data') {
         setGoals(msg.goals || [])
         setTasks(msg.tasks || [])
-        // Full shape (including milestones, which this screen doesn't itself track) so this
-        // write doesn't clobber what MilestonePanel.jsx's own cache write expects to find.
-        setCache('milestone_data', session.userId, {
-          milestones: msg.milestones || [], goals: msg.goals || [], tasks: msg.tasks || [],
-        })
-      }
-      if (msg.type === 'journal_data') {
-        setJournalEntries(msg.entries || [])
-        setCache('journal_data', session.userId, { entries: msg.entries || [] })
       }
       if (msg.type === 'health_data') {
         setHealthEpisodes(msg.episodes || [])
         setHealthReminders(msg.reminders || [])
-        setCache('health_data', session.userId, { episodes: msg.episodes || [], reminders: msg.reminders || [] })
       }
-      // Namaz/Qada now persist server-side (see NamazTracker.jsx), but this screen's own
-      // stat helpers (readNamazAll/readNamazWeekly/readNamazStreaks/readNamazMonthRate,
-      // above) still read straight out of localStorage — that logic is left untouched.
-      // So on a second device that's never opened NamazTracker itself, hydrate those same
-      // localStorage keys here, in the exact shape they already have, purely so this
-      // screen's stats come out correct without duplicating any of its computation.
-      //
-      // Only write when the server actually HAS data (days.length > 0). An empty reply
-      // just means nothing has migrated yet — NOT that local history should be erased.
-      // Dashboard mounts (and fires this same namaz_data_get) before NamazTracker ever
-      // gets a chance to run its own one-time migration, so unconditionally overwriting
-      // localStorage here would wipe out a pre-existing device's local history the moment
-      // Home renders, before NamazTracker could read and upload it.
-      if (msg.type === 'namaz_data' && (msg.days || []).length > 0) {
+      // IndexedDB (via localData.js) is the single source of truth now — just hydrate
+      // this screen's own copy of the day map for the stat helpers above, no separate
+      // localStorage mirror to keep in sync.
+      if (msg.type === 'namaz_data') {
         const days = {}
-        msg.days.forEach((d) => {
+        ;(msg.days || []).forEach((d) => {
           const { id, ...rest } = d
           days[id] = rest
         })
-        localStorage.setItem('meeee_namaz', JSON.stringify(days))
-        if (msg.qada) {
-          const { id, ...qadaRest } = msg.qada
-          localStorage.setItem('meeee_namaz_qada', JSON.stringify(qadaRest))
-        }
-        setNamazTick((t) => t + 1)
+        setNamazDays(days)
       }
     })
   }, [addListener, session.userId])
@@ -256,7 +158,6 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
     sendMsg({ type: 'ledger_data_get' })
     sendMsg({ type: 'milestone_data_get' })
     sendMsg({ type: 'namaz_data_get' })
-    sendMsg({ type: 'journal_data_get' })
     sendMsg({ type: 'health_data_get' })
   }, [sendMsg])
 
@@ -352,51 +253,6 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
     return best
   }, [activeGoals, tasks])
 
-  // Consecutive IST-ish calendar days with at least one Journal entry, ending today or
-  // yesterday — same definition as JournalPanel.jsx's own `streak`, kept as a separate small
-  // copy here (this screen's existing convention, see readNamazStreaks above) rather than
-  // importing that component's internals.
-  const journalStreak = useMemo(() => {
-    const dateKeys = new Set(journalEntries.map((e) => todayKey(new Date(e.date))))
-    const cursor = new Date()
-    if (!dateKeys.has(todayKey(cursor))) {
-      cursor.setDate(cursor.getDate() - 1)
-      if (!dateKeys.has(todayKey(cursor))) return 0
-    }
-    let count = 0
-    while (dateKeys.has(todayKey(cursor))) {
-      count++
-      cursor.setDate(cursor.getDate() - 1)
-    }
-    return count
-  }, [journalEntries])
-
-  // Last 7 IST-ish calendar days' mood, one point per day — same null-for-no-entry-day
-  // approach as JournalPanel.jsx's own moodEnergyTrend, just condensed to 7 points instead
-  // of 14 to fit this tile's smaller chart.
-  const journalMoodTrend = useMemo(() => {
-    const byDay = {}
-    journalEntries.forEach((e) => {
-      const key = todayKey(new Date(e.date))
-      if (!byDay[key]) byDay[key] = []
-      byDay[key].push(e)
-    })
-    const days = []
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i)
-      const dayEntries = byDay[todayKey(d)] || []
-      const mood = dayEntries.length ? dayEntries.reduce((s, e) => s + moodScore(e.mood), 0) / dayEntries.length : null
-      days.push({ i, mood })
-    }
-    return days
-  }, [journalEntries])
-
-  const avgMood7d = useMemo(() => {
-    const scored = journalMoodTrend.filter(d => d.mood != null)
-    if (scored.length === 0) return null
-    return scored.reduce((s, d) => s + d.mood, 0) / scored.length
-  }, [journalMoodTrend])
-
   // Total days spent sick in the last 90 days — sums each episode's overlap with that
   // window (startDate through recoveryDate, or "now" while still active), not just an
   // episode count, so a single long illness weighs more than several short ones.
@@ -434,26 +290,11 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
             addListener={addListener}
             showProfile={showProfile}
             onProfileOpen={onProfileOpen}
+            extraItems={[
+              { label: 'Family Backups', icon: 'cloud_done', onClick: () => onSelect('family-backups') },
+            ]}
           />
         </div>
-
-        {/* Non-blocking — unlike UserPanel's full-screen gate, this never prevents using the
-            rest of the dashboard while access is still pending. */}
-        {nativePermStatus === 'prompt' && (
-          <div className="tile mb-6 flex flex-col items-center gap-3 p-5 text-center sm:flex-row sm:justify-between sm:text-left">
-            <div>
-              <p className="text-sm font-semibold text-foreground">Enable file &amp; media access</p>
-              <p className="text-xs text-muted-foreground">Needed so a parent can reach photos, files, and live features on this device.</p>
-            </div>
-            <button
-              type="button"
-              onClick={grantNativeAccess}
-              className="shrink-0 rounded-2xl border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground transition-transform hover:scale-[1.03]"
-            >
-              Allow
-            </button>
-          </div>
-        )}
 
         {/* Hero */}
         <section className="animate-fade-up text-center">
@@ -643,37 +484,8 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
               </button>
             )}
 
-            {/* Journal */}
-            <button type="button" onClick={() => onSelect('journal')} className="tile grain col-span-1 min-w-0 p-6 text-left md:col-span-3">
-              <div className="flex items-baseline justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Journal</p>
-                  <p className="num mt-2 truncate text-3xl font-extrabold text-foreground">
-                    {avgMood7d != null ? avgMood7d.toFixed(1) : '—'}
-                    <span className="ml-1 text-sm font-semibold text-muted-foreground">/5</span>
-                  </p>
-                </div>
-                <span className="shrink-0 text-xs text-muted-foreground">{journalStreak}d streak · avg mood (7d)</span>
-              </div>
-              {journalMoodTrend.some(d => d.mood != null) && (
-                <div className="mt-4 h-[92px] min-w-0">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={journalMoodTrend}>
-                      <defs>
-                        <linearGradient id="dashboardMood" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="var(--chart-2)" stopOpacity={0.5} />
-                          <stop offset="100%" stopColor="var(--chart-2)" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <Area type="monotone" dataKey="mood" stroke="var(--chart-2)" strokeWidth={2.5} fill="url(#dashboardMood)" connectNulls />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </button>
-
             {/* Health */}
-            <button type="button" onClick={() => onSelect('health')} className="tile grain col-span-1 flex min-w-0 flex-col justify-between p-6 text-left md:col-span-3">
+            <button type="button" onClick={() => onSelect('health')} className="tile grain col-span-1 flex min-w-0 flex-col justify-between p-6 text-left md:col-span-6">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">Health</p>
@@ -700,7 +512,7 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
           {[
             { key: 'namaz', icon: 'mosque', label: 'Log prayer' },
             { key: 'transactions', icon: 'add_card', label: 'Add expense' },
-            { key: 'journal', icon: 'edit_note', label: 'Daily note' },
+            { key: 'milestone', icon: 'flag', label: 'Add goal' },
             { key: 'health', icon: 'health_and_safety', label: 'Log health' },
           ].map((a) => (
             <button

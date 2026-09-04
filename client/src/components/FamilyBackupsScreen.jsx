@@ -1,0 +1,401 @@
+import { useEffect, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
+import { PageShell, Tile, TileLabel } from './PageShell'
+import { getDeviceId } from '../lib/localData'
+import * as backupKeys from '../lib/backupKeys'
+import { readStoredZipEntries } from '../lib/zipReader'
+
+const IS_NATIVE = Capacitor.isNativePlatform()
+
+// Same-origin in the browser, absolute host in the native app — same convention
+// ProfilePage.jsx/CornerMenu.jsx each define locally rather than sharing a module.
+function httpBase() {
+  return (localStorage.getItem('meeee_server') || '').trim().replace(/\/$/, '')
+}
+
+function formatBytes(n) {
+  if (!n) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let i = 0
+  let val = n
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024
+    i++
+  }
+  return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+const EXT_MIME = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
+  webp: 'image/webp', heic: 'image/heic',
+  mp4: 'video/mp4', mov: 'video/quicktime', '3gp': 'video/3gpp', webm: 'video/webm', mkv: 'video/x-matroska',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', wav: 'audio/wav', opus: 'audio/opus',
+  pdf: 'application/pdf',
+}
+function guessMime(name) {
+  const ext = name.split('.').pop()?.toLowerCase()
+  return EXT_MIME[ext] || 'application/octet-stream'
+}
+function fileKind(mime) {
+  if (mime.startsWith('image/')) return 'image'
+  if (mime.startsWith('video/')) return 'video'
+  if (mime.startsWith('audio/')) return 'audio'
+  return 'other'
+}
+
+// Parent-facing screen for the encrypted device-backup feature: one-time key setup
+// (generate or restore the RSA keypair backupKeys.js manages), then browsing/decrypting/
+// viewing whatever child devices have uploaded. See server/index.js's
+// /api/device-backup/* routes and DeviceBackupWorker.java (native) for the other
+// two-thirds of this feature.
+export default function FamilyBackupsScreen({ onHome }) {
+  const [hasKey, setHasKey] = useState(null) // null = still checking
+  const [settingUp, setSettingUp] = useState(false)
+  const [recoveryFile, setRecoveryFile] = useState(null) // set once, right after generating a key
+  const [error, setError] = useState('')
+  const [runningNow, setRunningNow] = useState(false)
+
+  const [devices, setDevices] = useState([])
+  const [selectedDevice, setSelectedDevice] = useState(null)
+  const [chunks, setChunks] = useState([])
+  const [loadingChunks, setLoadingChunks] = useState(false)
+  const [openingId, setOpeningId] = useState(null)
+  const [gallery, setGallery] = useState(null) // { chunkId, items: [{name, url, kind}], zipUrl }
+
+  useEffect(() => {
+    backupKeys.hasBackupPrivateKey().then(setHasKey)
+  }, [])
+
+  useEffect(() => {
+    fetch(`${httpBase()}/api/device-backup/devices`)
+      .then((r) => r.json())
+      .then((d) => setDevices(d.deviceIds || []))
+      .catch(() => {})
+  }, [])
+
+  // Revoke every object URL created for the currently-open gallery once it's replaced
+  // or the screen unmounts, so decrypted image/video data isn't left pinned in memory.
+  useEffect(() => {
+    return () => {
+      if (!gallery) return
+      gallery.items.forEach((it) => URL.revokeObjectURL(it.url))
+      if (gallery.zipUrl) URL.revokeObjectURL(gallery.zipUrl)
+    }
+  }, [gallery])
+
+  async function loadChunks(deviceId) {
+    setSelectedDevice(deviceId)
+    setLoadingChunks(true)
+    setError('')
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/index/${encodeURIComponent(deviceId)}`)
+      if (!res.ok) throw new Error('Could not load backups for this device.')
+      const data = await res.json()
+      setChunks((data.chunks || []).slice().sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0)))
+    } catch (e) {
+      setError(e.message || 'Could not load backups for this device.')
+    } finally {
+      setLoadingChunks(false)
+    }
+  }
+
+  async function handleSetup() {
+    setSettingUp(true)
+    setError('')
+    try {
+      const { publicKeyJwk } = await backupKeys.generateBackupKeypair()
+      const res = await fetch(`${httpBase()}/api/device-backup/parent-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicKeyJwk }),
+      })
+      if (!res.ok) throw new Error('Failed to register the encryption key with the server.')
+      setRecoveryFile(await backupKeys.exportRecoveryFile())
+      setHasKey(true)
+    } catch (e) {
+      setError(e.message || 'Setup failed.')
+    } finally {
+      setSettingUp(false)
+    }
+  }
+
+  function downloadRecoveryFile() {
+    const blob = new Blob([recoveryFile], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'meeee-backup-recovery-key.json'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  async function handleImportRecovery(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setError('')
+    try {
+      await backupKeys.importRecoveryFile(JSON.parse(await file.text()))
+      setHasKey(true)
+    } catch (err) {
+      setError(err.message || 'Could not import this recovery file.')
+    } finally {
+      e.target.value = ''
+    }
+  }
+
+  function handleRunBackupNow() {
+    if (!window.MeeeeNative?.runBackupNow) return
+    setRunningNow(true)
+    try {
+      window.MeeeeNative.runBackupNow()
+    } finally {
+      // Fire-and-forget — the native side has no callback, this just gives the button
+      // a brief, honest "something happened" state instead of looking unresponsive.
+      setTimeout(() => setRunningNow(false), 1500)
+    }
+  }
+
+  async function handleOpenChunk(chunk) {
+    setOpeningId(chunk.id)
+    setError('')
+    try {
+      const ownDeviceId = await getDeviceId()
+      const pairRes = await fetch(`${httpBase()}/api/device-backup/pair/${encodeURIComponent(ownDeviceId)}`)
+      if (!pairRes.ok) throw new Error('Could not authenticate this device.')
+      const { backupToken } = await pairRes.json()
+
+      const res = await fetch(
+        `${httpBase()}/api/device-backup/chunk/${encodeURIComponent(selectedDevice)}/${encodeURIComponent(chunk.id)}`,
+        { headers: { 'X-Requester-Id': ownDeviceId, 'X-Backup-Token': backupToken } }
+      )
+      if (!res.ok) throw new Error('Could not fetch this backup from cloud storage.')
+      const ciphertext = await res.arrayBuffer()
+
+      const aesKey = await backupKeys.unwrapChunkKey(chunk.wrappedKey)
+      const plaintext = await backupKeys.decryptChunk({ ciphertext, ivBase64: chunk.iv, aesKey })
+
+      const entries = readStoredZipEntries(plaintext)
+      const items = entries.map((entry) => {
+        const mime = guessMime(entry.name)
+        const blob = new Blob([plaintext.slice(entry.offset, entry.offset + entry.size)], { type: mime })
+        return { name: entry.name, url: URL.createObjectURL(blob), kind: fileKind(mime) }
+      })
+      const zipUrl = URL.createObjectURL(new Blob([plaintext], { type: 'application/zip' }))
+
+      setGallery({ chunkId: chunk.id, items, zipUrl })
+    } catch (e) {
+      setError(e.message || 'Decryption failed — wrong recovery key, or the chunk is missing.')
+    } finally {
+      setOpeningId(null)
+    }
+  }
+
+  return (
+    // `family-backups-screen` is a pure CSS targeting hook, same convention as
+    // `.health-screen`/`.khata-screen`/etc. — index.css's unlayered `margin:0;padding:0`
+    // reset excludes these specific classes so Tailwind spacing utilities (mx-auto, p-5,
+    // px-6, ...) actually take effect inside PageShell here. Without this wrapper, every
+    // margin/padding utility in this screen (and inside PageShell's own layout) silently
+    // computes to 0 — that's the exact bug that made this screen render unreadably
+    // cramped, text clipped against tile edges, before this wrapper was added.
+    <div className="family-backups-screen">
+      <PageShell
+        eyebrow="Family"
+        title="Family Backups"
+        lead="Daily encrypted backups from your family's devices — only this key can decrypt them."
+        onHome={onHome}
+      >
+      {error && (
+        <p className="mb-4 rounded-2xl bg-destructive-soft px-4 py-3 text-sm font-medium text-destructive">{error}</p>
+      )}
+
+      {IS_NATIVE && (
+        <Tile className="mb-4">
+          <TileLabel>Testing</TileLabel>
+          <p className="mt-2 text-sm text-muted-foreground">
+            The real backup runs automatically once a day. For testing, trigger one right now instead
+            of waiting.
+          </p>
+          <button
+            type="button"
+            disabled={runningNow}
+            onClick={handleRunBackupNow}
+            className="mt-3 rounded-full bg-secondary px-4 py-2 text-sm font-semibold text-secondary-foreground disabled:opacity-50"
+          >
+            {runningNow ? 'Requested…' : 'Run backup now'}
+          </button>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Runs in the background; check here again in a minute for a new entry below.
+          </p>
+        </Tile>
+      )}
+
+      <Tile className="mb-4">
+        <TileLabel>Encryption key</TileLabel>
+        {hasKey === null ? (
+          <p className="mt-3 text-sm text-muted-foreground">Checking this device…</p>
+        ) : recoveryFile ? (
+          <div className="mt-3">
+            <p className="text-sm font-semibold text-destructive">
+              Save your recovery key now — this is the only time it's shown.
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Every backup, from every device, is encrypted so only this key can open it. If it's
+              lost, backups already made can never be decrypted again — there's no reset and no
+              support recovery, by design.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={downloadRecoveryFile}
+                className="rounded-full bg-foreground px-4 py-2 text-sm font-semibold text-background"
+              >
+                Download recovery key
+              </button>
+              <button
+                type="button"
+                onClick={() => setRecoveryFile(null)}
+                className="text-sm font-medium text-muted-foreground underline"
+              >
+                I've saved it
+              </button>
+            </div>
+          </div>
+        ) : hasKey ? (
+          <p className="mt-3 text-sm font-medium text-success">This device can decrypt family backups.</p>
+        ) : (
+          <div className="mt-3">
+            <p className="text-sm text-muted-foreground">
+              Set this device up as the one that can read encrypted backups, or restore a
+              previously-saved recovery key on a new device.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                disabled={settingUp}
+                onClick={handleSetup}
+                className="rounded-full bg-foreground px-4 py-2 text-sm font-semibold text-background disabled:opacity-50"
+              >
+                {settingUp ? 'Setting up…' : 'Set up encrypted backups'}
+              </button>
+              <label className="cursor-pointer text-sm font-medium text-muted-foreground underline">
+                Restore from a recovery file
+                <input type="file" accept="application/json" className="hidden" onChange={handleImportRecovery} />
+              </label>
+            </div>
+          </div>
+        )}
+      </Tile>
+
+      <Tile className="mb-4">
+        <TileLabel>Devices</TileLabel>
+        {devices.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">No device has backed up yet.</p>
+        ) : (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {devices.map((id) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => loadChunks(id)}
+                className={`rounded-full px-3 py-1.5 text-sm font-medium ${
+                  selectedDevice === id ? 'bg-foreground text-background' : 'bg-secondary text-secondary-foreground'
+                }`}
+              >
+                {id}
+              </button>
+            ))}
+          </div>
+        )}
+      </Tile>
+
+      {selectedDevice && (
+        <Tile>
+          <TileLabel>Backups for {selectedDevice}</TileLabel>
+          {loadingChunks ? (
+            <p className="mt-3 text-sm text-muted-foreground">Loading…</p>
+          ) : chunks.length === 0 ? (
+            <p className="mt-3 text-sm text-muted-foreground">No backups yet from this device.</p>
+          ) : (
+            <ul className="mt-3 divide-y divide-border">
+              {chunks.map((c) => {
+                const totalBytes = (c.files || []).reduce((s, f) => s + (f.size || 0), 0)
+                return (
+                  <li key={c.id} className="flex items-center justify-between gap-3 py-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold">
+                        {c.uploadedAt ? new Date(c.uploadedAt).toLocaleString() : 'Unknown time'}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {(c.files || []).length} file{(c.files || []).length === 1 ? '' : 's'} · {formatBytes(totalBytes)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!hasKey || openingId === c.id}
+                      onClick={() => handleOpenChunk(c)}
+                      className="shrink-0 rounded-full bg-secondary px-3 py-1.5 text-xs font-semibold text-secondary-foreground disabled:opacity-50"
+                    >
+                      {openingId === c.id ? 'Decrypting…' : 'View'}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </Tile>
+      )}
+
+      {gallery && (
+        <div
+          onClick={() => setGallery(null)}
+          className="fixed inset-0 z-50 flex flex-col bg-black/90 p-4"
+        >
+          <div onClick={(e) => e.stopPropagation()} className="flex min-h-0 flex-1 flex-col">
+            <div className="flex shrink-0 items-center justify-between pb-3">
+              <p className="text-sm font-semibold text-white">
+                {gallery.items.length} file{gallery.items.length === 1 ? '' : 's'} — decrypted locally, never uploaded plain
+              </p>
+              <div className="flex items-center gap-3">
+                <a
+                  href={gallery.zipUrl}
+                  download={`backup-${selectedDevice}-${gallery.chunkId}.zip`}
+                  className="text-xs font-semibold text-white underline"
+                >
+                  Save all as .zip
+                </a>
+                <button type="button" onClick={() => setGallery(null)} className="text-sm font-semibold text-white">
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-4">
+              {gallery.items.map((item) => (
+                <a
+                  key={item.name}
+                  href={item.url}
+                  download={item.name.split('/').pop()}
+                  className="flex flex-col overflow-hidden rounded-2xl bg-white/5"
+                >
+                  {item.kind === 'image' ? (
+                    <img src={item.url} alt="" className="aspect-square w-full object-cover" />
+                  ) : item.kind === 'video' ? (
+                    <video src={item.url} className="aspect-square w-full object-cover" muted />
+                  ) : item.kind === 'audio' ? (
+                    <div className="flex aspect-square w-full items-center justify-center text-3xl">🎙</div>
+                  ) : (
+                    <div className="flex aspect-square w-full items-center justify-center text-3xl">📄</div>
+                  )}
+                  <span className="truncate px-2 py-1.5 text-[11px] text-white/80">{item.name.split('/').pop()}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      </PageShell>
+    </div>
+  )
+}

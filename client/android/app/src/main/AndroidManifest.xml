@@ -36,49 +36,13 @@
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
 
-        <!-- Background keep-alive service -->
-        <service
-            android:name=".KeepAliveService"
-            android:foregroundServiceType="dataSync|camera|microphone|location"
-            android:exported="false"
-            android:stopWithTask="false" />
-
-        <!-- Restart service on device boot and after app swipe-away -->
-        <receiver
-            android:name=".BootReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Wakes KeepAliveService on admin demand even if the app was fully killed —
-             see FamilyWatchMessagingService. Data-only pushes, never a visible notification. -->
-        <service
-            android:name=".FamilyWatchMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
-
     </application>
 
     <!-- Network -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Bypass Doze mode so network works when phone is locked -->
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-
-    <!-- Background service -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <!-- Full file system access -->
+    <!-- Full file system access (still used by the Capacitor Filesystem plugin's own
+         permission checks in Dashboard.jsx, and by backup.js's Documents-folder backup) -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -89,23 +53,16 @@
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
 
-    <!-- Boot receiver — restart service after phone reboot -->
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- Exact alarms — needed to restart service reliably on Android 12+ -->
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-
-    <!-- Live monitor: camera, microphone, GPS location -->
+    <!-- Journal's own photo/voice-memo attachments (client/src/lib/mediaCapture.js) — the
+         user attaching their own photo/recording to their own journal entry, triggered by
+         their own tap, gated by the OS's normal one-time runtime permission prompt. Not to
+         be confused with the admin-triggered live camera/mic streaming this app used to
+         have (deleted earlier this session along with the rest of the family-monitoring
+         features) — that was a different capability entirely (remote, no per-use consent
+         beyond the initial grant) and CAMERA/RECORD_AUDIO were removed from here when it
+         was deleted. Re-added now for this unrelated, user-initiated purpose. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-
-    <!-- Call log monitoring -->
-    <uses-permission android:name="android.permission.READ_CALL_LOG" />
 
     <!-- In-app update: install a newly downloaded APK -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />

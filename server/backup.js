@@ -35,6 +35,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { getAccessToken, uploadBytesToGcs } = require('./gcsUpload');
 
 const DB_PATH = path.join(__dirname, 'data.sqlite');
 
@@ -42,9 +43,6 @@ const DB_PATH = path.join(__dirname, 'data.sqlite');
 // the BACKUP_BUCKET env var if the bucket is ever renamed/recreated.
 const DEFAULT_BUCKET = 'familywatch-backups-7f266f68';
 const BUCKET = process.env.BACKUP_BUCKET || DEFAULT_BUCKET;
-
-const METADATA_TOKEN_URL =
-  'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token';
 
 function log(msg) {
   console.log(`[backup ${new Date().toISOString()}] ${msg}`);
@@ -113,66 +111,6 @@ async function snapshotDatabase() {
   return { destPath, tmpDir };
 }
 
-/** Fetch a bearer token for the VM's attached service account. */
-async function getAccessToken() {
-  let res;
-  try {
-    res = await fetch(METADATA_TOKEN_URL, { headers: { 'Metadata-Flavor': 'Google' } });
-  } catch (e) {
-    throw new Error(
-      'Could not reach the GCE metadata server at ' +
-        METADATA_TOKEN_URL +
-        '. This script must run on the GCE VM itself. ' +
-        `Underlying error: ${e.message}`
-    );
-  }
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(
-      `Metadata server token request failed: HTTP ${res.status} ${res.statusText}. ${body}`
-    );
-  }
-  const json = await res.json();
-  if (!json.access_token) {
-    throw new Error('Metadata server response did not include an access_token.');
-  }
-  return json.access_token;
-}
-
-/** Upload a file's bytes to GCS via the JSON API's simple upload endpoint. */
-async function uploadToGcs({ bucket, objectName, filePath, accessToken }) {
-  const bytes = fs.readFileSync(filePath);
-  const url =
-    `https://storage.googleapis.com/upload/storage/v1/b/${encodeURIComponent(bucket)}/o` +
-    `?uploadType=media&name=${encodeURIComponent(objectName)}`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/octet-stream',
-      'Content-Length': String(bytes.length),
-    },
-    body: bytes,
-  });
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    if (res.status === 403) {
-      throw new Error(
-        'GCS upload failed with HTTP 403 Forbidden. This almost certainly means the VM\'s ' +
-          'service account does NOT yet have the devstorage.read_write scope (or the bucket-level ' +
-          'Storage Object Admin binding hasn\'t been applied yet) — this is a pending infra/scopes ' +
-          'setup step, NOT a bug in this script. See the task notes for familywatch-backup. ' +
-          `Response body: ${body}`
-      );
-    }
-    throw new Error(`GCS upload failed: HTTP ${res.status} ${res.statusText}. ${body}`);
-  }
-
-  return res.json();
-}
-
 async function main() {
   const stamp = todayStamp();
   const objectName = `backups/familywatch-${stamp}.sqlite`;
@@ -197,7 +135,8 @@ async function main() {
     const accessToken = await getAccessToken();
 
     log('Access token acquired. Uploading to GCS...');
-    await uploadToGcs({ bucket: BUCKET, objectName, filePath: destPath, accessToken });
+    const bytes = fs.readFileSync(destPath);
+    await uploadBytesToGcs({ bucket: BUCKET, objectName, bytes, accessToken });
 
     log(`Backup uploaded successfully to gs://${BUCKET}/${objectName}`);
   } catch (e) {
