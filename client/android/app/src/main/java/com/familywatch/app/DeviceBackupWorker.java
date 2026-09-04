@@ -86,7 +86,13 @@ public class DeviceBackupWorker extends Worker {
     private static final String NOTIFICATION_CHANNEL_ID = "device_backup";
     private static final int NOTIFICATION_ID = 4821; // arbitrary, just needs to be stable
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
-    private static final long MAX_CHUNK_BYTES = 400L * 1024 * 1024;
+    // Lowered from an earlier 400MB after testing showed a single large chunk's
+    // zip+encrypt+upload cycle could run long enough for the OS (this MIUI device in
+    // particular) to kill the background process mid-operation. Smaller chunks finish
+    // each cycle faster, shrinking that window — a complementary fix alongside the
+    // foreground-service promotion below, not a replacement for it (a single file
+    // already over this cap still gets its own oversized chunk either way).
+    private static final long MAX_CHUNK_BYTES = 20L * 1024 * 1024;
     // Per-run cap, separate from the per-chunk cap above: a device with a huge backlog
     // (seen during testing: 25,000+ pending files, 90+ chunks) would otherwise try to
     // upload everything in one run, which could take hours. Capping each night's run to
@@ -167,13 +173,20 @@ public class DeviceBackupWorker extends Worker {
     // exceed — confirmed during testing: a 371MB chunk started uploading and then just
     // vanished mid-transfer with zero error, exactly matching the OS silently killing an
     // over-time background job. A foreground service removes that limit while visible.
-    private void promoteToForeground() {
+    private void promoteToForeground(String deviceId) {
         try {
             setForegroundAsync(createForegroundInfo("Starting…")).get();
+            Log.d(TAG, "doWork: promoted to foreground service");
+            reportStatus(deviceId, "promoted to foreground service OK");
         } catch (Exception e) {
             // Not fatal — worst case we're back to the ordinary background time limit,
-            // same as before this existed. Still attempt the backup either way.
+            // same as before this existed. Still attempt the backup either way. Reported
+            // (not just logged) since adb hasn't been available for on-device debugging —
+            // without this, a silent failure here would look identical to the upload
+            // itself hanging, which is exactly the ambiguity that motivated this change.
             Log.w(TAG, "doWork: could not promote to foreground service, continuing anyway", e);
+            reportStatus(deviceId, "WARNING: foreground service promotion failed ("
+                + e.getClass().getSimpleName() + ": " + e.getMessage() + "), still attempting backup");
         }
     }
 
@@ -246,7 +259,7 @@ public class DeviceBackupWorker extends Worker {
             // whatever this phone's real connection speed is) — promote before any of
             // that starts, not partway through, since WorkManager's background time
             // budget is already ticking from the moment doWork() was first entered.
-            promoteToForeground();
+            promoteToForeground(deviceId);
 
             BackupManifestDb manifestDb = new BackupManifestDb(getApplicationContext());
             Map<String, BackupManifestDb.Entry> manifest = manifestDb.loadAll();
