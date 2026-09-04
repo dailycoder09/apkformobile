@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.os.Environment;
 import android.util.Base64;
+import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
@@ -64,6 +65,13 @@ public class DeviceBackupWorker extends Worker {
     static final String PREFS = "device_backup_prefs";
     static final String PREF_DEVICE_ID = "device_id";
 
+    // Not wired up anywhere by default — WorkManager jobs run headless with no UI to show
+    // errors, so `adb logcat -s DeviceBackupWorker` is the only way to see what happened
+    // on a real device. Added after multiple silent doWork() failures during testing that
+    // left zero trace anywhere (server logs included, since nothing ever reached the
+    // network call that failed before).
+    private static final String TAG = "DeviceBackupWorker";
+
     private static final String UNIQUE_WORK_NAME = "device-backup-daily";
     private static final String UNIQUE_WORK_NAME_NOW = "device-backup-run-now";
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
@@ -116,37 +124,56 @@ public class DeviceBackupWorker extends Worker {
     @NonNull
     @Override
     public Result doWork() {
+        Log.d(TAG, "doWork: starting");
         try {
             if (!Environment.isExternalStorageManager()) {
                 // Permission not granted yet — nothing readable. Not worth aggressive
                 // retry; WorkManager tries again next period regardless.
+                Log.w(TAG, "doWork: MANAGE_EXTERNAL_STORAGE not granted, skipping run");
                 return Result.success();
             }
 
             String deviceId = getDeviceId();
+            Log.d(TAG, "doWork: deviceId=" + deviceId);
             String backupToken = fetchBackupToken(deviceId);
+            Log.d(TAG, "doWork: fetched backup token");
             PublicKey parentPublicKey = fetchParentPublicKey();
             if (parentPublicKey == null) {
                 // No parent has completed "set up encrypted backups" yet — nothing to
                 // encrypt against, so there is nothing safe to upload.
+                Log.w(TAG, "doWork: no parent public key set up yet, skipping run");
                 return Result.success();
             }
+            Log.d(TAG, "doWork: fetched parent public key");
 
             BackupManifestDb manifestDb = new BackupManifestDb(getApplicationContext());
             Map<String, BackupManifestDb.Entry> manifest = manifestDb.loadAll();
+            Log.d(TAG, "doWork: manifest has " + manifest.size() + " previously-uploaded entries");
 
             File root = Environment.getExternalStorageDirectory();
             List<File> pending = new ArrayList<>();
             for (String folder : TARGET_FOLDERS) {
                 collectPendingFiles(new File(root, folder), root, manifest, pending);
             }
+            Log.d(TAG, "doWork: " + pending.size() + " pending files found across target folders");
 
-            for (List<File> chunkFiles : groupIntoChunks(pending)) {
+            List<List<File>> chunks = groupIntoChunks(pending);
+            Log.d(TAG, "doWork: bin-packed into " + chunks.size() + " chunk(s)");
+            int i = 0;
+            for (List<File> chunkFiles : chunks) {
+                i++;
+                long chunkBytes = 0;
+                for (File f : chunkFiles) chunkBytes += f.length();
+                Log.d(TAG, "doWork: uploading chunk " + i + "/" + chunks.size()
+                    + " (" + chunkFiles.size() + " files, " + chunkBytes + " bytes)");
                 uploadChunk(chunkFiles, root, deviceId, backupToken, parentPublicKey, manifestDb);
+                Log.d(TAG, "doWork: chunk " + i + "/" + chunks.size() + " uploaded successfully");
             }
 
+            Log.d(TAG, "doWork: finished, success");
             return Result.success();
         } catch (Exception e) {
+            Log.e(TAG, "doWork: failed, will retry", e);
             return Result.retry();
         }
     }
@@ -215,11 +242,13 @@ public class DeviceBackupWorker extends Worker {
         File ciphertextFile = null;
         try {
             zipFile = zipFiles(files, root);
+            Log.d(TAG, "uploadChunk: zipped " + files.size() + " files -> " + zipFile.length() + " bytes");
 
             SecretKey aesKey = generateAesKey();
             byte[] iv = new byte[12];
             new SecureRandom().nextBytes(iv);
             ciphertextFile = aesGcmEncrypt(aesKey, iv, zipFile);
+            Log.d(TAG, "uploadChunk: encrypted -> " + ciphertextFile.length() + " bytes");
             byte[] wrappedKey = rsaOaepWrap(parentPublicKey, aesKey);
 
             String chunkId = UUID.randomUUID().toString();
@@ -231,7 +260,9 @@ public class DeviceBackupWorker extends Worker {
                 filesJson.put(entry);
             }
 
+            Log.d(TAG, "uploadChunk: posting chunk " + chunkId);
             postChunk(deviceId, backupToken, chunkId, wrappedKey, iv, filesJson, ciphertextFile);
+            Log.d(TAG, "uploadChunk: post succeeded for chunk " + chunkId);
 
             // Only mark files as backed up AFTER a successful upload — if the request threw,
             // doWork()'s catch returns Result.retry() and these files stay "pending" for the
