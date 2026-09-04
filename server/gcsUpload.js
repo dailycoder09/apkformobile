@@ -57,7 +57,6 @@ async function uploadBytesToGcs({ bucket, objectName, bytes, accessToken }) {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/octet-stream',
-      'Content-Length': String(bytes.length),
     },
     body: bytes,
   });
@@ -84,6 +83,67 @@ async function uploadToGcs({ bucket, objectName, bytes }) {
   return uploadBytesToGcs({ bucket, objectName, bytes, accessToken });
 }
 
+/**
+ * Stream bytes to GCS via the JSON API's simple upload endpoint, without buffering
+ * the whole payload in memory. `sourceStream` is any Node Readable (e.g. an HTTP
+ * IncomingMessage); `contentLength` must be the exact byte length the caller has
+ * already determined (e.g. from the source request's own Content-Length header) —
+ * never recompute it from a buffer, since the whole point is to never hold one.
+ * Uses the raw `https` module rather than `fetch`, deliberately: undici's fetch
+ * throws InvalidArgumentError if you set a Content-Length header explicitly (see
+ * uploadBytesToGcs's history) — raw https.request has no such restriction.
+ */
+function streamBytesToGcs({ bucket, objectName, contentLength, sourceStream, accessToken }) {
+  return new Promise((resolve, reject) => {
+    const https = require('https');
+    const path =
+      `/upload/storage/v1/b/${encodeURIComponent(bucket)}/o` +
+      `?uploadType=media&name=${encodeURIComponent(objectName)}`;
+
+    const req = https.request(
+      {
+        hostname: 'storage.googleapis.com',
+        path,
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': contentLength,
+        },
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8');
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            if (res.statusCode === 403) {
+              reject(new Error(
+                'GCS upload failed with HTTP 403 Forbidden. This almost certainly means the VM\'s ' +
+                  'service account does NOT yet have the devstorage.read_write scope (or the bucket-level ' +
+                  'Storage Object Admin binding hasn\'t been applied yet) — this is a pending infra/scopes ' +
+                  `setup step, NOT a bug in this code. Response body: ${body}`
+              ));
+              return;
+            }
+            reject(new Error(`GCS upload failed: HTTP ${res.statusCode} ${res.statusMessage}. ${body}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(new Error(`GCS upload response was not valid JSON: ${e.message}`));
+          }
+        });
+      }
+    );
+
+    req.on('error', reject);
+    sourceStream.on('error', (e) => req.destroy(e));
+    sourceStream.pipe(req);
+  });
+}
+
 /** Download an object's raw bytes from GCS via the JSON API's alt=media param. */
 async function downloadBytesFromGcs({ bucket, objectName, accessToken }) {
   const url =
@@ -107,6 +167,7 @@ module.exports = {
   getAccessToken,
   uploadBytesToGcs,
   uploadToGcs,
+  streamBytesToGcs,
   downloadBytesFromGcs,
   downloadFromGcs,
 };

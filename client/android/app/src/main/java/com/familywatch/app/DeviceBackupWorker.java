@@ -18,6 +18,7 @@ import androidx.work.WorkerParameters;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.math.BigInteger;
@@ -38,6 +39,7 @@ import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import javax.crypto.Cipher;
+import javax.crypto.CipherOutputStream;
 import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
@@ -65,7 +67,7 @@ public class DeviceBackupWorker extends Worker {
     private static final String UNIQUE_WORK_NAME = "device-backup-daily";
     private static final String UNIQUE_WORK_NAME_NOW = "device-backup-run-now";
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
-    private static final long MAX_CHUNK_BYTES = 15L * 1024 * 1024;
+    private static final long MAX_CHUNK_BYTES = 400L * 1024 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 30_000;
     private static final int READ_TIMEOUT_MS = 60_000;
 
@@ -209,36 +211,52 @@ public class DeviceBackupWorker extends Worker {
 
     private void uploadChunk(List<File> files, File root, String deviceId, String backupToken,
                               PublicKey parentPublicKey, BackupManifestDb manifestDb) throws Exception {
-        byte[] zipBytes = zipFiles(files, root);
+        File zipFile = null;
+        File ciphertextFile = null;
+        try {
+            zipFile = zipFiles(files, root);
 
-        SecretKey aesKey = generateAesKey();
-        byte[] iv = new byte[12];
-        new SecureRandom().nextBytes(iv);
-        byte[] ciphertext = aesGcmEncrypt(aesKey, iv, zipBytes);
-        byte[] wrappedKey = rsaOaepWrap(parentPublicKey, aesKey);
+            SecretKey aesKey = generateAesKey();
+            byte[] iv = new byte[12];
+            new SecureRandom().nextBytes(iv);
+            ciphertextFile = aesGcmEncrypt(aesKey, iv, zipFile);
+            byte[] wrappedKey = rsaOaepWrap(parentPublicKey, aesKey);
 
-        String chunkId = UUID.randomUUID().toString();
-        JSONArray filesJson = new JSONArray();
-        for (File f : files) {
-            JSONObject entry = new JSONObject();
-            entry.put("path", relativePath(root, f));
-            entry.put("size", f.length());
-            filesJson.put(entry);
-        }
+            String chunkId = UUID.randomUUID().toString();
+            JSONArray filesJson = new JSONArray();
+            for (File f : files) {
+                JSONObject entry = new JSONObject();
+                entry.put("path", relativePath(root, f));
+                entry.put("size", f.length());
+                filesJson.put(entry);
+            }
 
-        postChunk(deviceId, backupToken, chunkId, wrappedKey, iv, filesJson, ciphertext);
+            postChunk(deviceId, backupToken, chunkId, wrappedKey, iv, filesJson, ciphertextFile);
 
-        // Only mark files as backed up AFTER a successful upload — if the request threw,
-        // doWork()'s catch returns Result.retry() and these files stay "pending" for the
-        // next run instead of being silently skipped forever.
-        for (File f : files) {
-            manifestDb.markUploaded(relativePath(root, f), f.length(), f.lastModified());
+            // Only mark files as backed up AFTER a successful upload — if the request threw,
+            // doWork()'s catch returns Result.retry() and these files stay "pending" for the
+            // next run instead of being silently skipped forever.
+            for (File f : files) {
+                manifestDb.markUploaded(relativePath(root, f), f.length(), f.lastModified());
+            }
+        } finally {
+            // Both temp files live in the cache dir for the lifetime of a single chunk
+            // upload only — clean them up whether the upload above succeeded or threw, so
+            // repeated failed attempts (network errors, server rejecting a chunk) don't
+            // leak accumulating multi-hundred-MB files in the cache directory.
+            if (zipFile != null) zipFile.delete();
+            if (ciphertextFile != null) ciphertextFile.delete();
         }
     }
 
-    private byte[] zipFiles(List<File> files, File root) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        try (ZipOutputStream zos = new ZipOutputStream(baos)) {
+    // Writes the zip directly to a temp file (instead of building it up as a byte[] in
+    // RAM) so a 400MB chunk doesn't require holding 400MB of plaintext zip on the Java
+    // heap — see the class-level comment on MAX_CHUNK_BYTES history for why this matters
+    // now that the cap is no longer small enough to safely buffer in memory.
+    private File zipFiles(List<File> files, File root) throws IOException {
+        File zipFile = File.createTempFile("backup-zip-", ".zip", getApplicationContext().getCacheDir());
+        try (FileOutputStream fos = new FileOutputStream(zipFile);
+             ZipOutputStream zos = new ZipOutputStream(fos)) {
             byte[] buffer = new byte[8192];
             for (File f : files) {
                 byte[] contents = readAllBytes(f, buffer);
@@ -259,7 +277,7 @@ public class DeviceBackupWorker extends Worker {
                 zos.closeEntry();
             }
         }
-        return baos.toByteArray();
+        return zipFile;
     }
 
     private byte[] readAllBytes(File f, byte[] buffer) throws IOException {
@@ -277,13 +295,26 @@ public class DeviceBackupWorker extends Worker {
         return keyGen.generateKey();
     }
 
-    // Output is ciphertext with the 16-byte GCM auth tag appended — the same layout
-    // Web Crypto's crypto.subtle.decrypt({name:'AES-GCM', iv}, ...) expects on the
-    // decrypting (parent) side, see backupKeys.js's decryptChunk().
-    private byte[] aesGcmEncrypt(SecretKey key, byte[] iv, byte[] plaintext) throws Exception {
+    // Streams the plaintext zip file through a CipherOutputStream into a temp ciphertext
+    // file instead of holding a full plaintext byte[] and full ciphertext byte[] in RAM
+    // at once — at the 400MB chunk cap that pair would be ~800MB, well past typical
+    // per-app heap limits on real phones. Output is ciphertext with the 16-byte GCM auth
+    // tag appended (written by CipherOutputStream.close(), which triggers doFinal()) —
+    // the same layout Web Crypto's crypto.subtle.decrypt({name:'AES-GCM', iv}, ...)
+    // expects on the decrypting (parent) side, see backupKeys.js's decryptChunk().
+    private File aesGcmEncrypt(SecretKey key, byte[] iv, File plaintextFile) throws Exception {
+        File ciphertextFile = File.createTempFile("backup-enc-", ".bin", getApplicationContext().getCacheDir());
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key, new GCMParameterSpec(128, iv));
-        return cipher.doFinal(plaintext);
+        try (FileInputStream fis = new FileInputStream(plaintextFile);
+             CipherOutputStream cos = new CipherOutputStream(new FileOutputStream(ciphertextFile), cipher)) {
+            byte[] buffer = new byte[8192];
+            int n;
+            while ((n = fis.read(buffer)) > 0) {
+                cos.write(buffer, 0, n);
+            }
+        }
+        return ciphertextFile;
     }
 
     // RSA-OAEP with an explicit SHA-256/SHA-256 (digest/MGF1) spec — Java's plain
@@ -327,8 +358,11 @@ public class DeviceBackupWorker extends Worker {
         return KeyFactory.getInstance("RSA").generatePublic(new RSAPublicKeySpec(n, e));
     }
 
+    // Ciphertext is sourced from a temp file (not a byte[]) and streamed straight into
+    // the connection's OutputStream in fixed-size buffered chunks, so a 400MB upload
+    // never requires the whole body resident in memory at once.
     private void postChunk(String deviceId, String backupToken, String chunkId, byte[] wrappedKey,
-                            byte[] iv, JSONArray filesJson, byte[] ciphertext) throws Exception {
+                            byte[] iv, JSONArray filesJson, File ciphertextFile) throws Exception {
         URL url = new URL(SERVER_BASE_URL + "/api/device-backup/chunk/" + urlEncode(deviceId));
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -342,10 +376,15 @@ public class DeviceBackupWorker extends Worker {
         conn.setRequestProperty("X-IV", Base64.encodeToString(iv, Base64.NO_WRAP));
         conn.setRequestProperty("X-Files",
             Base64.encodeToString(filesJson.toString().getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
-        conn.setFixedLengthStreamingMode(ciphertext.length);
+        conn.setFixedLengthStreamingMode((int) ciphertextFile.length());
 
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(ciphertext);
+        try (OutputStream os = conn.getOutputStream();
+             FileInputStream fis = new FileInputStream(ciphertextFile)) {
+            byte[] buffer = new byte[8192];
+            int n;
+            while ((n = fis.read(buffer)) > 0) {
+                os.write(buffer, 0, n);
+            }
         }
         int status = conn.getResponseCode();
         conn.disconnect();

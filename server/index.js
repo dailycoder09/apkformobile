@@ -30,7 +30,7 @@ fs.mkdirSync(PROFILE_PHOTOS_DIR, { recursive: true })
 // surviving something happening to the *child's* device, so a copy that only exists on
 // this one VM's disk isn't much better than not backing up.
 const DEVICE_BACKUP_BUCKET = process.env.BACKUP_BUCKET || 'familywatch-backups-7f266f68'
-const MAX_BACKUP_CHUNK_MB  = 20
+const MAX_BACKUP_CHUNK_MB  = 420
 
 // Stable userIds look like `${seq}-${4 random base36 chars}` (see makeId() below) — or,
 // now that identity is a client-generated device ID (see the 'auth' handler), whatever
@@ -254,41 +254,56 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400); res.end('Missing chunk metadata (chunkId/wrappedKey/iv)'); return
       }
 
-      const bodyChunks = []
-      let total = 0
-      let rejected = false
       const maxBytes = MAX_BACKUP_CHUNK_MB * 1024 * 1024
+      const declaredLength = parseInt(req.headers['content-length'], 10)
+      if (!Number.isInteger(declaredLength) || declaredLength <= 0) {
+        res.writeHead(411); res.end('Content-Length header is required'); return
+      }
+      if (declaredLength > maxBytes) {
+        res.writeHead(413); res.end(`Chunk exceeds ${MAX_BACKUP_CHUNK_MB}MB limit`); return
+      }
 
-      req.on('data', (chunk) => {
+      const objectName = `device-backups/${deviceId}/${chunkId}.enc`
+      try {
+        // Fetch the token BEFORE attaching any listener to `req` — it stays safely paused
+        // (Node buffers incoming bytes internally without loss) for the whole await. If a
+        // 'data' listener attached before this async gap, any bytes arriving during the
+        // metadata-server round trip would be delivered to it and lost forever once the
+        // stream is flowing — already-emitted chunks are never replayed to a listener (or
+        // pipe(), which streamBytesToGcs sets up internally) registered afterward. So the
+        // listener below and the internal pipe() must both attach in the same synchronous
+        // tick as each other, with no `await` in between.
+        const accessToken = await gcsUpload.getAccessToken()
+
+        // Streamed straight through to GCS below (never buffered whole in memory), but we
+        // still guard against a spoofed/understated Content-Length by tracking the actual
+        // bytes seen as they flow through the same `req` stream that's being piped upstream.
+        let total = 0
+        let rejected = false
+        req.on('data', (chunk) => {
+          if (rejected) return
+          total += chunk.length
+          if (total > maxBytes) {
+            rejected = true
+            req.destroy(new Error(`Chunk exceeds ${MAX_BACKUP_CHUNK_MB}MB limit`))
+            if (!res.headersSent) { res.writeHead(413); res.end(`Chunk exceeds ${MAX_BACKUP_CHUNK_MB}MB limit`) }
+          }
+        })
+        req.on('error', () => { if (!res.headersSent) { res.writeHead(500); res.end('Upload error') } })
+
+        await gcsUpload.streamBytesToGcs({
+          bucket: DEVICE_BACKUP_BUCKET, objectName, contentLength: declaredLength, sourceStream: req, accessToken,
+        })
         if (rejected) return
-        total += chunk.length
-        if (total > maxBytes) {
-          rejected = true
-          req.destroy()
-          res.writeHead(413); res.end(`Chunk exceeds ${MAX_BACKUP_CHUNK_MB}MB limit`)
-          return
-        }
-        bodyChunks.push(chunk)
-      })
-
-      req.on('end', async () => {
-        if (rejected) return
-        const bytes = Buffer.concat(bodyChunks)
-        const objectName = `device-backups/${deviceId}/${chunkId}.enc`
-        try {
-          await gcsUpload.uploadToGcs({ bucket: DEVICE_BACKUP_BUCKET, objectName, bytes })
-          store.appendItem(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId, {
-            id: chunkId, wrappedKey, iv, files, uploadedAt: Date.now(),
-          })
-          res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ ok: true }))
-        } catch (e) {
-          console.error('device-backup chunk upload error:', e.message)
-          res.writeHead(502); res.end('Failed to upload chunk to cloud storage')
-        }
-      })
-
-      req.on('error', () => { res.writeHead(500); res.end('Upload error') })
+        store.appendItem(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId, {
+          id: chunkId, wrappedKey, iv, files, uploadedAt: Date.now(),
+        })
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      } catch (e) {
+        console.error('device-backup chunk upload error:', e.message, e.cause || '', e.stack || '')
+        if (!res.headersSent) { res.writeHead(502); res.end('Failed to upload chunk to cloud storage') }
+      }
       return
     }
 
