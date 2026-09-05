@@ -61,10 +61,50 @@ export default function FamilyBackupsScreen({ onHome }) {
   const [loadingChunks, setLoadingChunks] = useState(false)
   const [openingId, setOpeningId] = useState(null)
   const [gallery, setGallery] = useState(null) // { chunkId, items: [{name, url, kind}], zipUrl }
+  const [activeIndex, setActiveIndex] = useState(null) // index into gallery.items for the lightbox
+
+  // "HH:MM" for the <input type="time">, and separate saving/saved UI state — this is
+  // a global setting (one schedule for every child device, same as the parent key),
+  // polled once per day by DeviceBackupWorker.java's doWork() rather than pushed live
+  // (this app has no live channel to a child device — see localTransport.js).
+  const [scheduleTime, setScheduleTime] = useState('02:00')
+  const [savingSchedule, setSavingSchedule] = useState(false)
+  const [scheduleSaved, setScheduleSaved] = useState(false)
 
   useEffect(() => {
     backupKeys.hasBackupPrivateKey().then(setHasKey)
   }, [])
+
+  useEffect(() => {
+    fetch(`${httpBase()}/api/device-backup/schedule`)
+      .then((r) => r.json())
+      .then((d) => {
+        const hh = String(d.hour ?? 2).padStart(2, '0')
+        const mm = String(d.minute ?? 0).padStart(2, '0')
+        setScheduleTime(`${hh}:${mm}`)
+      })
+      .catch(() => {})
+  }, [])
+
+  async function handleSaveSchedule() {
+    const [hh, mm] = scheduleTime.split(':').map(Number)
+    setSavingSchedule(true)
+    setError('')
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/schedule`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hour: hh, minute: mm }),
+      })
+      if (!res.ok) throw new Error('Could not save the backup schedule.')
+      setScheduleSaved(true)
+      setTimeout(() => setScheduleSaved(false), 2000)
+    } catch (e) {
+      setError(e.message || 'Could not save the backup schedule.')
+    } finally {
+      setSavingSchedule(false)
+    }
+  }
 
   useEffect(() => {
     fetch(`${httpBase()}/api/device-backup/devices`)
@@ -188,6 +228,7 @@ export default function FamilyBackupsScreen({ onHome }) {
       const zipUrl = URL.createObjectURL(new Blob([plaintext], { type: 'application/zip' }))
 
       setGallery({ chunkId: chunk.id, items, zipUrl })
+      setActiveIndex(null)
     } catch (e) {
       setError(e.message || 'Decryption failed — wrong recovery key, or the chunk is missing.')
     } finally {
@@ -234,6 +275,31 @@ export default function FamilyBackupsScreen({ onHome }) {
           </p>
         </Tile>
       )}
+
+      <Tile className="mb-4">
+        <TileLabel>Backup schedule</TileLabel>
+        <p className="mt-2 text-sm text-muted-foreground">
+          What time every device should run its nightly backup. Applies to all family
+          devices; a change here takes effect starting from each device's next scheduled
+          run (up to a day to reach a device that isn't opened in the meantime).
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <input
+            type="time"
+            value={scheduleTime}
+            onChange={(e) => setScheduleTime(e.target.value)}
+            className="rounded-full bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground"
+          />
+          <button
+            type="button"
+            disabled={savingSchedule}
+            onClick={handleSaveSchedule}
+            className="rounded-full bg-foreground px-4 py-2 text-sm font-semibold text-background disabled:opacity-50"
+          >
+            {savingSchedule ? 'Saving…' : scheduleSaved ? 'Saved ✓' : 'Save'}
+          </button>
+        </div>
+      </Tile>
 
       <Tile className="mb-4">
         <TileLabel>Encryption key</TileLabel>
@@ -355,7 +421,7 @@ export default function FamilyBackupsScreen({ onHome }) {
 
       {gallery && (
         <div
-          onClick={() => setGallery(null)}
+          onClick={() => { setGallery(null); setActiveIndex(null) }}
           className="fixed inset-0 z-50 flex flex-col bg-black/90 p-4"
         >
           <div onClick={(e) => e.stopPropagation()} className="flex min-h-0 flex-1 flex-col">
@@ -371,18 +437,22 @@ export default function FamilyBackupsScreen({ onHome }) {
                 >
                   Save all as .zip
                 </a>
-                <button type="button" onClick={() => setGallery(null)} className="text-sm font-semibold text-white">
+                <button
+                  type="button"
+                  onClick={() => { setGallery(null); setActiveIndex(null) }}
+                  className="text-sm font-semibold text-white"
+                >
                   Close
                 </button>
               </div>
             </div>
             <div className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto sm:grid-cols-4">
-              {gallery.items.map((item) => (
-                <a
+              {gallery.items.map((item, index) => (
+                <button
                   key={item.name}
-                  href={item.url}
-                  download={item.name.split('/').pop()}
-                  className="flex flex-col overflow-hidden rounded-2xl bg-white/5"
+                  type="button"
+                  onClick={() => setActiveIndex(index)}
+                  className="flex flex-col overflow-hidden rounded-2xl bg-white/5 text-left"
                 >
                   {item.kind === 'image' ? (
                     <img src={item.url} alt="" className="aspect-square w-full object-cover" />
@@ -394,10 +464,78 @@ export default function FamilyBackupsScreen({ onHome }) {
                     <div className="flex aspect-square w-full items-center justify-center text-3xl">📄</div>
                   )}
                   <span className="truncate px-2 py-1.5 text-[11px] text-white/80">{item.name.split('/').pop()}</span>
-                </a>
+                </button>
               ))}
             </div>
           </div>
+
+          {activeIndex !== null && (() => {
+            const item = gallery.items[activeIndex]
+            const atStart = activeIndex === 0
+            const atEnd = activeIndex === gallery.items.length - 1
+            return (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                className="fixed inset-0 z-[60] flex flex-col bg-black p-4"
+              >
+                <div className="flex shrink-0 items-center justify-between pb-3">
+                  <p className="min-w-0 truncate pr-3 text-xs text-white/70">{item.name}</p>
+                  <div className="flex shrink-0 items-center gap-4">
+                    <a href={item.url} download={item.name.split('/').pop()} className="text-sm font-semibold text-white underline">
+                      Download
+                    </a>
+                    <button type="button" onClick={() => setActiveIndex(null)} className="text-sm font-semibold text-white">
+                      Close
+                    </button>
+                  </div>
+                </div>
+                <div className="relative flex min-h-0 flex-1 items-center justify-center">
+                  {!atStart && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveIndex(activeIndex - 1)}
+                      className="absolute left-0 z-10 flex h-12 w-12 items-center justify-center text-3xl text-white/80"
+                      aria-label="Previous"
+                    >
+                      ‹
+                    </button>
+                  )}
+                  {item.kind === 'image' ? (
+                    <img src={item.url} alt="" className="max-h-full max-w-full object-contain" />
+                  ) : item.kind === 'video' ? (
+                    <video src={item.url} controls autoPlay className="max-h-full max-w-full" />
+                  ) : item.kind === 'audio' ? (
+                    <div className="flex w-full max-w-sm flex-col items-center gap-4 text-white">
+                      <span className="text-5xl">🎙</span>
+                      <audio src={item.url} controls autoPlay className="w-full" />
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-3 text-white">
+                      <span className="text-5xl">📄</span>
+                      <p className="text-sm text-white/70">This file type can't be previewed here.</p>
+                      <a
+                        href={item.url}
+                        download={item.name.split('/').pop()}
+                        className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-black"
+                      >
+                        Download this file
+                      </a>
+                    </div>
+                  )}
+                  {!atEnd && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveIndex(activeIndex + 1)}
+                      className="absolute right-0 z-10 flex h-12 w-12 items-center justify-center text-3xl text-white/80"
+                      aria-label="Next"
+                    >
+                      ›
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })()}
         </div>
       )}
       </PageShell>

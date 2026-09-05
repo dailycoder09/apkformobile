@@ -14,12 +14,10 @@ import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
-import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.ForegroundInfo;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
-import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
@@ -57,7 +55,7 @@ import javax.crypto.spec.PSource;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-// Daily background job (see scheduleDaily/onCreate in MainActivity) that backs up new/
+// Daily background job (see scheduleInitial/onCreate in MainActivity) that backs up new/
 // changed files in a fixed set of media folders — Camera/DCIM, Pictures, Movies,
 // Downloads, WhatsApp media — to the family server, end-to-end encrypted so only
 // whoever holds the parent's private key (generated and kept in backupKeys.js, never
@@ -118,25 +116,32 @@ public class DeviceBackupWorker extends Worker {
         super(context, params);
     }
 
-    // Called once from MainActivity.onCreate() — enqueueUniquePeriodicWork with KEEP
-    // means later app launches don't reset/duplicate an already-scheduled job. Note:
-    // KEEP also means a device that already had the OLD (no time-of-day targeting)
-    // version of this schedule registered won't pick up the new 2am-4am window just
-    // from an app update — only a fresh install (or clearing app data) re-anchors it.
-    static void scheduleDaily(Context context) {
+    // Called once from MainActivity.onCreate() — only seeds the chain if nothing is
+    // scheduled yet (KEEP policy: later app launches don't reset/duplicate an
+    // already-scheduled job). Uses a fixed 2:00 default since this runs before the app
+    // has ever fetched the parent's actual configured schedule — doWork()'s own
+    // finally block takes over perpetuating the chain at the real configured time from
+    // the very first run onward (see fetchBackupSchedule/scheduleNext below).
+    static void scheduleInitial(Context context) {
+        scheduleNext(context, 2, 0, ExistingWorkPolicy.KEEP);
+    }
+
+    // Computes the exact delay to the next occurrence of hour:minute (today if it
+    // hasn't passed yet, else tomorrow) and enqueues a single OneTimeWorkRequest for
+    // exactly that delay — no flex window, no approximation, unlike the PeriodicWorkRequest
+    // this replaced (whose flex-window timing had real, acknowledged ambiguity in how
+    // it interacted with an initial delay). Called both by scheduleInitial (once, at
+    // first app launch) and by doWork()'s own finally block (every run, perpetuating
+    // the chain for tomorrow at whatever schedule was just fetched from the server).
+    static void scheduleNext(Context context, int hour, int minute, ExistingWorkPolicy policy) {
         Constraints constraints = new Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
             .setRequiresBatteryNotLow(true)
             .build();
 
-        // WorkManager's periodic API has no "run at this wall-clock time" concept, only
-        // an interval plus an optional flex window (the job may run anytime in the last
-        // `flex` duration of each `interval`) — so the 2am-4am target is achieved by
-        // anchoring the first run to the next 3am via setInitialDelay, then repeating
-        // every 24h with a 2h flex, which keeps every later run inside that same window.
         Calendar target = Calendar.getInstance();
-        target.set(Calendar.HOUR_OF_DAY, 3);
-        target.set(Calendar.MINUTE, 0);
+        target.set(Calendar.HOUR_OF_DAY, hour);
+        target.set(Calendar.MINUTE, minute);
         target.set(Calendar.SECOND, 0);
         target.set(Calendar.MILLISECOND, 0);
         if (target.before(Calendar.getInstance())) {
@@ -144,14 +149,14 @@ public class DeviceBackupWorker extends Worker {
         }
         long initialDelayMs = target.getTimeInMillis() - System.currentTimeMillis();
 
-        PeriodicWorkRequest request = new PeriodicWorkRequest.Builder(
-                DeviceBackupWorker.class, 24, TimeUnit.HOURS, 2, TimeUnit.HOURS)
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
             .setInitialDelay(initialDelayMs, TimeUnit.MILLISECONDS)
             .setConstraints(constraints)
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, PeriodicWorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, OneTimeWorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
             .build();
         WorkManager.getInstance(context)
-            .enqueueUniquePeriodicWork(UNIQUE_WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request);
+            .enqueueUniqueWork(UNIQUE_WORK_NAME, policy, request);
+        Log.d(TAG, "scheduleNext: next run in " + initialDelayMs + "ms (target " + hour + ":" + minute + ")");
     }
 
     // Testing-only escape hatch — WorkManager's periodic schedule has no "run it right
@@ -312,6 +317,18 @@ public class DeviceBackupWorker extends Worker {
             Log.e(TAG, "doWork: failed, will retry", e);
             reportStatus(deviceId, "FAILED: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return Result.retry();
+        } finally {
+            // Always re-anchor tomorrow's run, regardless of how this one ended (clean
+            // finish, early skip, or exception) — this IS the daily schedule now, not
+            // WorkManager's own backoff-retry mechanism (Result.retry() above still
+            // fires that too, but it's harmless: this finally block already re-enqueues
+            // under the same UNIQUE_WORK_NAME with REPLACE, so it just supersedes any
+            // backoff-retry attempt with tomorrow's exact-time run instead). A failed or
+            // capped-out night isn't lost — the manifest already tracks exactly which
+            // files remain pending, so tomorrow's run picks up right where this left off.
+            int[] schedule = fetchBackupSchedule();
+            scheduleNext(getApplicationContext(), schedule[0], schedule[1], ExistingWorkPolicy.REPLACE);
+            Log.d(TAG, "doWork: rescheduled next run for " + schedule[0] + ":" + schedule[1]);
         }
     }
 
@@ -550,6 +567,24 @@ public class DeviceBackupWorker extends Worker {
         JSONObject json = readJson(conn);
         if (json.isNull("publicKeyJwk")) return null;
         return parseRsaPublicKeyJwk(json.getJSONObject("publicKeyJwk"));
+    }
+
+    // {hour, minute} the parent configured from FamilyBackupsScreen.jsx — falls back to
+    // 2:00 on any failure (network hiccup, server briefly down) so the self-rescheduling
+    // chain in doWork()'s finally block never breaks even if this particular call fails.
+    private int[] fetchBackupSchedule() {
+        try {
+            HttpURLConnection conn = openGet("/api/device-backup/schedule");
+            JSONObject json = readJson(conn);
+            int hour = json.optInt("hour", 2);
+            int minute = json.optInt("minute", 0);
+            if (hour < 0 || hour > 23) hour = 2;
+            if (minute < 0 || minute > 59) minute = 0;
+            return new int[]{hour, minute};
+        } catch (Exception e) {
+            Log.w(TAG, "fetchBackupSchedule: failed, defaulting to 2:00", e);
+            return new int[]{2, 0};
+        }
     }
 
     // Parses the RSA public key JWK exported by backupKeys.js's generateBackupKeypair()

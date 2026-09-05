@@ -454,6 +454,56 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
+    // ── Device-backup schedule (parent sets what time the daily backup should run) ────
+    // Same global-setting-by-id pattern as parent-key just above, reusing the same
+    // table — DeviceBackupWorker.java polls this once per run (no live push channel to
+    // a child device exists) and re-anchors its own self-rescheduling chain to it, so a
+    // change here takes effect starting from the child's next scheduled run.
+    if (req.method === 'POST' && urlPath === '/api/device-backup/schedule') {
+      const bodyChunks = []
+      let total = 0
+      let rejected = false
+      req.on('data', (chunk) => {
+        if (rejected) return
+        total += chunk.length
+        if (total > 4 * 1024) {
+          rejected = true
+          req.destroy()
+          res.writeHead(413); res.end('Body too large')
+          return
+        }
+        bodyChunks.push(chunk)
+      })
+      req.on('end', () => {
+        if (rejected) return
+        let parsed
+        try {
+          parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8'))
+        } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return
+        }
+        const hour = parseInt(parsed.hour, 10)
+        const minute = parseInt(parsed.minute, 10)
+        if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+          res.writeHead(400); res.end('hour must be 0-23 and minute 0-59'); return
+        }
+        const record = { hour, minute, updatedAt: Date.now() }
+        const updated = store.updateItem(store.TABLES.DEVICE_BACKUP_KEYS, 'global', 'backup_schedule', record)
+        if (!updated) store.appendItem(store.TABLES.DEVICE_BACKUP_KEYS, 'global', { id: 'backup_schedule', ...record })
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      })
+      req.on('error', () => { res.writeHead(500); res.end('Upload error') })
+      return
+    }
+
+    if (req.method === 'GET' && urlPath === '/api/device-backup/schedule') {
+      const record = store.getList(store.TABLES.DEVICE_BACKUP_KEYS, 'global').find(r => r.id === 'backup_schedule')
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ hour: record?.hour ?? 2, minute: record?.minute ?? 0 }))
+      return
+    }
+
     // ── Device-backup restore browsing (parent's FamilyBackupsScreen) ─────────────────
     // `devices` is kept in the response (unchanged shape, callers relying on it still
     // work) alongside a new `deviceIds`-shaped-but-richer array carrying each device's

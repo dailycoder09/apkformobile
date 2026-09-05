@@ -20,7 +20,7 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
         requestAllFilesAccess();
         registerNativeBridge();
-        DeviceBackupWorker.scheduleDaily(getApplicationContext());
+        DeviceBackupWorker.scheduleInitial(getApplicationContext());
     }
 
     @Override
