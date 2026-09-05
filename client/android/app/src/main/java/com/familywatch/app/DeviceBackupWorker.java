@@ -19,6 +19,7 @@ import androidx.work.ExistingWorkPolicy;
 import androidx.work.ForegroundInfo;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
+import androidx.work.OutOfQuotaPolicy;
 import androidx.work.WorkManager;
 import androidx.work.Worker;
 import androidx.work.WorkerParameters;
@@ -83,7 +84,17 @@ public class DeviceBackupWorker extends Worker {
     private static final String UNIQUE_WORK_NAME = "device-backup-daily";
     private static final String UNIQUE_WORK_NAME_NOW = "device-backup-run-now";
     private static final String UNIQUE_WORK_NAME_SYNC = "device-backup-sync-schedule";
+    private static final String UNIQUE_WORK_NAME_EXPEDITED = "device-backup-expedited";
     private static final String INPUT_SCHEDULE_ONLY = "schedule_only";
+    // WorkManager forbids combining setExpedited() with setInitialDelay() on the same
+    // request, but setExpedited() is what grants the OS exemption needed to reliably
+    // call setForegroundAsync() when the app isn't currently visible — confirmed
+    // necessary via a real ForegroundServiceStartNotAllowedException on an actually-
+    // scheduled, unattended run during testing (manually-triggered runs worked fine,
+    // since the app was recently visible then). So scheduleNext()'s delayed request
+    // only carries this flag and, when it fires, immediately hands off to a second,
+    // separate expedited request (no delay) that does the real backup work.
+    private static final String INPUT_TRIGGER_ONLY = "trigger_only";
     private static final String NOTIFICATION_CHANNEL_ID = "device_backup";
     private static final int NOTIFICATION_ID = 4821; // arbitrary, just needs to be stable
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
@@ -152,7 +163,12 @@ public class DeviceBackupWorker extends Worker {
         }
         long initialDelayMs = target.getTimeInMillis() - System.currentTimeMillis();
 
+        // This request only carries INPUT_TRIGGER_ONLY — it cannot also be setExpedited()
+        // (WorkManager forbids that combination with setInitialDelay), so it does nothing
+        // but hand off to a real expedited request the moment it fires. See
+        // INPUT_TRIGGER_ONLY's own comment and triggerExpeditedBackup() below.
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setInputData(new Data.Builder().putBoolean(INPUT_TRIGGER_ONLY, true).build())
             .setInitialDelay(initialDelayMs, TimeUnit.MILLISECONDS)
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, OneTimeWorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
@@ -162,13 +178,39 @@ public class DeviceBackupWorker extends Worker {
         Log.d(TAG, "scheduleNext: next run in " + initialDelayMs + "ms (target " + hour + ":" + minute + ")");
     }
 
+    // Fires when scheduleNext()'s delayed trigger elapses — immediately enqueues the
+    // real backup as a separate expedited request (no delay, so setExpedited() is
+    // allowed) and returns right away. Expedited status is what lets the real run's
+    // promoteToForeground() succeed even though the app isn't currently visible.
+    // Same constraints (unmetered network, battery not low) as the trigger itself,
+    // preserved here since the trigger's own constraints don't carry over.
+    private void triggerExpeditedBackup() {
+        Constraints constraints = new Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.UNMETERED)
+            .setRequiresBatteryNotLow(true)
+            .build();
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .setConstraints(constraints)
+            .build();
+        WorkManager.getInstance(getApplicationContext())
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_EXPEDITED, ExistingWorkPolicy.REPLACE, request);
+        Log.d(TAG, "triggerExpeditedBackup: handed off to expedited work");
+    }
+
     // Testing-only escape hatch — WorkManager's periodic schedule has no "run it right
     // now" trigger, and waiting a real 24h to find out if a change works isn't
     // practical. No network/battery constraints on purpose: a manually-requested test
     // run should run immediately regardless of Wi-Fi/charging state, unlike the real
     // daily schedule. Exposed to JS via MainActivity's MeeeeNative.runBackupNow().
+    // Expedited for the same reason as the real schedule's trigger hand-off — even a
+    // manual run isn't guaranteed to still count as "recently visible" by the time it
+    // actually executes (e.g. the person taps the button then immediately backgrounds
+    // the app), so promoteToForeground() needs the same OS exemption to be reliable.
     static void runNow(Context context) {
-        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class).build();
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .build();
         WorkManager.getInstance(context)
             .enqueueUniqueWork(UNIQUE_WORK_NAME_NOW, ExistingWorkPolicy.REPLACE, request);
     }
@@ -254,6 +296,16 @@ public class DeviceBackupWorker extends Worker {
     @Override
     public Result doWork() {
         Log.d(TAG, "doWork: starting");
+
+        if (getInputData().getBoolean(INPUT_TRIGGER_ONLY, false)) {
+            // The exact-time delayed request fired — hand off to a real expedited
+            // request immediately (see triggerExpeditedBackup()'s own comment for why
+            // this two-step hand-off exists) and return right away; this execution does
+            // nothing else.
+            Log.d(TAG, "doWork: trigger fired, handing off to expedited work");
+            triggerExpeditedBackup();
+            return Result.success();
+        }
 
         if (getInputData().getBoolean(INPUT_SCHEDULE_ONLY, false)) {
             // Lightweight path from syncScheduleNow() — just re-check the schedule and
@@ -343,8 +395,13 @@ public class DeviceBackupWorker extends Worker {
                 reportStatus(deviceId, "chunk " + i + "/" + chunks.size() + " uploaded successfully");
             }
 
-            Log.d(TAG, "doWork: finished, success (" + totalUploadedThisRun + " bytes uploaded this run)");
-            reportStatus(deviceId, "finished, success (" + totalUploadedThisRun + " bytes uploaded this run)");
+            // Reaching here (not the per-run-cap break above) means every chunk that was
+            // pending at the start of this run got uploaded — nothing deferred, though a
+            // fresh scan next run could of course find new files that appeared since.
+            Log.d(TAG, "doWork: finished, success — all " + chunks.size() + " chunk(s) uploaded ("
+                + totalUploadedThisRun + " bytes this run), nothing deferred");
+            reportStatus(deviceId, "finished, success — all " + chunks.size() + " chunk(s) uploaded ("
+                + totalUploadedThisRun + " bytes this run), nothing deferred");
             return Result.success();
         } catch (Exception e) {
             Log.e(TAG, "doWork: failed, will retry", e);
@@ -490,34 +547,38 @@ public class DeviceBackupWorker extends Worker {
              ZipOutputStream zos = new ZipOutputStream(fos)) {
             byte[] buffer = new byte[8192];
             for (File f : files) {
-                byte[] contents = readAllBytes(f, buffer);
                 // STORED (uncompressed), not the default DEFLATED — the photos/videos this
                 // backs up are already-compressed formats where DEFLATE buys almost nothing,
                 // and STORED means the parent's browser can read a file back out by just
                 // slicing raw bytes at a known offset (see FamilyBackupsScreen.jsx's
                 // readStoredZip()) with zero decompression library needed client-side.
+                // STORED entries require size/CRC known upfront (unlike DEFLATED, which
+                // can use a trailing data descriptor) — computed via a first streaming
+                // pass below rather than reading the whole file into a byte[], which for
+                // a single large file (a ~238MB video crashed with an OutOfMemoryError
+                // during real testing — doWork()'s catch only catches Exception, not
+                // Error, so it vanished with zero logged exception) could easily exceed
+                // a typical Android app's default heap limit.
+                long size = f.length();
+                CRC32 crc = new CRC32();
+                try (FileInputStream fis = new FileInputStream(f)) {
+                    int n;
+                    while ((n = fis.read(buffer)) > 0) crc.update(buffer, 0, n);
+                }
                 ZipEntry entry = new ZipEntry(relativePath(root, f));
                 entry.setMethod(ZipEntry.STORED);
-                entry.setSize(contents.length);
-                entry.setCompressedSize(contents.length);
-                CRC32 crc = new CRC32();
-                crc.update(contents);
+                entry.setSize(size);
+                entry.setCompressedSize(size);
                 entry.setCrc(crc.getValue());
                 zos.putNextEntry(entry);
-                zos.write(contents);
+                try (FileInputStream fis = new FileInputStream(f)) {
+                    int n;
+                    while ((n = fis.read(buffer)) > 0) zos.write(buffer, 0, n);
+                }
                 zos.closeEntry();
             }
         }
         return zipFile;
-    }
-
-    private byte[] readAllBytes(File f, byte[] buffer) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream((int) Math.max(f.length(), 16));
-        try (FileInputStream fis = new FileInputStream(f)) {
-            int n;
-            while ((n = fis.read(buffer)) > 0) out.write(buffer, 0, n);
-        }
-        return out.toByteArray();
     }
 
     private SecretKey generateAesKey() throws Exception {
