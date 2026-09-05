@@ -112,6 +112,18 @@ public class DeviceBackupWorker extends Worker {
     // fit is simply still "pending" in the manifest afterward, so the next night's run
     // naturally picks up right where this one stopped — no separate resume logic needed.
     private static final long MAX_TOTAL_BYTES_PER_RUN = 500L * 1024 * 1024;
+    // Temporary cap on any SINGLE file, separate from MAX_CHUNK_BYTES (which just bin-
+    // packs multiple normal-sized files together — a lone file already over that cap
+    // gets its own chunk regardless of size). A file over this limit is skipped for now
+    // rather than attempted as one giant chunk — not because it can't work (the OOM
+    // crash, foreground-service exception, and self-cancelling-run bugs that made large
+    // single files unreliable are all fixed), but as a deliberate short-term choice
+    // while a proper fix (splitting one large file across multiple normal-sized chunks,
+    // reassembled on the parent's decrypt/view side) is still to be built. Skipped files
+    // stay "pending" forever (never marked uploaded) so they're picked up automatically,
+    // with zero extra logic, the moment this cap is raised or removed — and every run
+    // reports how many/which were skipped, so this is a visible gap, not a silent one.
+    private static final long MAX_SINGLE_FILE_BYTES = 200L * 1024 * 1024;
     private static final int CONNECT_TIMEOUT_MS = 30_000;
     private static final int READ_TIMEOUT_MS = 60_000;
 
@@ -195,8 +207,14 @@ public class DeviceBackupWorker extends Worker {
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .setConstraints(constraints)
             .build();
+        // KEEP, not REPLACE — confirmed via real testing that REPLACE cancels an
+        // already-running backup outright the moment a new trigger fires (e.g. a large
+        // file's upload got cut off mid-transfer this way when a subsequent scheduled
+        // occurrence landed while the previous run was still active). A run in progress
+        // should be left alone; it reschedules the next occurrence itself when it
+        // finishes anyway, via doWork()'s own finally block.
         WorkManager.getInstance(getApplicationContext())
-            .enqueueUniqueWork(UNIQUE_WORK_NAME_EXPEDITED, ExistingWorkPolicy.REPLACE, request);
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_EXPEDITED, ExistingWorkPolicy.KEEP, request);
         Log.d(TAG, "triggerExpeditedBackup: handed off to expedited work");
     }
 
@@ -374,10 +392,22 @@ public class DeviceBackupWorker extends Worker {
 
             File root = Environment.getExternalStorageDirectory();
             List<File> pending = new ArrayList<>();
+            List<File> skippedTooLarge = new ArrayList<>();
             for (String folder : TARGET_FOLDERS) {
-                collectPendingFiles(new File(root, folder), root, manifest, pending);
+                collectPendingFiles(new File(root, folder), root, manifest, pending, skippedTooLarge);
             }
             Log.d(TAG, "doWork: " + pending.size() + " pending files found across target folders");
+            if (!skippedTooLarge.isEmpty()) {
+                // Not marked uploaded, so these stay "pending" and get retried (and
+                // re-reported) every run until MAX_SINGLE_FILE_BYTES is raised/removed —
+                // a deliberately visible, recurring signal rather than a silent gap.
+                long skippedBytes = 0;
+                for (File f : skippedTooLarge) skippedBytes += f.length();
+                Log.w(TAG, "doWork: " + skippedTooLarge.size() + " file(s) skipped, over the "
+                    + MAX_SINGLE_FILE_BYTES + " byte single-file cap (" + skippedBytes + " bytes total)");
+                reportStatus(deviceId, skippedTooLarge.size() + " file(s) skipped (over "
+                    + (MAX_SINGLE_FILE_BYTES / (1024 * 1024)) + "MB cap, " + skippedBytes + " bytes total)");
+            }
 
             List<List<File>> chunks = groupIntoChunks(pending);
             Log.d(TAG, "doWork: bin-packed into " + chunks.size() + " chunk(s)");
@@ -466,17 +496,22 @@ public class DeviceBackupWorker extends Worker {
 
     // ── Manifest diffing ─────────────────────────────────────────────────────────────
 
-    private void collectPendingFiles(File dir, File root, Map<String, BackupManifestDb.Entry> manifest, List<File> out) {
+    private void collectPendingFiles(File dir, File root, Map<String, BackupManifestDb.Entry> manifest,
+                                      List<File> out, List<File> skippedTooLarge) {
         if (!dir.isDirectory()) return;
         File[] children = dir.listFiles();
         if (children == null) return;
         for (File f : children) {
             if (f.isDirectory()) {
-                collectPendingFiles(f, root, manifest, out);
+                collectPendingFiles(f, root, manifest, out, skippedTooLarge);
             } else if (f.isFile()) {
                 String relativePath = relativePath(root, f);
                 if (!BackupManifestDb.isUnchanged(manifest, relativePath, f)) {
-                    out.add(f);
+                    if (f.length() > MAX_SINGLE_FILE_BYTES) {
+                        skippedTooLarge.add(f);
+                    } else {
+                        out.add(f);
+                    }
                 }
             }
         }
