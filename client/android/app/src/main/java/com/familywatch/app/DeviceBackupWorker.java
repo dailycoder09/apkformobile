@@ -182,12 +182,14 @@ public class DeviceBackupWorker extends Worker {
     // real backup as a separate expedited request (no delay, so setExpedited() is
     // allowed) and returns right away. Expedited status is what lets the real run's
     // promoteToForeground() succeed even though the app isn't currently visible.
-    // Same constraints (unmetered network, battery not low) as the trigger itself,
-    // preserved here since the trigger's own constraints don't carry over.
+    // Network constraint only — confirmed via a real IllegalArgumentException during
+    // testing ("Expedited jobs only support network and storage constraints") that
+    // setRequiresBatteryNotLow() (used on the plain delayed trigger in scheduleNext) is
+    // NOT allowed on an expedited request. The battery check already happened once, on
+    // the trigger that led here, so dropping it here isn't a meaningful gap.
     private void triggerExpeditedBackup() {
         Constraints constraints = new Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
-            .setRequiresBatteryNotLow(true)
             .build();
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
