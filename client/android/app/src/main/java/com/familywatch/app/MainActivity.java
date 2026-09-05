@@ -21,6 +21,11 @@ public class MainActivity extends BridgeActivity {
         requestAllFilesAccess();
         registerNativeBridge();
         DeviceBackupWorker.scheduleInitial(getApplicationContext());
+        // Lightweight — re-checks the parent's configured schedule on every app open and
+        // re-anchors the daily chain if it changed, without running an actual backup.
+        // The only realistic way to propagate a schedule change to this device at all,
+        // given there's no live push channel to it (see DeviceBackupWorker.syncScheduleNow).
+        DeviceBackupWorker.syncScheduleNow(getApplicationContext());
     }
 
     @Override

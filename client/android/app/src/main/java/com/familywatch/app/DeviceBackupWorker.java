@@ -14,6 +14,7 @@ import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
 import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
+import androidx.work.Data;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.ForegroundInfo;
 import androidx.work.NetworkType;
@@ -81,6 +82,8 @@ public class DeviceBackupWorker extends Worker {
 
     private static final String UNIQUE_WORK_NAME = "device-backup-daily";
     private static final String UNIQUE_WORK_NAME_NOW = "device-backup-run-now";
+    private static final String UNIQUE_WORK_NAME_SYNC = "device-backup-sync-schedule";
+    private static final String INPUT_SCHEDULE_ONLY = "schedule_only";
     private static final String NOTIFICATION_CHANNEL_ID = "device_backup";
     private static final int NOTIFICATION_ID = 4821; // arbitrary, just needs to be stable
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
@@ -170,6 +173,24 @@ public class DeviceBackupWorker extends Worker {
             .enqueueUniqueWork(UNIQUE_WORK_NAME_NOW, ExistingWorkPolicy.REPLACE, request);
     }
 
+    // Called from MainActivity.onCreate() on every app launch — a lightweight, network-
+    // only check for whether the parent changed the backup schedule since last time,
+    // WITHOUT running an actual backup. There is no live channel to push a schedule
+    // change to a child device (see localTransport.js — this app fakes all messaging
+    // locally), so simply opening the app on the child's phone is the only realistic way
+    // to prompt it to re-check — much lighter than requiring a full "Run backup now"
+    // (which was the only way to force this before, and does a real file scan/upload as
+    // an unwanted side effect just to pick up a time change). doWork() checks
+    // INPUT_SCHEDULE_ONLY at the very top and, if set, skips straight to re-fetching the
+    // schedule and re-anchoring UNIQUE_WORK_NAME's chain, doing nothing else.
+    static void syncScheduleNow(Context context) {
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setInputData(new Data.Builder().putBoolean(INPUT_SCHEDULE_ONLY, true).build())
+            .build();
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_SYNC, ExistingWorkPolicy.REPLACE, request);
+    }
+
     // Promotes this Worker to a foreground service (a visible "Backing up..."
     // notification) for as long as it runs — the same mechanism WhatsApp/Google Photos
     // use for their own media backups. Without this, WorkManager enforces roughly a
@@ -233,6 +254,18 @@ public class DeviceBackupWorker extends Worker {
     @Override
     public Result doWork() {
         Log.d(TAG, "doWork: starting");
+
+        if (getInputData().getBoolean(INPUT_SCHEDULE_ONLY, false)) {
+            // Lightweight path from syncScheduleNow() — just re-check the schedule and
+            // re-anchor the daily chain (UNIQUE_WORK_NAME), no file scan/upload, no
+            // permission check needed. fetchBackupSchedule() already catches its own
+            // exceptions internally (falls back to 2:00), so no try/catch needed here.
+            int[] schedule = fetchBackupSchedule();
+            scheduleNext(getApplicationContext(), schedule[0], schedule[1], ExistingWorkPolicy.REPLACE);
+            Log.d(TAG, "doWork: schedule-only sync, rescheduled next run for " + schedule[0] + ":" + schedule[1]);
+            return Result.success();
+        }
+
         // Declared outside the try so the catch block below can still report a failure
         // against this device's id even if the exception happened partway through.
         String deviceId = getDeviceId();
