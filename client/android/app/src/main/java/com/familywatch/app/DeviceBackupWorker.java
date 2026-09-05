@@ -301,9 +301,24 @@ public class DeviceBackupWorker extends Worker {
             // The exact-time delayed request fired — hand off to a real expedited
             // request immediately (see triggerExpeditedBackup()'s own comment for why
             // this two-step hand-off exists) and return right away; this execution does
-            // nothing else.
+            // nothing else. Wrapped in try/catch (unlike before) because a prior version
+            // of this call site had no exception handling at all — if setExpedited()'s
+            // WorkRequest construction ever throws, it would propagate uncaught with
+            // zero logged reason, indistinguishable from the expedited work silently
+            // never starting. reportStatus() here so this is visible from server logs
+            // too, not just adb (which already missed this exact failure once).
+            String deviceId = getDeviceId();
             Log.d(TAG, "doWork: trigger fired, handing off to expedited work");
-            triggerExpeditedBackup();
+            reportStatus(deviceId, "trigger fired, handing off to expedited work");
+            try {
+                triggerExpeditedBackup();
+                reportStatus(deviceId, "expedited work enqueued OK");
+            } catch (Exception e) {
+                Log.e(TAG, "doWork: triggerExpeditedBackup failed", e);
+                reportStatus(deviceId, "FAILED to hand off to expedited work: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+                return Result.retry();
+            }
             return Result.success();
         }
 
