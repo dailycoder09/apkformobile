@@ -82,6 +82,7 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
   const [chunks, setChunks] = useState([])
   const [loadingChunks, setLoadingChunks] = useState(false)
   const [openingId, setOpeningId] = useState(null)
+  const [failedChunk, setFailedChunk] = useState(null) // the chunk whose last View attempt failed to decrypt
   const [gallery, setGallery] = useState(null) // { chunkId, items: [{name, url, kind}], zipUrl }
   const [activeIndex, setActiveIndex] = useState(null) // index into gallery.items for the lightbox
 
@@ -352,9 +353,14 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
     }
   }
 
-  async function handleOpenChunk(chunk) {
+  // overrideKeyJwk lets a chunk be decrypted with a recovery-file key picked ad hoc
+  // (see handleRetryWithFile below) instead of whatever is currently stored in this
+  // browser — used when a backup was made under an older key than the one currently
+  // set up, without overwriting that current key just to look at one old backup.
+  async function handleOpenChunk(chunk, overrideKeyJwk) {
     setOpeningId(chunk.id)
     setError('')
+    if (!overrideKeyJwk) setFailedChunk(null)
     try {
       const ownDeviceId = await getDeviceId()
       const pairRes = await fetch(`${httpBase()}/api/device-backup/pair/${encodeURIComponent(ownDeviceId)}`)
@@ -368,7 +374,9 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
       if (!res.ok) throw new Error('Could not fetch this backup from cloud storage.')
       const ciphertext = await res.arrayBuffer()
 
-      const aesKey = await backupKeys.unwrapChunkKey(chunk.wrappedKey)
+      const aesKey = overrideKeyJwk
+        ? await backupKeys.unwrapChunkKeyWithJwk(overrideKeyJwk, chunk.wrappedKey)
+        : await backupKeys.unwrapChunkKey(chunk.wrappedKey)
       const plaintext = await backupKeys.decryptChunk({ ciphertext, ivBase64: chunk.iv, aesKey })
 
       const entries = readStoredZipEntries(plaintext)
@@ -381,10 +389,36 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
 
       setGallery({ chunkId: chunk.id, items, zipUrl })
       setActiveIndex(null)
+      setFailedChunk(null)
     } catch (e) {
       setError(e.message || 'Decryption failed — wrong recovery key, or the chunk is missing.')
+      // Offer the "try a different recovery file" option right on this chunk, rather
+      // than only in the global Encryption key section — the whole point is to check
+      // one specific backup against a different key without disturbing the one
+      // currently set up for everything else.
+      setFailedChunk(chunk)
     } finally {
       setOpeningId(null)
+    }
+  }
+
+  // Reads a recovery-file JSON picked from disk and retries decrypting the SAME chunk
+  // with just that key, in memory only — never written to IndexedDB, so the browser
+  // own day-to-day key (used for every other backup) is left untouched.
+  async function handleRetryWithFile(e) {
+    const file = e.target.files?.[0]
+    const chunk = failedChunk
+    e.target.value = ''
+    if (!file || !chunk) return
+    try {
+      const parsed = JSON.parse(await file.text())
+      if (parsed?.kind !== 'meeee-backup-recovery-key' || !parsed.privateKeyJwk) {
+        throw new Error('This file is not a valid backup recovery key.')
+      }
+      await handleOpenChunk(chunk, parsed.privateKeyJwk)
+    } catch (err) {
+      setError(err.message || 'Could not use this recovery file.')
+      setFailedChunk(chunk)
     }
   }
 
@@ -620,23 +654,39 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
               {chunks.map((c) => {
                 const totalBytes = (c.files || []).reduce((s, f) => s + (f.size || 0), 0)
                 return (
-                  <li key={c.id} className="flex items-center justify-between gap-3 py-3">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold">
-                        {c.uploadedAt ? new Date(c.uploadedAt).toLocaleString() : 'Unknown time'}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {(c.files || []).length} file{(c.files || []).length === 1 ? '' : 's'} · {formatBytes(totalBytes)}
-                      </p>
+                  <li key={c.id} className="py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">
+                          {c.uploadedAt ? new Date(c.uploadedAt).toLocaleString() : 'Unknown time'}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {(c.files || []).length} file{(c.files || []).length === 1 ? '' : 's'} · {formatBytes(totalBytes)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!hasKey || openingId === c.id}
+                        onClick={() => handleOpenChunk(c)}
+                        className="shrink-0 rounded-full bg-secondary px-3 py-1.5 text-xs font-semibold text-secondary-foreground disabled:opacity-50"
+                      >
+                        {openingId === c.id ? 'Decrypting…' : 'View'}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      disabled={!hasKey || openingId === c.id}
-                      onClick={() => handleOpenChunk(c)}
-                      className="shrink-0 rounded-full bg-secondary px-3 py-1.5 text-xs font-semibold text-secondary-foreground disabled:opacity-50"
-                    >
-                      {openingId === c.id ? 'Decrypting…' : 'View'}
-                    </button>
+                    {failedChunk?.id === c.id && (
+                      <div className="mt-2 flex items-center gap-2 text-xs">
+                        <span className="text-muted-foreground">Made with a different key?</span>
+                        <label className="cursor-pointer font-semibold text-foreground underline">
+                          Try another recovery file
+                          <input
+                            type="file"
+                            accept="application/json"
+                            onChange={handleRetryWithFile}
+                            className="hidden"
+                          />
+                        </label>
+                      </div>
+                    )}
                   </li>
                 )
               })}

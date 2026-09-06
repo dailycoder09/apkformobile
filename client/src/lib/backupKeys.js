@@ -114,6 +114,26 @@ async function loadPrivateKey() {
  */
 export async function unwrapChunkKey(wrappedKeyBase64) {
   const privateKey = await loadPrivateKey()
+  return unwrapChunkKeyWithPrivateKey(privateKey, wrappedKeyBase64)
+}
+
+/**
+ * Same as unwrapChunkKey(), but for a private key JWK supplied ad hoc (e.g. the
+ * contents of an older recovery file picked from disk right before viewing one
+ * backup) instead of whatever is currently stored in this browser's IndexedDB.
+ * Nothing here is persisted — this exists specifically so a parent who has ended
+ * up with more than one key over time (e.g. one generated during local testing,
+ * one on production) can view backups made under an older key without overwriting
+ * whichever key is their current day-to-day one. Throws the same
+ * OperationError-style failure as unwrapChunkKey() if the supplied key is also
+ * wrong for this particular chunk.
+ */
+export async function unwrapChunkKeyWithJwk(privateKeyJwk, wrappedKeyBase64) {
+  const privateKey = await crypto.subtle.importKey('jwk', privateKeyJwk, RSA_PARAMS, false, ['unwrapKey', 'decrypt'])
+  return unwrapChunkKeyWithPrivateKey(privateKey, wrappedKeyBase64)
+}
+
+async function unwrapChunkKeyWithPrivateKey(privateKey, wrappedKeyBase64) {
   const wrappedBytes = base64ToBytes(wrappedKeyBase64)
   const rawKey = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, privateKey, wrappedBytes)
   return crypto.subtle.importKey('raw', rawKey, { name: 'AES-GCM' }, false, ['decrypt'])
