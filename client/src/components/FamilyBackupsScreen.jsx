@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
 import { PageShell, Tile, TileLabel } from './PageShell'
 import { getDeviceId } from '../lib/localData'
@@ -38,6 +38,37 @@ function formatLastSeen(lastSeenAt) {
   if (hours < 24) return `${hours}h ago`
   const days = Math.floor(hours / 24)
   return `${days}d ago`
+}
+
+// Groups the flat {path,size,mtime} inventory list (see server's /file-report route)
+// into the immediate children of one breadcrumb level — folders (aggregated size +
+// file count across everything beneath them) and files, both alphabetical, folders
+// first. Pure client-side grouping over the already-fetched flat list; no per-folder
+// fetch needed, since the whole inventory was already retrieved in one call.
+function computeTreeLevel(entries, pathSegments) {
+  const prefix = pathSegments.length ? pathSegments.join('/') + '/' : ''
+  const folderMap = new Map()
+  const files = []
+  for (const entry of entries) {
+    if (prefix && !entry.path.startsWith(prefix)) continue
+    const rest = entry.path.slice(prefix.length)
+    if (!rest) continue
+    const slashIdx = rest.indexOf('/')
+    if (slashIdx === -1) {
+      files.push({ name: rest, size: entry.size || 0, mtime: entry.mtime })
+    } else {
+      const folderName = rest.slice(0, slashIdx)
+      const agg = folderMap.get(folderName) || { size: 0, count: 0 }
+      agg.size += entry.size || 0
+      agg.count += 1
+      folderMap.set(folderName, agg)
+    }
+  }
+  const folders = Array.from(folderMap.entries())
+    .map(([name, agg]) => ({ name, ...agg }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  files.sort((a, b) => a.name.localeCompare(b.name))
+  return { folders, files }
 }
 
 const EXT_MIME = {
@@ -103,6 +134,11 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
   const [removingId, setRemovingId] = useState(null)
   const [triggeringId, setTriggeringId] = useState(null)
   const [triggeredId, setTriggeredId] = useState(null)
+  const [scanningId, setScanningId] = useState(null)
+  const [scannedId, setScannedId] = useState(null)
+  const [fileReport, setFileReport] = useState(null) // { entries, scannedAt, truncated } for the selected device
+  const [loadingFileReport, setLoadingFileReport] = useState(false)
+  const [treePath, setTreePath] = useState([]) // breadcrumb: array of folder-name segments currently drilled into
   const [history, setHistory] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
 
@@ -230,6 +266,7 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
       setLoadingChunks(false)
     }
     loadHistory(deviceId)
+    loadFileReport(deviceId)
   }
 
   // The full check-in log for a device (every heartbeat/pair/status/chunk-upload event),
@@ -273,6 +310,50 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
       setTriggeringId(null)
     }
   }
+
+  // Requests a fresh full-storage inventory (filenames/sizes/dates only, not a real
+  // backup) — same one-shot-flag-via-heartbeat mechanism as handleTriggerBackup above,
+  // just a sibling flag so the two can be requested independently.
+  async function handleTriggerScan(deviceId) {
+    setScanningId(deviceId)
+    setError('')
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/devices/${encodeURIComponent(deviceId)}/trigger-scan`, {
+        method: 'POST',
+        headers: { 'X-Parent-Token': parentToken || '' },
+      })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
+      if (!res.ok) throw new Error('Could not request a folder scan for this device.')
+      setScannedId(deviceId)
+      setTimeout(() => setScannedId((prev) => (prev === deviceId ? null : prev)), 3000)
+    } catch (e) {
+      setError(e.message || 'Could not request a folder scan for this device.')
+    } finally {
+      setScanningId(null)
+    }
+  }
+
+  async function loadFileReport(deviceId) {
+    setLoadingFileReport(true)
+    setTreePath([])
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/file-report/${encodeURIComponent(deviceId)}`, {
+        headers: { 'X-Parent-Token': parentToken || '' },
+      })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
+      const data = await res.json()
+      setFileReport(data)
+    } catch {
+      setFileReport(null)
+    } finally {
+      setLoadingFileReport(false)
+    }
+  }
+
+  const treeLevel = useMemo(
+    () => computeTreeLevel(fileReport?.entries || [], treePath),
+    [fileReport, treePath]
+  )
 
   async function handleSetup() {
     setSettingUp(true)
@@ -628,6 +709,16 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
                 </button>
                 <button
                   type="button"
+                  disabled={scanningId === deviceId}
+                  onClick={() => handleTriggerScan(deviceId)}
+                  aria-label={`Scan folders on ${name || deviceId}`}
+                  title="Scan the whole device for a folder/file inventory (names and sizes only, not a backup)"
+                  className="shrink-0 text-xs opacity-70 hover:opacity-100 disabled:opacity-40"
+                >
+                  {scanningId === deviceId ? '…' : scannedId === deviceId ? 'Requested ✓' : '🗂'}
+                </button>
+                <button
+                  type="button"
                   disabled={removingId === deviceId}
                   onClick={() => handleRemoveDevice(deviceId, name)}
                   aria-label={`Remove ${name || deviceId}`}
@@ -657,6 +748,79 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
                 </li>
               ))}
             </ul>
+          )}
+        </Tile>
+      )}
+
+      {selectedDevice && (
+        <Tile className="mb-4">
+          <TileLabel>Device folders</TileLabel>
+          <p className="mt-1 text-xs text-muted-foreground">
+            A full inventory of what is on the device — file names, sizes, and dates only.
+            This is not a backup; nothing here has been copied off the device.
+          </p>
+          {loadingFileReport ? (
+            <p className="mt-3 text-sm text-muted-foreground">Loading…</p>
+          ) : !fileReport?.scannedAt ? (
+            <p className="mt-3 text-sm text-muted-foreground">
+              No folder scan yet — tap 🗂 next to this device above to request one.
+            </p>
+          ) : (
+            <div className="mt-3">
+              <p className="text-xs text-muted-foreground">
+                Scanned {new Date(fileReport.scannedAt).toLocaleString()}
+                {fileReport.truncated ? ' · stopped early (device has an unusually large number of files)' : ''}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-1 text-sm">
+                <button
+                  type="button"
+                  onClick={() => setTreePath([])}
+                  className={`rounded-full px-2 py-1 ${treePath.length === 0 ? 'bg-foreground text-background' : 'text-muted-foreground underline'}`}
+                >
+                  Home
+                </button>
+                {treePath.map((segment, i) => (
+                  <span key={i} className="flex items-center gap-1">
+                    <span className="text-muted-foreground">/</span>
+                    <button
+                      type="button"
+                      onClick={() => setTreePath(treePath.slice(0, i + 1))}
+                      className={`rounded-full px-2 py-1 ${i === treePath.length - 1 ? 'bg-foreground text-background' : 'text-muted-foreground underline'}`}
+                    >
+                      {segment}
+                    </button>
+                  </span>
+                ))}
+              </div>
+              {treeLevel.folders.length === 0 && treeLevel.files.length === 0 ? (
+                <p className="mt-3 text-sm text-muted-foreground">This folder is empty.</p>
+              ) : (
+                <ul className="mt-3 max-h-64 overflow-y-auto divide-y divide-border">
+                  {treeLevel.folders.map((f) => (
+                    <li key={f.name}>
+                      <button
+                        type="button"
+                        onClick={() => setTreePath([...treePath, f.name])}
+                        className="flex w-full items-center justify-between gap-3 py-2 text-left text-sm"
+                      >
+                        <span className="min-w-0 truncate">📁 {f.name}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {f.count} file{f.count === 1 ? '' : 's'} · {formatBytes(f.size)}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                  {treeLevel.files.map((f) => (
+                    <li key={f.name} className="flex items-center justify-between gap-3 py-2 text-sm">
+                      <span className="min-w-0 truncate">📄 {f.name}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {formatBytes(f.size)}{f.mtime ? ` · ${new Date(f.mtime).toLocaleDateString()}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </Tile>
       )}

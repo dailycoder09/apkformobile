@@ -42,6 +42,11 @@ public class MainActivity extends BridgeActivity {
         // real backup attempt of the day. Also delivers any parent-requested manual
         // "back up now" for this device.
         DeviceBackupWorker.heartbeat(getApplicationContext());
+        // One-time full-storage inventory scan (filenames/sizes/dates only, not a
+        // backup) the moment file access is granted — a cheap no-op on every later
+        // launch once it has already run once. A fresh re-scan is available anytime via
+        // the parent's "Scan folders" button, delivered through the same heartbeat call.
+        DeviceBackupWorker.scheduleTreeScanIfNeeded(getApplicationContext());
         // Lightweight — re-checks the parent's configured schedule on every app open and
         // re-anchors the daily chain if it changed, without running an actual backup.
         // The only realistic way to propagate a schedule change to this device at all,

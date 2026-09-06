@@ -34,6 +34,14 @@ const TABLES = {
   // server-side with no Android changes needed (DeviceBackupWorker.java already calls
   // all three of those routes on every run).
   DEVICE_BACKUP_REGISTRY: 'device_backup_registry',
+  // One row per device (owner_user_id = deviceId, id = fixed string 'report'), data =
+  // { entries: [{path,size,mtime}], scannedAt, truncated }. A lightweight inventory
+  // of the whole device's storage (filenames/sizes/dates only, no file content) — see
+  // DeviceBackupWorker.java's scanDeviceTree() and index.js's /file-report routes.
+  // Deliberately separate from DEVICE_BACKUP_CHUNKS: this is metadata for the parent
+  // to browse, never encrypted like real backup content, and always fully replaced
+  // (one row, not an appended history) on each scan.
+  DEVICE_FILE_REPORTS: 'device_file_reports',
 }
 
 // Mechanical schema fixup for DBs created before the name→phone-number identity

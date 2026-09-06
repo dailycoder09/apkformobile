@@ -31,6 +31,10 @@ fs.mkdirSync(PROFILE_PHOTOS_DIR, { recursive: true })
 // this one VM's disk isn't much better than not backing up.
 const DEVICE_BACKUP_BUCKET = process.env.BACKUP_BUCKET || 'familywatch-backups-7f266f68'
 const MAX_BACKUP_CHUNK_MB  = 420
+// Generous cap for a device's full-storage file-report JSON (filenames/sizes/dates
+// only, capped at 300,000 entries on the Android side — see scanDeviceTree()'s own
+// comment) — comfortably above worst-case size for that many short path strings.
+const MAX_FILE_REPORT_BYTES = 30 * 1024 * 1024
 
 // Stable userIds look like `${seq}-${4 random base36 chars}` (see makeId() below) — or,
 // now that identity is a client-generated device ID (see the 'auth' handler), whatever
@@ -373,6 +377,54 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
+    // ── Device file-report upload (full-storage inventory, not backup content) ────────
+    // Uploaded by DeviceBackupWorker.scanDeviceTree() — a flat list of every file's
+    // {path,size,mtime} across the WHOLE device (not just the 5 curated media folders
+    // the real backup covers), so the parent can see what's actually on the phone
+    // without paying the cost of copying it all. Deliberately NOT wrapped in the
+    // RSA/AES envelope real backup chunks get — same lighter trust model as /status
+    // and /pair (a per-device deterministic token, no parent key involved) — this is
+    // filenames/sizes/dates only, never file content.
+    if (req.method === 'POST' && urlPath.startsWith('/api/device-backup/file-report/')) {
+      const deviceId = decodeURIComponent(urlPath.replace('/api/device-backup/file-report/', ''))
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      const presentedToken = req.headers['x-backup-token'] || ''
+      if (!verifyBackupToken(deviceId, presentedToken)) {
+        res.writeHead(403); res.end('Invalid or missing backup token'); return
+      }
+      const bodyChunks = []
+      let total = 0
+      let rejected = false
+      req.on('data', (chunk) => {
+        if (rejected) return
+        total += chunk.length
+        if (total > MAX_FILE_REPORT_BYTES) {
+          rejected = true
+          res.writeHead(413); res.end('File report too large')
+          return
+        }
+        bodyChunks.push(chunk)
+      })
+      req.on('end', () => {
+        if (rejected) return
+        let parsed
+        try {
+          parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8'))
+        } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return
+        }
+        const entries = Array.isArray(parsed.entries) ? parsed.entries : []
+        const record = { entries, scannedAt: Date.now(), truncated: !!parsed.truncated }
+        const updated = store.updateItem(store.TABLES.DEVICE_FILE_REPORTS, deviceId, 'report', record)
+        if (!updated) store.appendItem(store.TABLES.DEVICE_FILE_REPORTS, deviceId, { id: 'report', ...record })
+        touchDeviceLastSeen(deviceId, undefined, 'file-report')
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      })
+      req.on('error', () => { if (!res.headersSent) { res.writeHead(500); res.end('Upload error') } })
+      return
+    }
+
     // ── Device-backup pairing (native device fetches its own backup token) ───────────
     // Deliberately plain HTTP, not a WS message: this app's client no longer keeps any
     // real WebSocket open at all (personal-tracking messages are now handled entirely
@@ -413,14 +465,18 @@ const server = http.createServer(async (req, res) => {
       }
       const registry = store.getList(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId).find(r => r.id === 'status')
       const forceBackup = !!registry?.forceBackupRequested
+      const forceTreeScan = !!registry?.forceTreeScanRequested
       touchDeviceLastSeen(deviceId, deviceName, 'heartbeat')
-      if (forceBackup) {
-        // Consumed now so it fires exactly once — not on every heartbeat until the
+      if (forceBackup || forceTreeScan) {
+        // Consumed now so each fires exactly once — not on every heartbeat until the
         // device happens to be on Wi-Fi.
-        store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', { forceBackupRequested: false })
+        const clear = {}
+        if (forceBackup) clear.forceBackupRequested = false
+        if (forceTreeScan) clear.forceTreeScanRequested = false
+        store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', clear)
       }
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, forceBackup }))
+      res.end(JSON.stringify({ ok: true, forceBackup, forceTreeScan }))
       return
     }
 
@@ -777,6 +833,43 @@ const server = http.createServer(async (req, res) => {
         .sort((a, b) => b.at - a.at)
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ history }))
+      return
+    }
+
+    // ── Manual "scan folders" trigger for one device (parent-initiated) ──────────────
+    // Same one-shot-flag-via-heartbeat mechanism as trigger-backup above, just a
+    // sibling flag so the two can be requested independently of each other.
+    if (req.method === 'POST' && urlPath.startsWith('/api/device-backup/devices/') && urlPath.endsWith('/trigger-scan')) {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
+      const deviceId = decodeURIComponent(
+        urlPath.replace('/api/device-backup/devices/', '').replace(/\/trigger-scan$/, '')
+      )
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      const updated = store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', { forceTreeScanRequested: true })
+      if (!updated) {
+        store.appendItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, { id: 'status', forceTreeScanRequested: true, lastSeenAt: null })
+      }
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+      return
+    }
+
+    // ── Device file-report (full-storage inventory) fetch, for the parent UI ─────────
+    if (req.method === 'GET' && urlPath.startsWith('/api/device-backup/file-report/')) {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
+      const deviceId = decodeURIComponent(urlPath.replace('/api/device-backup/file-report/', ''))
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      const report = store.getList(store.TABLES.DEVICE_FILE_REPORTS, deviceId).find((r) => r.id === 'report')
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        entries: report?.entries || [],
+        scannedAt: report?.scannedAt || null,
+        truncated: !!report?.truncated,
+      }))
       return
     }
 

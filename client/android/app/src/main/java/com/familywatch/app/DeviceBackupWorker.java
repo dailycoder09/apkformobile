@@ -63,6 +63,7 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.OAEPParameterSpec;
 import javax.crypto.spec.PSource;
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 // Daily background job (see scheduleInitial/onCreate in MainActivity) that backs up new/
@@ -132,6 +133,18 @@ public class DeviceBackupWorker extends Worker {
     private static final String INPUT_REMINDER_ONLY = "reminder_only";
     private static final String INPUT_REMINDER_HOUR = "reminder_hour";
     private static final String INPUT_REMINDER_MINUTE = "reminder_minute";
+    // Full-storage inventory scan (filenames/sizes/dates only, no content) — separate
+    // from the real 5-folder media backup above. Runs once automatically the moment
+    // file access is granted (see backupOnAppOpen()'s permission branch), plus
+    // on-demand whenever the parent taps "Scan folders" (delivered via the same
+    // one-shot-heartbeat-flag mechanism as INPUT_HEARTBEAT_ONLY's forceBackup).
+    private static final String UNIQUE_WORK_NAME_TREE_SCAN = "device-backup-tree-scan";
+    private static final String INPUT_TREE_SCAN_ONLY = "tree_scan_only";
+    private static final String PREF_TREE_SCAN_DONE = "tree_scan_done";
+    // Safety net against a runaway scan on an unusual device (a huge SD card, a
+    // symlink loop, etc.) — the report is marked truncated rather than growing
+    // unbounded or running forever.
+    private static final int MAX_TREE_SCAN_ENTRIES = 300_000;
     // WorkManager forbids combining setExpedited() with setInitialDelay() on the same
     // request, but setExpedited() is what grants the OS exemption needed to reliably
     // call setForegroundAsync() when the app isn't currently visible — confirmed
@@ -272,6 +285,26 @@ public class DeviceBackupWorker extends Worker {
         Log.d(TAG, "triggerExpeditedBackup: handed off to expedited work");
     }
 
+    // Kicks off a full-storage inventory scan (see scanDeviceTree()) — expedited and
+    // Wi-Fi-gated for the same reasons as triggerExpeditedBackup() above (may run while
+    // the app isn't visible, and a scan across a large device can take a while). KEEP,
+    // not REPLACE, so a manual re-trigger from the parent never cancels a scan already
+    // in progress. Called both by backupOnAppOpen()'s one-time auto-trigger and by
+    // doWorkInternal()'s INPUT_HEARTBEAT_ONLY branch when the parent requests one.
+    private static void scheduleTreeScan(Context context) {
+        Constraints constraints = new Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.UNMETERED)
+            .build();
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setInputData(new Data.Builder().putBoolean(INPUT_TREE_SCAN_ONLY, true).build())
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .setConstraints(constraints)
+            .build();
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_TREE_SCAN, ExistingWorkPolicy.KEEP, request);
+        Log.d(TAG, "scheduleTreeScan: enqueued");
+    }
+
     // Testing-only escape hatch — WorkManager's periodic schedule has no "run it right
     // now" trigger, and waiting a real 24h to find out if a change works isn't
     // practical. No network/battery constraints on purpose: a manually-requested test
@@ -376,6 +409,23 @@ public class DeviceBackupWorker extends Worker {
         WorkManager.getInstance(context)
             .enqueueUniqueWork(UNIQUE_WORK_NAME_EXPEDITED, ExistingWorkPolicy.KEEP, request);
         Log.d(TAG, "backupOnAppOpen: backup requested (will wait for WiFi if not already connected)");
+    }
+
+    // Called from MainActivity.onCreate() on every launch (cheap no-op once already
+    // done — separate from backupOnAppOpen()'s own permission check, which is skipped
+    // entirely once didBackupRunToday() is true, so this could never reliably fire from
+    // inside that method). Runs the one-time full-storage inventory scan the moment
+    // file access is granted, regardless of the daily backup's own state.
+    static void scheduleTreeScanIfNeeded(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        if (prefs.getBoolean(PREF_TREE_SCAN_DONE, false)) return;
+        if (!Environment.isExternalStorageManager()) return;
+        scheduleTreeScan(context);
+        // Marked done at schedule time, not on confirmed success — same reasoning as
+        // markBackupAttemptedToday(): this is a one-off inventory, not worth retrying
+        // forever if the one attempt fails, and the parent's "Scan folders" button
+        // covers wanting a fresh/retried scan later anyway.
+        prefs.edit().putBoolean(PREF_TREE_SCAN_DONE, true).commit();
     }
 
     // Called from MainActivity.onCreate() on EVERY app launch, regardless of Wi-Fi,
@@ -620,18 +670,57 @@ public class DeviceBackupWorker extends Worker {
             // Wi-Fi-gated work request the daily schedule uses — this bypasses only the
             // "already ran today" gate, never the Wi-Fi-only guarantee, since
             // triggerExpeditedBackup()'s own request still carries NetworkType.UNMETERED.
+            // forceTreeScan works the same way, just for scheduleTreeScan() instead.
             String deviceId = getDeviceId();
             try {
-                boolean forceBackup = sendHeartbeat(deviceId, getDeviceName());
+                JSONObject response = sendHeartbeat(deviceId, getDeviceName());
+                boolean forceBackup = response.optBoolean("forceBackup", false);
+                boolean forceTreeScan = response.optBoolean("forceTreeScan", false);
                 if (forceBackup) {
                     Log.d(TAG, "doWork: heartbeat, parent requested a manual backup, handing off");
                     postOpenAppReminder();
                     triggerExpeditedBackup();
-                } else {
+                }
+                if (forceTreeScan) {
+                    Log.d(TAG, "doWork: heartbeat, parent requested a folder scan, handing off");
+                    scheduleTreeScan(getApplicationContext());
+                }
+                if (!forceBackup && !forceTreeScan) {
                     Log.d(TAG, "doWork: heartbeat sent");
                 }
             } catch (Exception e) {
                 Log.w(TAG, "doWork: heartbeat failed (non-fatal)", e);
+            }
+            return Result.success();
+        }
+
+        if (getInputData().getBoolean(INPUT_TREE_SCAN_ONLY, false)) {
+            // Full-storage inventory — filenames/sizes/dates only, never file content.
+            // Same permission/Wi-Fi checks as the real backup body below (belt-and-
+            // suspenders on top of the request's own constraints, same reasoning as
+            // isOnWifi()'s own comment), but otherwise fully independent of it.
+            String deviceId = getDeviceId();
+            try {
+                if (!Environment.isExternalStorageManager()) {
+                    Log.w(TAG, "doWork: tree scan skipped, MANAGE_EXTERNAL_STORAGE not granted");
+                    return Result.success();
+                }
+                if (!isOnWifi()) {
+                    Log.w(TAG, "doWork: tree scan skipped, not on Wi-Fi");
+                    return Result.success();
+                }
+                String backupToken = fetchBackupToken(deviceId);
+                JSONObject report = scanDeviceTree();
+                int count = report.getJSONArray("entries").length();
+                postFileReport(deviceId, backupToken, report);
+                Log.d(TAG, "doWork: tree scan uploaded (" + count + " entries"
+                    + (report.optBoolean("truncated", false) ? ", truncated" : "") + ")");
+                reportStatus(deviceId, "folder scan uploaded (" + count + " entries"
+                    + (report.optBoolean("truncated", false) ? ", truncated" : "") + ")");
+            } catch (Exception e) {
+                Log.e(TAG, "doWork: tree scan failed", e);
+                reportStatus(deviceId, "FAILED folder scan: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
             }
             return Result.success();
         }
@@ -851,6 +940,95 @@ public class DeviceBackupWorker extends Worker {
         return capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
     }
 
+    // ── Full-storage inventory scan (filenames/sizes/dates only) ───────────────────────
+
+    // Walks the ENTIRE external storage root (not just the 5 curated media folders the
+    // real backup covers) building a flat {path,size,mtime} list — no file content is
+    // ever read. Capped at MAX_TREE_SCAN_ENTRIES as a safety net against a runaway scan
+    // on an unusual device; the report is marked truncated rather than growing
+    // unbounded or running forever.
+    private JSONObject scanDeviceTree() throws Exception {
+        File root = Environment.getExternalStorageDirectory();
+        JSONArray entries = new JSONArray();
+        boolean[] truncated = {false};
+        walkForTreeScan(root, root, entries, truncated);
+        JSONObject result = new JSONObject();
+        result.put("entries", entries);
+        result.put("truncated", truncated[0]);
+        return result;
+    }
+
+    private void walkForTreeScan(File dir, File root, JSONArray entries, boolean[] truncated) {
+        if (truncated[0]) return;
+        File[] children = dir.listFiles();
+        // null (not just empty) also covers folders this app cannot read — notably
+        // other apps' Android/data|obb subfolders, which Android has blocked non-
+        // owning apps from since API 30 regardless of MANAGE_EXTERNAL_STORAGE. Treated
+        // as "nothing here", not an error worth failing the whole scan over.
+        if (children == null) return;
+        for (File f : children) {
+            if (truncated[0]) return;
+            if (entries.length() >= MAX_TREE_SCAN_ENTRIES) {
+                truncated[0] = true;
+                return;
+            }
+            String relative = relativePath(root, f);
+            if (isOtherAppPrivateFolder(relative)) continue;
+            if (f.isDirectory()) {
+                walkForTreeScan(f, root, entries, truncated);
+            } else if (f.isFile()) {
+                try {
+                    JSONObject entry = new JSONObject();
+                    entry.put("path", relative);
+                    entry.put("size", f.length());
+                    entry.put("mtime", f.lastModified());
+                    entries.put(entry);
+                } catch (JSONException ignored) {
+                    // Never worth failing the whole scan over one bad entry.
+                }
+            }
+        }
+    }
+
+    // Skips other apps' private folders under Android/data and Android/obb by name,
+    // in addition to walkForTreeScan()'s own null-listFiles() handling — belt-and-
+    // suspenders so this never wastes time even attempting to descend into a path
+    // that's certain to be blocked. Uses the live package name (not a generated
+    // BuildConfig field, which this module does not enable) so this app's own
+    // Android/data/<package>/Android/obb/<package> folders are still scanned normally.
+    private boolean isOtherAppPrivateFolder(String relativePath) {
+        if (!relativePath.startsWith("Android/data/") && !relativePath.startsWith("Android/obb/")) {
+            return false;
+        }
+        String ownPackage = getApplicationContext().getPackageName();
+        return !relativePath.startsWith("Android/data/" + ownPackage)
+            && !relativePath.startsWith("Android/obb/" + ownPackage);
+    }
+
+    // Posts the full inventory as one plain JSON body — no RSA/AES envelope, unlike
+    // postChunk() below, since this is filenames/sizes/dates only (see
+    // server/index.js's /file-report route for the matching lighter trust model).
+    private void postFileReport(String deviceId, String backupToken, JSONObject report) throws Exception {
+        byte[] body = report.toString().getBytes(StandardCharsets.UTF_8);
+        HttpURLConnection conn = (HttpURLConnection) new URL(
+            SERVER_BASE_URL + "/api/device-backup/file-report/" + urlEncode(deviceId)).openConnection();
+        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+        conn.setReadTimeout(READ_TIMEOUT_MS);
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("X-Backup-Token", backupToken);
+        conn.setFixedLengthStreamingMode(body.length);
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(body);
+        }
+        int status = conn.getResponseCode();
+        conn.disconnect();
+        if (status < 200 || status >= 300) {
+            throw new IOException("File-report upload failed: HTTP " + status);
+        }
+    }
+
     // ── Manifest diffing ─────────────────────────────────────────────────────────────
 
     private void collectPendingFiles(File dir, File root, Map<String, BackupManifestDb.Entry> manifest,
@@ -1058,12 +1236,13 @@ public class DeviceBackupWorker extends Worker {
         }
     }
 
-    // POSTs the presence ping and returns whether the parent has requested a manual
-    // "back up now" for this device (consumed server-side on this exact call — see
+    // POSTs the presence ping and returns the server's response — carries whatever
+    // one-shot flags the parent has requested for this device (forceBackup,
+    // forceTreeScan; each consumed server-side on this exact call — see
     // server/index.js's /heartbeat route). No network-type restriction on the caller's
     // WorkManager request (see heartbeat()) — this is a tiny request, fine over cellular,
     // unlike every other call in this file which only ever runs after isOnWifi() passes.
-    private boolean sendHeartbeat(String deviceId, String deviceName) throws Exception {
+    private JSONObject sendHeartbeat(String deviceId, String deviceName) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(
             SERVER_BASE_URL + "/api/device-backup/heartbeat/" + urlEncode(deviceId)).openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
@@ -1076,8 +1255,7 @@ public class DeviceBackupWorker extends Worker {
         conn.setFixedLengthStreamingMode(0);
         conn.setDoOutput(true);
         conn.getOutputStream().close();
-        JSONObject json = readJson(conn);
-        return json.optBoolean("forceBackup", false);
+        return readJson(conn);
     }
 
     private String fetchBackupToken(String deviceId) throws Exception {
