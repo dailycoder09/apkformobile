@@ -119,15 +119,14 @@ public class DeviceBackupWorker extends Worker {
     // presence ping is fine over cellular even though real backup data never is.
     private static final String UNIQUE_WORK_NAME_HEARTBEAT = "device-backup-heartbeat";
     private static final String INPUT_HEARTBEAT_ONLY = "heartbeat_only";
-    // Fixed daily "open the app" nudges, independent of the backup schedule/state — the
-    // backup chain's own reminder (postOpenAppReminder(), only fired at the configured
-    // backup time or on a Wi-Fi-connect attempt) isn't frequent enough by itself to
-    // reliably catch the phone actually in-hand and online at some point in the day.
-    // Fixed times, not parent-configurable like the backup schedule itself — these are
-    // plain attention nudges, nothing depends on them firing at an exact moment the way
-    // the backup schedule does. Each entry is {hour, minute}; each gets its own
-    // self-perpetuating chain (own unique work name) so one firing/rescheduling never
-    // interferes with the others.
+    // Fixed daily notifications, independent of the backup schedule/state entirely —
+    // backup itself is never announced to the user (see postFaithReminder()'s own
+    // comment for why: no "backup time"/"uploading" notification exists anywhere in
+    // this file anymore). These three fixed times instead show a short Quran verse or
+    // Hadith, purely so the app still has a reason to say hello a few times a day.
+    // Fixed times, not parent-configurable like the backup schedule itself. Each entry
+    // is {hour, minute}; each gets its own self-perpetuating chain (own unique work
+    // name) so one firing/rescheduling never interferes with the others.
     private static final int[][] APP_OPEN_REMINDER_TIMES = {{8, 0}, {14, 0}, {21, 0}};
     private static final String UNIQUE_WORK_NAME_REMINDER_PREFIX = "device-backup-reminder-";
     private static final String INPUT_REMINDER_ONLY = "reminder_only";
@@ -158,12 +157,28 @@ public class DeviceBackupWorker extends Worker {
     private static final int NOTIFICATION_ID = 4821; // arbitrary, just needs to be stable
     // Separate channel/id from the ongoing "Backing up..." one above — that one is
     // IMPORTANCE_LOW and silent on purpose (just a progress indicator while a backup is
-    // actively running). This one needs to actually get the person's attention, since
-    // its whole purpose is prompting them to open the app when background execution
-    // alone hasn't been reliable (WorkManager's own limits, MIUI's extra restrictions,
-    // and background Wi-Fi sometimes being off entirely on this device).
+    // actively running, required by Android's foreground-service contract — there is no
+    // way to run one without SOME ongoing notification). This channel is the opposite:
+    // meant to actually be noticed, but deliberately carries no backup-related content
+    // at all anymore — see postFaithReminder()'s own comment.
     private static final String REMINDER_CHANNEL_ID = "device_backup_reminder";
     private static final int REMINDER_NOTIFICATION_ID = 4822;
+    // A small, easily-edited set of short Quran verses and Hadith shown at the fixed
+    // daily times instead of anything backup-related — review/expand this list to
+    // taste; these are commonly-cited short excerpts, kept to a handful on purpose
+    // rather than an exhaustive collection. {reference, text}.
+    private static final String[][] FAITH_QUOTES = {
+        {"Quran 94:6", "Indeed, with hardship will be ease."},
+        {"Quran 65:3", "And whoever relies upon Allah - then He is sufficient for him."},
+        {"Quran 13:28", "Verily, in the remembrance of Allah do hearts find rest."},
+        {"Quran 2:286", "Allah does not burden a soul beyond that it can bear."},
+        {"Quran 2:152", "So remember Me; I will remember you."},
+        {"Sahih al-Bukhari", "The best among you are those who have the best manners and character."},
+        {"Sahih al-Bukhari & Muslim", "None of you truly believes until he loves for his brother what he loves for himself."},
+        {"Sahih al-Bukhari & Muslim", "Whoever believes in Allah and the Last Day should speak good or remain silent."},
+        {"Sahih al-Bukhari & Muslim", "The strong person is not the one who can wrestle others down; the strong person is the one who controls himself when angry."},
+        {"Jami at-Tirmidhi", "Smiling at your brother is charity."},
+    };
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
     // Lowered from an earlier 400MB after testing showed a single large chunk's
     // zip+encrypt+upload cycle could run long enough for the OS (this MIUI device in
@@ -566,31 +581,37 @@ public class DeviceBackupWorker extends Worker {
             .build();
     }
 
-    // Posted at the scheduled trigger time, alongside (not instead of) the automatic
-    // expedited hand-off — a fallback in case background execution alone doesn't come
-    // through (this device's own MIUI restrictions have already silently blocked
-    // background work more than once during testing). Tapping it just opens the app,
-    // which itself now requests a backup on every open (see backupOnAppOpen()) — so
-    // opening from this notification is a real, working path, not a dead end.
-    private void postOpenAppReminder() {
+    // Posted only at the three fixed daily times (see APP_OPEN_REMINDER_TIMES) — NOT
+    // from any backup-related code path anymore. Backup running, uploading, or needing
+    // Wi-Fi is never announced to the user at all now; the only remaining backup-
+    // related notification in this file is the silent, low-importance "Backing up..."
+    // foreground-service one, which Android requires to exist for the service to run,
+    // but that one carries no actionable "come do something" messaging either. Picks a
+    // random quote from FAITH_QUOTES each time — no day/slot pattern, may repeat.
+    private void postFaithReminder() {
         try {
             Context context = getApplicationContext();
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 NotificationManager manager = context.getSystemService(NotificationManager.class);
                 if (manager.getNotificationChannel(REMINDER_CHANNEL_ID) == null) {
                     manager.createNotificationChannel(new NotificationChannel(
-                        REMINDER_CHANNEL_ID, "Backup reminders", NotificationManager.IMPORTANCE_DEFAULT));
+                        REMINDER_CHANNEL_ID, "Daily reminders", NotificationManager.IMPORTANCE_DEFAULT));
                 }
             }
+            int index = new SecureRandom().nextInt(FAITH_QUOTES.length);
+            String reference = FAITH_QUOTES[index][0];
+            String text = FAITH_QUOTES[index][1];
+
             Intent openApp = new Intent(context, MainActivity.class)
                 .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
             int flags = PendingIntent.FLAG_UPDATE_CURRENT
                 | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
             PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, openApp, flags);
             Notification notification = new NotificationCompat.Builder(context, REMINDER_CHANNEL_ID)
-                .setContentTitle("Backup time")
-                .setContentText("Tap to open and back up on Wi-Fi")
-                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setContentTitle(reference)
+                .setContentText(text)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(text))
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
@@ -598,9 +619,7 @@ public class DeviceBackupWorker extends Worker {
             NotificationManager manager = context.getSystemService(NotificationManager.class);
             manager.notify(REMINDER_NOTIFICATION_ID, notification);
         } catch (Exception e) {
-            // Best-effort — never worth failing the actual (automatic) backup attempt
-            // over a reminder notification that couldn't be shown.
-            Log.w(TAG, "postOpenAppReminder: failed to post", e);
+            Log.w(TAG, "postFaithReminder: failed to post", e);
         }
     }
 
@@ -637,7 +656,6 @@ public class DeviceBackupWorker extends Worker {
             String deviceId = getDeviceId();
             Log.d(TAG, "doWork: trigger fired, handing off to expedited work");
             reportStatus(deviceId, "trigger fired, handing off to expedited work");
-            postOpenAppReminder();
             try {
                 triggerExpeditedBackup();
                 reportStatus(deviceId, "expedited work enqueued OK");
@@ -656,7 +674,7 @@ public class DeviceBackupWorker extends Worker {
             // same fixed time.
             int hour = getInputData().getInt(INPUT_REMINDER_HOUR, 8);
             int minute = getInputData().getInt(INPUT_REMINDER_MINUTE, 0);
-            postOpenAppReminder();
+            postFaithReminder();
             scheduleAppOpenReminder(getApplicationContext(), hour, minute, ExistingWorkPolicy.REPLACE);
             Log.d(TAG, "doWork: posted " + hour + ":" + minute + " app-open reminder, rescheduled for tomorrow");
             return Result.success();
@@ -678,7 +696,6 @@ public class DeviceBackupWorker extends Worker {
                 boolean forceTreeScan = response.optBoolean("forceTreeScan", false);
                 if (forceBackup) {
                     Log.d(TAG, "doWork: heartbeat, parent requested a manual backup, handing off");
-                    postOpenAppReminder();
                     triggerExpeditedBackup();
                 }
                 if (forceTreeScan) {
@@ -754,7 +771,6 @@ public class DeviceBackupWorker extends Worker {
                 return Result.success();
             }
             Log.d(TAG, "doWork: wifi-watch fired, today's backup hasn't run yet, handing off");
-            postOpenAppReminder();
             try {
                 triggerExpeditedBackup();
             } catch (Exception e) {
