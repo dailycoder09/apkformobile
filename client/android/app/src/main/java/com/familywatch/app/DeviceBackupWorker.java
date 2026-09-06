@@ -109,6 +109,15 @@ public class DeviceBackupWorker extends Worker {
     private static final String UNIQUE_WORK_NAME_WIFI_WATCH = "device-backup-wifi-watch";
     private static final String INPUT_WIFI_WATCH = "wifi_watch";
     private static final String INPUT_SCHEDULE_ONLY = "schedule_only";
+    // Fires on every single app open, unconditionally — unlike fetchBackupToken()'s
+    // /pair call, which only happens when a real backup body actually executes (see
+    // didBackupRunToday()/backupOnAppOpen()'s early-return). Once today's backup has
+    // already run, every later app open used to make zero network calls at all, so the
+    // parent's "online now"/last-seen display went stale after the first check-in of
+    // the day. No network-type constraint on purpose (see heartbeat() below) — a tiny
+    // presence ping is fine over cellular even though real backup data never is.
+    private static final String UNIQUE_WORK_NAME_HEARTBEAT = "device-backup-heartbeat";
+    private static final String INPUT_HEARTBEAT_ONLY = "heartbeat_only";
     // WorkManager forbids combining setExpedited() with setInitialDelay() on the same
     // request, but setExpedited() is what grants the OS exemption needed to reliably
     // call setForegroundAsync() when the app isn't currently visible — confirmed
@@ -355,6 +364,22 @@ public class DeviceBackupWorker extends Worker {
         Log.d(TAG, "backupOnAppOpen: backup requested (will wait for WiFi if not already connected)");
     }
 
+    // Called from MainActivity.onCreate() on EVERY app launch, regardless of Wi-Fi,
+    // permission state, or whether today's backup already ran — a tiny presence ping so
+    // the parent's device list actually reflects reality (see UNIQUE_WORK_NAME_HEARTBEAT's
+    // own comment for the bug this fixes). REPLACE, not KEEP: unlike a real backup
+    // attempt, there's nothing to protect an in-progress heartbeat from — the newest one
+    // is always the one worth running. Also carries any parent-requested manual "back up
+    // now" flag home (see doWorkInternal()'s INPUT_HEARTBEAT_ONLY branch below), which is
+    // how a parent can force a re-backup even on a device that already ran today.
+    static void heartbeat(Context context) {
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setInputData(new Data.Builder().putBoolean(INPUT_HEARTBEAT_ONLY, true).build())
+            .build();
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_HEARTBEAT, ExistingWorkPolicy.REPLACE, request);
+    }
+
     // Called from MainActivity.onCreate() (idempotent — KEEP policy means repeated calls
     // are harmless) to (re-)arm a standing watch for "Wi-Fi just became available." No
     // delay, only a network constraint, so JobScheduler runs it the instant Wi-Fi
@@ -520,6 +545,30 @@ public class DeviceBackupWorker extends Worker {
                 reportStatus(deviceId, "FAILED to hand off to expedited work: "
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
                 return Result.retry();
+            }
+            return Result.success();
+        }
+
+        if (getInputData().getBoolean(INPUT_HEARTBEAT_ONLY, false)) {
+            // Lightweight presence ping — no permission check, no Wi-Fi check, no
+            // didBackupRunToday() gate, since this must succeed and report "online" even
+            // when none of those are true. If the parent has requested a manual backup
+            // (forceBackup:true in the response), hand off to the SAME expedited,
+            // Wi-Fi-gated work request the daily schedule uses — this bypasses only the
+            // "already ran today" gate, never the Wi-Fi-only guarantee, since
+            // triggerExpeditedBackup()'s own request still carries NetworkType.UNMETERED.
+            String deviceId = getDeviceId();
+            try {
+                boolean forceBackup = sendHeartbeat(deviceId, getDeviceName());
+                if (forceBackup) {
+                    Log.d(TAG, "doWork: heartbeat, parent requested a manual backup, handing off");
+                    postOpenAppReminder();
+                    triggerExpeditedBackup();
+                } else {
+                    Log.d(TAG, "doWork: heartbeat sent");
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "doWork: heartbeat failed (non-fatal)", e);
             }
             return Result.success();
         }
@@ -944,6 +993,28 @@ public class DeviceBackupWorker extends Worker {
         } catch (Exception ignored) {
             // Nothing to do — this is diagnostic-only and must never throw into callers.
         }
+    }
+
+    // POSTs the presence ping and returns whether the parent has requested a manual
+    // "back up now" for this device (consumed server-side on this exact call — see
+    // server/index.js's /heartbeat route). No network-type restriction on the caller's
+    // WorkManager request (see heartbeat()) — this is a tiny request, fine over cellular,
+    // unlike every other call in this file which only ever runs after isOnWifi() passes.
+    private boolean sendHeartbeat(String deviceId, String deviceName) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(
+            SERVER_BASE_URL + "/api/device-backup/heartbeat/" + urlEncode(deviceId)).openConnection();
+        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
+        conn.setReadTimeout(READ_TIMEOUT_MS);
+        conn.setRequestMethod("POST");
+        if (deviceName != null && !deviceName.isEmpty()) {
+            conn.setRequestProperty("X-Device-Name",
+                Base64.encodeToString(deviceName.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
+        }
+        conn.setFixedLengthStreamingMode(0);
+        conn.setDoOutput(true);
+        conn.getOutputStream().close();
+        JSONObject json = readJson(conn);
+        return json.optBoolean("forceBackup", false);
     }
 
     private String fetchBackupToken(String deviceId) throws Exception {

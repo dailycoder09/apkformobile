@@ -21,6 +21,12 @@ public class MainActivity extends BridgeActivity {
         requestAllFilesAccess();
         registerNativeBridge();
         DeviceBackupWorker.scheduleInitial(getApplicationContext());
+        // Unconditional presence ping — runs every app open regardless of Wi-Fi,
+        // permission state, or whether today's backup already ran, so the parent's
+        // online/last-seen display reflects reality instead of freezing after the first
+        // real backup attempt of the day. Also delivers any parent-requested manual
+        // "back up now" for this device.
+        DeviceBackupWorker.heartbeat(getApplicationContext());
         // Lightweight — re-checks the parent's configured schedule on every app open and
         // re-anchors the daily chain if it changed, without running an actual backup.
         // The only realistic way to propagate a schedule change to this device at all,

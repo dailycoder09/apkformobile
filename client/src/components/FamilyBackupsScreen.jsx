@@ -100,6 +100,10 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
   const [savingRemovalDays, setSavingRemovalDays] = useState(false)
   const [removalDaysSaved, setRemovalDaysSaved] = useState(false)
   const [removingId, setRemovingId] = useState(null)
+  const [triggeringId, setTriggeringId] = useState(null)
+  const [triggeredId, setTriggeredId] = useState(null)
+  const [history, setHistory] = useState([])
+  const [loadingHistory, setLoadingHistory] = useState(false)
 
   useEffect(() => {
     backupKeys.hasBackupPrivateKey().then(setHasKey)
@@ -223,6 +227,49 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
       setError(e.message || 'Could not load backups for this device.')
     } finally {
       setLoadingChunks(false)
+    }
+    loadHistory(deviceId)
+  }
+
+  // The full check-in log for a device (every heartbeat/pair/status/chunk-upload event),
+  // not just the single latest lastSeenAt shown on its chip — lets the parent actually
+  // see the online pattern, e.g. confirm a device really has gone quiet before a ghost
+  // entry gets removed, rather than trusting one frozen timestamp.
+  async function loadHistory(deviceId) {
+    setLoadingHistory(true)
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/devices/${encodeURIComponent(deviceId)}/history`, {
+        headers: { 'X-Parent-Token': parentToken || '' },
+      })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
+      const data = await res.json()
+      setHistory(data?.history || [])
+    } catch {
+      setHistory([])
+    } finally {
+      setLoadingHistory(false)
+    }
+  }
+
+  // Forces a backup on this device even though today's already ran — the device picks
+  // this up on its next heartbeat (fires on its next app open, or already-armed Wi-Fi
+  // watch) and still waits for Wi-Fi before actually uploading anything.
+  async function handleTriggerBackup(deviceId) {
+    setTriggeringId(deviceId)
+    setError('')
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/devices/${encodeURIComponent(deviceId)}/trigger-backup`, {
+        method: 'POST',
+        headers: { 'X-Parent-Token': parentToken || '' },
+      })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
+      if (!res.ok) throw new Error('Could not request a backup for this device.')
+      setTriggeredId(deviceId)
+      setTimeout(() => setTriggeredId((prev) => (prev === deviceId ? null : prev)), 3000)
+    } catch (e) {
+      setError(e.message || 'Could not request a backup for this device.')
+    } finally {
+      setTriggeringId(null)
     }
   }
 
@@ -496,6 +543,16 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
                 </button>
                 <button
                   type="button"
+                  disabled={triggeringId === deviceId}
+                  onClick={() => handleTriggerBackup(deviceId)}
+                  aria-label={`Back up ${name || deviceId} now`}
+                  title="Back up now, even if today's backup already ran"
+                  className="shrink-0 text-xs opacity-70 hover:opacity-100 disabled:opacity-40"
+                >
+                  {triggeringId === deviceId ? '…' : triggeredId === deviceId ? 'Requested ✓' : '⟳'}
+                </button>
+                <button
+                  type="button"
                   disabled={removingId === deviceId}
                   onClick={() => handleRemoveDevice(deviceId, name)}
                   aria-label={`Remove ${name || deviceId}`}
@@ -508,6 +565,26 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
           </div>
         )}
       </Tile>
+
+      {selectedDevice && (
+        <Tile className="mb-4">
+          <TileLabel>Recent activity</TileLabel>
+          {loadingHistory ? (
+            <p className="mt-3 text-sm text-muted-foreground">Loading…</p>
+          ) : history.length === 0 ? (
+            <p className="mt-3 text-sm text-muted-foreground">No check-ins recorded yet.</p>
+          ) : (
+            <ul className="mt-3 max-h-48 overflow-y-auto divide-y divide-border">
+              {history.map((h) => (
+                <li key={h.id} className="flex items-center justify-between gap-3 py-1.5 text-xs text-muted-foreground">
+                  <span className="capitalize">{h.event}</span>
+                  <span>{h.at ? new Date(h.at).toLocaleString() : ''}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Tile>
+      )}
 
       {selectedDevice && (
         <Tile>

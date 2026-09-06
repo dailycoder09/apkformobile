@@ -271,8 +271,14 @@ function setBudget(ownerUserId, category, monthlyLimit) {
 // parent's restore screen needs to see every child device's chunks, not just its own
 // owner_user_id's rows, so this is a small dedicated cross-owner query rather than a
 // generic getList() call.
+// Union, not just DEVICE_BACKUP_CHUNKS alone — a freshly-installed device heartbeats
+// (see server/index.js's /heartbeat route) before it has ever completed a real backup
+// chunk, and should still show up as "online"/last-seen in the parent's device list
+// rather than being invisible until its first successful upload.
 const listBackupDeviceIdsStmt = db.prepare(
-  `SELECT DISTINCT owner_user_id FROM ${TABLES.DEVICE_BACKUP_CHUNKS}`
+  `SELECT owner_user_id FROM ${TABLES.DEVICE_BACKUP_CHUNKS}
+   UNION
+   SELECT owner_user_id FROM ${TABLES.DEVICE_BACKUP_REGISTRY}`
 )
 function listBackupDeviceIds() {
   return listBackupDeviceIdsStmt.all().map(r => r.owner_user_id)

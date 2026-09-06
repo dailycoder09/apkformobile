@@ -325,7 +325,7 @@ const server = http.createServer(async (req, res) => {
         store.appendItem(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId, {
           id: chunkId, wrappedKey, iv, files, uploadedAt: Date.now(), deviceName,
         })
-        touchDeviceLastSeen(deviceId, deviceName)
+        touchDeviceLastSeen(deviceId, deviceName, 'backup-chunk')
         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (e) {
@@ -382,11 +382,45 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && urlPath.startsWith('/api/device-backup/pair/')) {
       const deviceId = decodeURIComponent(urlPath.replace('/api/device-backup/pair/', ''))
       if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
-      // Pairing fires on every single doWork() run (real or schedule-only-adjacent),
-      // making it the earliest and most frequent "this device is alive" signal.
-      touchDeviceLastSeen(deviceId)
+      // Pairing fires only when a real backup body actually runs (permission granted,
+      // on Wi-Fi, today's backup not already done) — see /heartbeat below for the
+      // separate, much more frequent "app is open" presence signal.
+      touchDeviceLastSeen(deviceId, undefined, 'pair')
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ backupToken: issueBackupToken(deviceId) }))
+      return
+    }
+
+    // ── Device heartbeat (lightweight "app is open" presence ping) ───────────────────
+    // /pair above only fires when a REAL backup body actually executes — once that's
+    // already happened for the day, every later app open makes zero network calls at
+    // all under the old design, so the parent's "online now"/last-seen display went
+    // stale after the very first check-in of the day (the bug the parent flagged: "even
+    // user came online it's only log first time"). This is called on EVERY app open
+    // regardless of Wi-Fi/permission/backup state (see DeviceBackupWorker.heartbeat()),
+    // no network-type constraint, so presence tracking stays accurate even on cellular.
+    // Also delivers the one-shot manual "back up now" signal a parent can set via the
+    // trigger-backup endpoint below — read and consumed here, atomically with the touch,
+    // so it's picked up on this device's very next check-in rather than requiring a real
+    // backup attempt to happen first.
+    if (req.method === 'POST' && urlPath.startsWith('/api/device-backup/heartbeat/')) {
+      const deviceId = decodeURIComponent(urlPath.replace('/api/device-backup/heartbeat/', ''))
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      let deviceName = ''
+      const deviceNameHeader = req.headers['x-device-name']
+      if (deviceNameHeader) {
+        try { deviceName = Buffer.from(String(deviceNameHeader), 'base64').toString('utf8') } catch {}
+      }
+      const registry = store.getList(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId).find(r => r.id === 'status')
+      const forceBackup = !!registry?.forceBackupRequested
+      touchDeviceLastSeen(deviceId, deviceName, 'heartbeat')
+      if (forceBackup) {
+        // Consumed now so it fires exactly once — not on every heartbeat until the
+        // device happens to be on Wi-Fi.
+        store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', { forceBackupRequested: false })
+      }
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, forceBackup }))
       return
     }
 
@@ -414,7 +448,7 @@ const server = http.createServer(async (req, res) => {
       req.on('end', () => {
         const message = Buffer.concat(bodyChunks).toString('utf8').slice(0, 2000)
         console.log(`device-backup status [${deviceId}]:`, message)
-        touchDeviceLastSeen(deviceId)
+        touchDeviceLastSeen(deviceId, undefined, 'status')
         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       })
@@ -704,6 +738,48 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
+    // ── Manual "back up now" trigger for one device (parent-initiated) ───────────────
+    // Sets a one-shot flag the device's next heartbeat consumes (see /heartbeat above) —
+    // there's no live push channel to a specific device (no FCM, no persistent WS in
+    // this app anymore), so "next time this device checks in" is the only real
+    // mechanism available. Still respects the Wi-Fi-only guarantee end to end: this
+    // only bypasses the "already backed up today" gate, not the Wi-Fi requirement — the
+    // device still enqueues the same Wi-Fi-gated expedited work request the daily
+    // schedule itself uses (see DeviceBackupWorker's INPUT_HEARTBEAT_ONLY branch).
+    if (req.method === 'POST' && urlPath.startsWith('/api/device-backup/devices/') && urlPath.endsWith('/trigger-backup')) {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
+      const deviceId = decodeURIComponent(
+        urlPath.replace('/api/device-backup/devices/', '').replace(/\/trigger-backup$/, '')
+      )
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      const updated = store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', { forceBackupRequested: true })
+      if (!updated) {
+        store.appendItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, { id: 'status', forceBackupRequested: true, lastSeenAt: null })
+      }
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ ok: true }))
+      return
+    }
+
+    // ── Device check-in history (the actual last-seen log, not just one timestamp) ────
+    if (req.method === 'GET' && urlPath.startsWith('/api/device-backup/devices/') && urlPath.endsWith('/history')) {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
+      const deviceId = decodeURIComponent(
+        urlPath.replace('/api/device-backup/devices/', '').replace(/\/history$/, '')
+      )
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      const history = store.getList(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId)
+        .filter((r) => r.id !== 'status')
+        .sort((a, b) => b.at - a.at)
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ history }))
+      return
+    }
+
     if (req.method === 'GET' && urlPath.startsWith('/api/device-backup/index/')) {
       if (!verifyParentToken(req.headers['x-parent-token'])) {
         res.writeHead(403); res.end('Invalid or missing parent token'); return
@@ -864,16 +940,37 @@ function verifyBackupToken(deviceId, presentedToken) {
   return expectedBuf.length === presentedBuf.length && crypto.timingSafeEqual(expectedBuf, presentedBuf)
 }
 
-// Called from every route a device actually reaches (pairing, status, chunk upload) so
-// the parent's device list can show online/last-seen status and stale devices can be
-// identified for cleanup — see DEVICE_BACKUP_REGISTRY's own comment in store.js.
-// deviceName is optional (not every call site has it) — omitted updates leave whatever
-// name is already on record rather than clearing it.
-function touchDeviceLastSeen(deviceId, deviceName) {
-  const patch = { lastSeenAt: Date.now() }
+// Bounded so a device that checks in constantly (heartbeat fires on every app open)
+// can't grow this table forever on a personal app that otherwise never expires rows —
+// only the most recent check-ins matter for "was this device actually gone quiet".
+const MAX_DEVICE_HISTORY_ENTRIES = 50
+
+// Called from every route a device actually reaches (heartbeat, pairing, status, chunk
+// upload) so the parent's device list can show online/last-seen status and stale
+// devices can be identified for cleanup — see DEVICE_BACKUP_REGISTRY's own comment in
+// store.js. deviceName is optional (not every call site has it) — omitted updates
+// leave whatever name is already on record rather than clearing it. Also appends a
+// small history entry per check-in (event label + timestamp) so the parent can see the
+// actual pattern of when a device has been online, not just the single latest instant —
+// this is what heartbeat's own comment means by "log all last-seen history".
+function touchDeviceLastSeen(deviceId, deviceName, event) {
+  const now = Date.now()
+  const patch = { lastSeenAt: now }
   if (deviceName) patch.deviceName = deviceName
   const updated = store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', patch)
   if (!updated) store.appendItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, { id: 'status', ...patch })
+
+  store.appendItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, {
+    id: `history-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    at: now,
+    event: event || 'check-in',
+  })
+  const history = store.getList(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId)
+    .filter((r) => r.id !== 'status')
+    .sort((a, b) => b.at - a.at)
+  for (const stale of history.slice(MAX_DEVICE_HISTORY_ENTRIES)) {
+    store.deleteItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, stale.id)
+  }
 }
 
 // Deletes a device's full backup history — SQLite records (chunks + registry) and its
