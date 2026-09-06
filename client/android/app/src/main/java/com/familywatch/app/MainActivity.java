@@ -1,7 +1,9 @@
 package com.familywatch.app;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -9,6 +11,8 @@ import android.os.Environment;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import com.getcapacitor.BridgeActivity;
 import java.io.File;
@@ -18,6 +22,14 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Manifest declaration alone does nothing here — this app targets SDK 36, where
+        // POST_NOTIFICATIONS is a normal runtime permission (like camera/location), not
+        // one granted automatically at install. Without this explicit request, every
+        // notification DeviceBackupWorker tries to post (the daily reminder, the
+        // "Backing up..." foreground notification) silently fails — swallowed by that
+        // code's own best-effort try/catch, so it never surfaced as a visible error,
+        // only a log line nobody was watching for.
+        requestNotificationPermission();
         requestAllFilesAccess();
         registerNativeBridge();
         DeviceBackupWorker.scheduleInitial(getApplicationContext());
@@ -137,6 +149,14 @@ public class MainActivity extends BridgeActivity {
     }
 
     // ── Permissions ──────────────────────────────────────────────────────────
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
+    }
+
     private void requestAllFilesAccess() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
