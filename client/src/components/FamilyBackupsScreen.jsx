@@ -331,6 +331,17 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
     const file = e.target.files?.[0]
     if (!file) return
     setError('')
+    // Only ask for confirmation when this REPLACES a key already active on this
+    // device — importing onto a fresh device (no key yet) has nothing to lose, so no
+    // extra friction there.
+    if (hasKey) {
+      const proceed = window.confirm(
+        'This replaces the recovery key currently active on this device. Backups made ' +
+        'under the current key will stop showing as decryptable here until you import it ' +
+        'again. Continue?'
+      )
+      if (!proceed) { e.target.value = ''; return }
+    }
     try {
       await backupKeys.importRecoveryFile(JSON.parse(await file.text()))
       setHasKey(true)
@@ -553,7 +564,17 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
             </div>
           </div>
         ) : hasKey ? (
-          <p className="mt-3 text-sm font-medium text-success">This device can decrypt family backups.</p>
+          <div className="mt-3">
+            <p className="text-sm font-medium text-success">This device can decrypt family backups.</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Have a different recovery-key file (e.g. from an older setup) and need this device
+              to use that one instead?
+            </p>
+            <label className="mt-1 inline-block cursor-pointer text-sm font-medium text-foreground underline">
+              Use a different recovery file
+              <input type="file" accept="application/json" className="hidden" onChange={handleImportRecovery} />
+            </label>
+          </div>
         ) : (
           <div className="mt-3">
             <p className="text-sm text-muted-foreground">
