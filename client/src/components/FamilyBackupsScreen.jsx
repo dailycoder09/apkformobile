@@ -754,7 +754,17 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
 
       {selectedDevice && (
         <Tile className="mb-4">
-          <TileLabel>Device folders</TileLabel>
+          <div className="flex items-center justify-between gap-2">
+            <TileLabel>Device folders</TileLabel>
+            <button
+              type="button"
+              onClick={() => loadFileReport(selectedDevice)}
+              disabled={loadingFileReport}
+              className="shrink-0 text-xs font-medium text-muted-foreground underline disabled:opacity-40"
+            >
+              {loadingFileReport ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </div>
           <p className="mt-1 text-xs text-muted-foreground">
             A full inventory of what is on the device — file names, sizes, and dates only.
             This is not a backup; nothing here has been copied off the device.
@@ -763,7 +773,9 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
             <p className="mt-3 text-sm text-muted-foreground">Loading…</p>
           ) : !fileReport?.scannedAt ? (
             <p className="mt-3 text-sm text-muted-foreground">
-              No folder scan yet — tap 🗂 next to this device above to request one.
+              No folder scan yet — tap 🗂 next to this device above to request one, then Refresh
+              here once it has had a moment to finish (it needs Wi-Fi and can take a little
+              while on a device with a lot of files).
             </p>
           ) : (
             <div className="mt-3">
