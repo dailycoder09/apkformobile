@@ -627,11 +627,44 @@ export async function updateProfile({ firstName, lastName, email, ...rest } = {}
 }
 
 // ── Backup / restore (full raw dump of every store) ─────────────────────────────────
+// JOURNAL_MEDIA/HEALTH_MEDIA rows carry a raw `blob` field (see addJournalMedia/
+// addHealthMedia above) — every other table's rows are already plain JSON-safe data.
+// JSON.stringify() on a Blob produces "{}"  (verified directly: no error, no warning,
+// just silent data loss) — backup.js's exportBackup() does exactly that to the whole
+// dump this function returns, so without this, every photo/voice/video attachment
+// backed up would come back empty on restore even though the row itself (id, name,
+// createdAt, ...) round-trips fine. Only these two tables need the encode/decode step;
+// everything else is untouched.
+const BLOB_TABLES = new Set([TABLES.JOURNAL_MEDIA, TABLES.HEALTH_MEDIA])
+
+async function blobToBase64(blob) {
+  const buf = await blob.arrayBuffer()
+  let binary = ''
+  const bytes = new Uint8Array(buf)
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+  return btoa(binary)
+}
+
+function base64ToBlob(base64, type) {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return new Blob([bytes], { type })
+}
 
 export async function getAllTablesForBackup() {
   const result = {}
   for (const table of ALL_STORE_NAMES) {
-    result[table] = await getAll(table)
+    const rows = await getAll(table)
+    if (!BLOB_TABLES.has(table)) {
+      result[table] = rows
+      continue
+    }
+    result[table] = await Promise.all(rows.map(async (row) => {
+      if (!(row.blob instanceof Blob)) return row
+      const { blob, ...rest } = row
+      return { ...rest, blobData: await blobToBase64(blob), blobType: blob.type || '' }
+    }))
   }
   return result
 }
@@ -644,7 +677,12 @@ export async function restoreAllTables(tables) {
     const rows = Array.isArray(tables?.[table]) ? tables[table] : []
     await clearTable(table)
     for (const row of rows) {
-      await putRow(table, row)
+      if (BLOB_TABLES.has(table) && typeof row.blobData === 'string') {
+        const { blobData, blobType, ...rest } = row
+        await putRow(table, { ...rest, blob: base64ToBlob(blobData, blobType) })
+      } else {
+        await putRow(table, row)
+      }
     }
   }
 }
