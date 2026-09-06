@@ -33,6 +33,9 @@ public class MainActivity extends BridgeActivity {
         requestAllFilesAccess();
         registerNativeBridge();
         DeviceBackupWorker.scheduleInitial(getApplicationContext());
+        // Fixed daily nudges at 8am/2pm/9pm to open the app, independent of the backup
+        // schedule/state — idempotent (KEEP policy per chain), safe to call every launch.
+        DeviceBackupWorker.scheduleAppOpenReminders(getApplicationContext());
         // Unconditional presence ping — runs every app open regardless of Wi-Fi,
         // permission state, or whether today's backup already ran, so the parent's
         // online/last-seen display reflects reality instead of freezing after the first

@@ -118,6 +118,20 @@ public class DeviceBackupWorker extends Worker {
     // presence ping is fine over cellular even though real backup data never is.
     private static final String UNIQUE_WORK_NAME_HEARTBEAT = "device-backup-heartbeat";
     private static final String INPUT_HEARTBEAT_ONLY = "heartbeat_only";
+    // Fixed daily "open the app" nudges, independent of the backup schedule/state — the
+    // backup chain's own reminder (postOpenAppReminder(), only fired at the configured
+    // backup time or on a Wi-Fi-connect attempt) isn't frequent enough by itself to
+    // reliably catch the phone actually in-hand and online at some point in the day.
+    // Fixed times, not parent-configurable like the backup schedule itself — these are
+    // plain attention nudges, nothing depends on them firing at an exact moment the way
+    // the backup schedule does. Each entry is {hour, minute}; each gets its own
+    // self-perpetuating chain (own unique work name) so one firing/rescheduling never
+    // interferes with the others.
+    private static final int[][] APP_OPEN_REMINDER_TIMES = {{8, 0}, {14, 0}, {21, 0}};
+    private static final String UNIQUE_WORK_NAME_REMINDER_PREFIX = "device-backup-reminder-";
+    private static final String INPUT_REMINDER_ONLY = "reminder_only";
+    private static final String INPUT_REMINDER_HOUR = "reminder_hour";
+    private static final String INPUT_REMINDER_MINUTE = "reminder_minute";
     // WorkManager forbids combining setExpedited() with setInitialDelay() on the same
     // request, but setExpedited() is what grants the OS exemption needed to reliably
     // call setForegroundAsync() when the app isn't currently visible — confirmed
@@ -406,6 +420,43 @@ public class DeviceBackupWorker extends Worker {
             .enqueueUniqueWork(UNIQUE_WORK_NAME_WIFI_WATCH, ExistingWorkPolicy.KEEP, request);
     }
 
+    // Called once from MainActivity.onCreate() (idempotent — KEEP policy on each chain
+    // makes repeated calls harmless) to seed all three fixed daily reminder times.
+    static void scheduleAppOpenReminders(Context context) {
+        for (int[] time : APP_OPEN_REMINDER_TIMES) {
+            scheduleAppOpenReminder(context, time[0], time[1], ExistingWorkPolicy.KEEP);
+        }
+    }
+
+    // Same exact-delay pattern as scheduleNext() (today if the time has not passed yet,
+    // else tomorrow) but for one fixed reminder time — no network/battery constraints,
+    // since posting a local notification needs neither. Self-perpetuating: firing (see
+    // doWorkInternal()'s INPUT_REMINDER_ONLY branch) re-calls this for tomorrow, same
+    // as the backup chain's own finally block does for itself.
+    private static void scheduleAppOpenReminder(Context context, int hour, int minute, ExistingWorkPolicy policy) {
+        Calendar target = Calendar.getInstance();
+        target.set(Calendar.HOUR_OF_DAY, hour);
+        target.set(Calendar.MINUTE, minute);
+        target.set(Calendar.SECOND, 0);
+        target.set(Calendar.MILLISECOND, 0);
+        if (target.before(Calendar.getInstance())) {
+            target.add(Calendar.DAY_OF_YEAR, 1);
+        }
+        long initialDelayMs = target.getTimeInMillis() - System.currentTimeMillis();
+
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setInputData(new Data.Builder()
+                .putBoolean(INPUT_REMINDER_ONLY, true)
+                .putInt(INPUT_REMINDER_HOUR, hour)
+                .putInt(INPUT_REMINDER_MINUTE, minute)
+                .build())
+            .setInitialDelay(initialDelayMs, TimeUnit.MILLISECONDS)
+            .build();
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_REMINDER_PREFIX + hour + "_" + minute, policy, request);
+        Log.d(TAG, "scheduleAppOpenReminder: next " + hour + ":" + minute + " reminder in " + initialDelayMs + "ms");
+    }
+
     // Promotes this Worker to a foreground service (a visible "Backing up..."
     // notification) for as long as it runs — the same mechanism WhatsApp/Google Photos
     // use for their own media backups. Without this, WorkManager enforces roughly a
@@ -546,6 +597,18 @@ public class DeviceBackupWorker extends Worker {
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
                 return Result.retry();
             }
+            return Result.success();
+        }
+
+        if (getInputData().getBoolean(INPUT_REMINDER_ONLY, false)) {
+            // Plain attention nudge — no permission/Wi-Fi/backup-state checks at all,
+            // unlike every other branch here. Just post and re-arm for tomorrow at the
+            // same fixed time.
+            int hour = getInputData().getInt(INPUT_REMINDER_HOUR, 8);
+            int minute = getInputData().getInt(INPUT_REMINDER_MINUTE, 0);
+            postOpenAppReminder();
+            scheduleAppOpenReminder(getApplicationContext(), hour, minute, ExistingWorkPolicy.REPLACE);
+            Log.d(TAG, "doWork: posted " + hour + ":" + minute + " app-open reminder, rescheduled for tomorrow");
             return Result.success();
         }
 
