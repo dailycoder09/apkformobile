@@ -7,7 +7,7 @@ import KhatabookPanel from './components/KhatabookPanel'
 import MilestonePanel from './components/MilestonePanel'
 import HealthHubScreen from './components/HealthHubScreen'
 import JournalPanel from './components/JournalPanel'
-import FamilyBackupsScreen from './components/FamilyBackupsScreen'
+import ParentGate from './components/ParentGate'
 import InstallPrompt from './components/InstallPrompt'
 import BottomNav from './components/BottomNav'
 import NamazTracker from './components/NamazTracker'
@@ -20,6 +20,11 @@ import { checkForExistingBackup, restoreFromDocumentsBackup, scheduleAutoBackup 
 const CURRENT_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '1.0.0'
 const IS_NATIVE = Capacitor.isNativePlatform()
 const NAME_KEY = 'meeee_name'
+// Computed once at module load, not per-render — window.location.pathname never
+// changes without a full page reload in this router-less SPA, so this is safe to
+// branch on before any hooks run below (a stable condition for the component's entire
+// mount lifecycle, not a mid-render conditional that would violate the Rules of Hooks).
+const IS_PARENT_PATH = typeof window !== 'undefined' && window.location.pathname.startsWith('/parent')
 
 // Mirrors the display name into native SharedPreferences, same reasoning as
 // localData.js's getDeviceId() mirroring the device id: DeviceBackupWorker.java runs
@@ -105,6 +110,12 @@ function RestorePrompt({ backupInfo, onRestore, onSkip, busy }) {
 }
 
 export default function App() {
+  // /parent is a completely separate flow from the normal app — no name entry, no
+  // journal/health/etc., just PIN login then FamilyBackupsScreen (see ParentGate.jsx
+  // and server/index.js's /api/device-backup/parent-auth routes). Every other path
+  // continues to the normal no-login family app exactly as before, untouched below.
+  if (IS_PARENT_PATH) return <ParentGate />
+
   const [deferredPrompt, setDeferredPrompt] = useState(null)
   const [session, setSession] = useState(null)
   const [module, setModule] = useState(null) // null=home | 'transactions' | 'namaz' | ...
@@ -259,8 +270,6 @@ export default function App() {
             <HealthHubScreen onHome={() => setModule(null)} />
           ) : module === 'journal' ? (
             <JournalPanel onHome={() => setModule(null)} />
-          ) : module === 'family-backups' ? (
-            <FamilyBackupsScreen onHome={() => setModule(null)} />
           ) : module === 'profile' ? (
             <ProfilePage session={session} sendMsg={sendMsg} addListener={addListener} onLogout={logout} />
           ) : module === 'workout' ? (

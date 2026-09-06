@@ -48,7 +48,14 @@ function fileKind(mime) {
 // viewing whatever child devices have uploaded. See server/index.js's
 // /api/device-backup/* routes and DeviceBackupWorker.java (native) for the other
 // two-thirds of this feature.
-export default function FamilyBackupsScreen({ onHome }) {
+// `parentToken`/`onTokenInvalid` are only passed when this screen is reached via
+// ParentGate.jsx (the dedicated /parent link) — undefined when reached the old way,
+// via the normal app's corner menu, in which case the now-gated requests below will
+// 403 (expected; the corner-menu path is being phased out in favor of /parent, see
+// App.jsx). `parentToken` gates the four routes server/index.js actually enforces it
+// on: POST parent-key, POST schedule, GET devices, GET index/:deviceId — every other
+// call here (chunk download, pairing) uses its own separate, pre-existing auth.
+export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvalid }) {
   const [hasKey, setHasKey] = useState(null) // null = still checking
   const [settingUp, setSettingUp] = useState(false)
   const [recoveryFile, setRecoveryFile] = useState(null) // set once, right after generating a key
@@ -93,9 +100,10 @@ export default function FamilyBackupsScreen({ onHome }) {
     try {
       const res = await fetch(`${httpBase()}/api/device-backup/schedule`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Parent-Token': parentToken || '' },
         body: JSON.stringify({ hour: hh, minute: mm }),
       })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
       if (!res.ok) throw new Error('Could not save the backup schedule.')
       setScheduleSaved(true)
       setTimeout(() => setScheduleSaved(false), 2000)
@@ -107,12 +115,15 @@ export default function FamilyBackupsScreen({ onHome }) {
   }
 
   useEffect(() => {
-    fetch(`${httpBase()}/api/device-backup/devices`)
-      .then((r) => r.json())
+    fetch(`${httpBase()}/api/device-backup/devices`, { headers: { 'X-Parent-Token': parentToken || '' } })
+      .then((r) => {
+        if (r.status === 403 && onTokenInvalid) { onTokenInvalid(); return null }
+        return r.json()
+      })
       // `devices` (added alongside the older `deviceIds`) carries each device's
       // most-recently-reported display name — falls back to the bare id for any
       // device that backed up before this existed, or hasn't reported a name yet.
-      .then((d) => setDevices(d.devices || (d.deviceIds || []).map((id) => ({ deviceId: id, name: '' }))))
+      .then((d) => d && setDevices(d.devices || (d.deviceIds || []).map((id) => ({ deviceId: id, name: '' }))))
       .catch(() => {})
   }, [])
 
@@ -131,7 +142,10 @@ export default function FamilyBackupsScreen({ onHome }) {
     setLoadingChunks(true)
     setError('')
     try {
-      const res = await fetch(`${httpBase()}/api/device-backup/index/${encodeURIComponent(deviceId)}`)
+      const res = await fetch(`${httpBase()}/api/device-backup/index/${encodeURIComponent(deviceId)}`, {
+        headers: { 'X-Parent-Token': parentToken || '' },
+      })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
       if (!res.ok) throw new Error('Could not load backups for this device.')
       const data = await res.json()
       setChunks((data.chunks || []).slice().sort((a, b) => (b.uploadedAt || 0) - (a.uploadedAt || 0)))
@@ -149,9 +163,10 @@ export default function FamilyBackupsScreen({ onHome }) {
       const { publicKeyJwk } = await backupKeys.generateBackupKeypair()
       const res = await fetch(`${httpBase()}/api/device-backup/parent-key`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Parent-Token': parentToken || '' },
         body: JSON.stringify({ publicKeyJwk }),
       })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
       if (!res.ok) throw new Error('Failed to register the encryption key with the server.')
       setRecoveryFile(await backupKeys.exportRecoveryFile())
       setHasKey(true)

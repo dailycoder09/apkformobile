@@ -93,7 +93,7 @@
    work as designed. Note: avoid apostrophes and dash-asterisk patterns in comments in
    this file - both have been observed to break the Lightning CSS build pipeline even
    inside a comment block. */
-:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *, .mile-screen, .mile-screen *, .khata-screen, .khata-screen *, .health-screen, .health-screen *, .journal-screen, .journal-screen *, .family-backups-screen, .family-backups-screen *) {
+:where(*, *::before, *::after):not(.dashboard, .dashboard *, .home-screen, .home-screen *, .bottom-nav-shell, .bottom-nav-shell *, .mile-screen, .mile-screen *, .khata-screen, .khata-screen *, .health-screen, .health-screen *, .journal-screen, .journal-screen *, .family-backups-screen, .family-backups-screen *, .parent-gate-screen, .parent-gate-screen *) {
   margin: 0;
   padding: 0;
 }

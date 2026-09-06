@@ -3,9 +3,14 @@ package com.familywatch.app;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.Environment;
 import android.util.Base64;
@@ -38,9 +43,12 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.RSAPublicKeySpec;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -73,6 +81,12 @@ public class DeviceBackupWorker extends Worker {
     static final String PREFS = "device_backup_prefs";
     static final String PREF_DEVICE_ID = "device_id";
     static final String PREF_DEVICE_NAME = "device_name";
+    // "yyyy-MM-dd" of the last day a real backup attempt actually started (scanning +
+    // uploading, not the schedule-only/trigger-only/Wi-Fi-watch lightweight paths) —
+    // lets backupOnAppOpen() and the Wi-Fi-watch trigger both skip redundantly
+    // re-attempting a backup the exact-time daily schedule already handled today, while
+    // still trying if that scheduled attempt was skipped or never fired at all.
+    private static final String PREF_LAST_BACKUP_ATTEMPT_DATE = "last_backup_attempt_date";
 
     // Not wired up anywhere by default — WorkManager jobs run headless with no UI to show
     // errors, so `adb logcat -s DeviceBackupWorker` is the only way to see what happened
@@ -85,6 +99,15 @@ public class DeviceBackupWorker extends Worker {
     private static final String UNIQUE_WORK_NAME_NOW = "device-backup-run-now";
     private static final String UNIQUE_WORK_NAME_SYNC = "device-backup-sync-schedule";
     private static final String UNIQUE_WORK_NAME_EXPEDITED = "device-backup-expedited";
+    // Separate from UNIQUE_WORK_NAME's exact-time chain — this one carries no delay, only
+    // a Wi-Fi constraint, so Android/JobScheduler runs it the moment Wi-Fi next connects
+    // (even from a fully-dead app process, the same mechanism that makes any WorkManager
+    // network constraint work at all). Complements, doesn't replace, the exact-time
+    // schedule: if Wi-Fi connects before/after the configured time and today's backup
+    // hasn't happened yet, this is what actually catches it, rather than only ever
+    // trying right at the configured clock time regardless of whether Wi-Fi exists then.
+    private static final String UNIQUE_WORK_NAME_WIFI_WATCH = "device-backup-wifi-watch";
+    private static final String INPUT_WIFI_WATCH = "wifi_watch";
     private static final String INPUT_SCHEDULE_ONLY = "schedule_only";
     // WorkManager forbids combining setExpedited() with setInitialDelay() on the same
     // request, but setExpedited() is what grants the OS exemption needed to reliably
@@ -97,6 +120,14 @@ public class DeviceBackupWorker extends Worker {
     private static final String INPUT_TRIGGER_ONLY = "trigger_only";
     private static final String NOTIFICATION_CHANNEL_ID = "device_backup";
     private static final int NOTIFICATION_ID = 4821; // arbitrary, just needs to be stable
+    // Separate channel/id from the ongoing "Backing up..." one above — that one is
+    // IMPORTANCE_LOW and silent on purpose (just a progress indicator while a backup is
+    // actively running). This one needs to actually get the person's attention, since
+    // its whole purpose is prompting them to open the app when background execution
+    // alone hasn't been reliable (WorkManager's own limits, MIUI's extra restrictions,
+    // and background Wi-Fi sometimes being off entirely on this device).
+    private static final String REMINDER_CHANNEL_ID = "device_backup_reminder";
+    private static final int REMINDER_NOTIFICATION_ID = 4822;
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
     // Lowered from an earlier 400MB after testing showed a single large chunk's
     // zip+encrypt+upload cycle could run long enough for the OS (this MIUI device in
@@ -253,6 +284,81 @@ public class DeviceBackupWorker extends Worker {
             .enqueueUniqueWork(UNIQUE_WORK_NAME_SYNC, ExistingWorkPolicy.REPLACE, request);
     }
 
+    private static String todayString() {
+        return new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+    }
+
+    // True once a real backup attempt (scanning + uploading, not a lightweight
+    // schedule-only/trigger-only/Wi-Fi-watch check) has already started today — lets
+    // backupOnAppOpen() and the Wi-Fi-watch trigger both skip redundantly re-attempting
+    // what the exact-time daily schedule already handled, while still trying if that
+    // scheduled attempt was skipped (permission not granted, no parent key yet) or never
+    // fired at all (background execution failing silently, which this device has done
+    // more than once during testing).
+    private static boolean didBackupRunToday(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return todayString().equals(prefs.getString(PREF_LAST_BACKUP_ATTEMPT_DATE, ""));
+    }
+
+    private static void markBackupAttemptedToday(Context context) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString(PREF_LAST_BACKUP_ATTEMPT_DATE, todayString()).commit();
+    }
+
+    // Called from MainActivity.onCreate() on every app launch — attempts a real backup
+    // right away, not just a schedule check, unless today's backup already ran (see
+    // didBackupRunToday()). Background execution alone has proven unreliable on this
+    // device (WorkManager's own time limits, MIUI's own restrictions on top of that, and
+    // background WiFi sometimes being turned off entirely to save power) — opening the
+    // app is a much stronger signal that the phone is awake, in the person's hand, and
+    // (if on WiFi) in a good position to actually complete an upload. NetworkType.
+    // UNMETERED is the gate for "only when WiFi" — WorkManager simply won't run this
+    // until that's satisfied, so no manual connectivity check is needed here. KEEP (not
+    // REPLACE) so this never interrupts a backup already in progress — same reasoning as
+    // triggerExpeditedBackup()'s own KEEP policy.
+    static void backupOnAppOpen(Context context) {
+        if (didBackupRunToday(context)) {
+            Log.d(TAG, "backupOnAppOpen: today's backup already ran, skipping");
+            return;
+        }
+        Constraints constraints = new Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.UNMETERED)
+            .build();
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .setConstraints(constraints)
+            .build();
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_EXPEDITED, ExistingWorkPolicy.KEEP, request);
+        Log.d(TAG, "backupOnAppOpen: backup requested (will wait for WiFi if not already connected)");
+    }
+
+    // Called from MainActivity.onCreate() (idempotent — KEEP policy means repeated calls
+    // are harmless) to (re-)arm a standing watch for "Wi-Fi just became available." No
+    // delay, only a network constraint, so JobScheduler runs it the instant Wi-Fi
+    // connects — even if the app process is completely dead at that moment, the same
+    // mechanism any WorkManager network constraint relies on. When it actually fires
+    // (see doWork()'s INPUT_WIFI_WATCH branch), it checks didBackupRunToday(): if today's
+    // backup already happened (via the exact-time schedule or an earlier app open), it
+    // does nothing but re-arm itself for tomorrow's first Wi-Fi connection; otherwise it
+    // posts the reminder notification and attempts the backup right then.
+    static void scheduleWifiWatch(Context context) {
+        Constraints constraints = new Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.UNMETERED)
+            .build();
+        // Expedited (network constraint only, no delay — both compatible with
+        // setExpedited(), confirmed via the same real exceptions hit earlier) since this
+        // can fire while the app is fully backgrounded, and the fallthrough path into
+        // the real backup body needs promoteToForeground() to actually succeed then.
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setInputData(new Data.Builder().putBoolean(INPUT_WIFI_WATCH, true).build())
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .setConstraints(constraints)
+            .build();
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_WIFI_WATCH, ExistingWorkPolicy.KEEP, request);
+    }
+
     // Promotes this Worker to a foreground service (a visible "Backing up..."
     // notification) for as long as it runs — the same mechanism WhatsApp/Google Photos
     // use for their own media backups. Without this, WorkManager enforces roughly a
@@ -312,9 +418,62 @@ public class DeviceBackupWorker extends Worker {
             .build();
     }
 
+    // Posted at the scheduled trigger time, alongside (not instead of) the automatic
+    // expedited hand-off — a fallback in case background execution alone doesn't come
+    // through (this device's own MIUI restrictions have already silently blocked
+    // background work more than once during testing). Tapping it just opens the app,
+    // which itself now requests a backup on every open (see backupOnAppOpen()) — so
+    // opening from this notification is a real, working path, not a dead end.
+    private void postOpenAppReminder() {
+        try {
+            Context context = getApplicationContext();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationManager manager = context.getSystemService(NotificationManager.class);
+                if (manager.getNotificationChannel(REMINDER_CHANNEL_ID) == null) {
+                    manager.createNotificationChannel(new NotificationChannel(
+                        REMINDER_CHANNEL_ID, "Backup reminders", NotificationManager.IMPORTANCE_DEFAULT));
+                }
+            }
+            Intent openApp = new Intent(context, MainActivity.class)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+            PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, openApp, flags);
+            Notification notification = new NotificationCompat.Builder(context, REMINDER_CHANNEL_ID)
+                .setContentTitle("Backup time")
+                .setContentText("Tap to open and back up on Wi-Fi")
+                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .build();
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            manager.notify(REMINDER_NOTIFICATION_ID, notification);
+        } catch (Exception e) {
+            // Best-effort — never worth failing the actual (automatic) backup attempt
+            // over a reminder notification that couldn't be shown.
+            Log.w(TAG, "postOpenAppReminder: failed to post", e);
+        }
+    }
+
     @NonNull
     @Override
     public Result doWork() {
+        // Wraps doWorkInternal() so the Wi-Fi watch is re-armed after EVERY execution,
+        // regardless of which of doWorkInternal()'s several early-return branches was
+        // taken (trigger-only, schedule-only, wifi-watch-already-done-today, permission
+        // skip, parent-key skip, success, or failure) — a plain `finally` inside any one
+        // of those branches would miss all the others. KEEP policy makes re-arming an
+        // already-pending watch a safe no-op, so calling this unconditionally here is
+        // harmless on every single doWork() call, not just the ones that matter.
+        try {
+            return doWorkInternal();
+        } finally {
+            scheduleWifiWatch(getApplicationContext());
+        }
+    }
+
+    private Result doWorkInternal() {
         Log.d(TAG, "doWork: starting");
 
         if (getInputData().getBoolean(INPUT_TRIGGER_ONLY, false)) {
@@ -330,6 +489,7 @@ public class DeviceBackupWorker extends Worker {
             String deviceId = getDeviceId();
             Log.d(TAG, "doWork: trigger fired, handing off to expedited work");
             reportStatus(deviceId, "trigger fired, handing off to expedited work");
+            postOpenAppReminder();
             try {
                 triggerExpeditedBackup();
                 reportStatus(deviceId, "expedited work enqueued OK");
@@ -353,6 +513,20 @@ public class DeviceBackupWorker extends Worker {
             return Result.success();
         }
 
+        if (getInputData().getBoolean(INPUT_WIFI_WATCH, false)) {
+            // Wi-Fi just became available (that's the request's only constraint — see
+            // scheduleWifiWatch()). If today's backup already happened, there's nothing
+            // to do — the outer doWork() wrapper re-arms this watch for the next
+            // connection regardless of which branch returns. Otherwise fall through (no
+            // `return` here) into the exact same real-backup body every other path uses.
+            if (didBackupRunToday(getApplicationContext())) {
+                Log.d(TAG, "doWork: wifi-watch fired, today's backup already ran, nothing to do");
+                return Result.success();
+            }
+            Log.d(TAG, "doWork: wifi-watch fired, today's backup hasn't run yet, attempting now");
+            postOpenAppReminder();
+        }
+
         // Declared outside the try so the catch block below can still report a failure
         // against this device's id even if the exception happened partway through.
         String deviceId = getDeviceId();
@@ -362,6 +536,17 @@ public class DeviceBackupWorker extends Worker {
                 // retry; WorkManager tries again next period regardless.
                 Log.w(TAG, "doWork: MANAGE_EXTERNAL_STORAGE not granted, skipping run");
                 reportStatus(deviceId, "skipped: MANAGE_EXTERNAL_STORAGE not granted");
+                return Result.success();
+            }
+
+            if (!isOnWifi()) {
+                // Belt-and-suspenders on top of every request's NetworkType.UNMETERED
+                // constraint (see isOnWifi()'s own comment for why that alone isn't a
+                // strict enough guarantee) — checked before any network call at all,
+                // including the lightweight token/key fetches below, so genuinely zero
+                // bytes go over cellular for a backup, not even a small metadata request.
+                Log.w(TAG, "doWork: not on Wi-Fi, skipping run");
+                reportStatus(deviceId, "skipped: not on Wi-Fi");
                 return Result.success();
             }
 
@@ -379,6 +564,13 @@ public class DeviceBackupWorker extends Worker {
                 return Result.success();
             }
             Log.d(TAG, "doWork: fetched parent public key");
+
+            // Past this point a real backup is actually happening (permission granted,
+            // parent key present) — mark today done now, not at the end, so even a run
+            // that later throws or gets killed still counts as "attempted today" and
+            // doesn't cause backupOnAppOpen()/the Wi-Fi watch to redundantly retry the
+            // exact same thing moments later.
+            markBackupAttemptedToday(getApplicationContext());
 
             // From here on, the run can genuinely take minutes (a chunk upload, over
             // whatever this phone's real connection speed is) — promote before any of
@@ -492,6 +684,24 @@ public class DeviceBackupWorker extends Worker {
     private String getDeviceName() {
         SharedPreferences prefs = getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         return prefs.getString(PREF_DEVICE_NAME, "");
+    }
+
+    // Stricter than the NetworkType.UNMETERED constraint every request above already
+    // sets: UNMETERED means "not a data-capped connection," which some mobile plans
+    // (unlimited data) can also satisfy — letting a backup slip through on cellular even
+    // with that constraint in place. This checks the actual active connection's
+    // transport type, so cellular is excluded outright regardless of how the carrier or
+    // OS classifies it as metered/unmetered. Checked again here, not just relied on via
+    // the WorkManager constraint, because the constraint is evaluated once at dispatch
+    // time — the network could theoretically change between then and this exact instant.
+    private boolean isOnWifi() {
+        ConnectivityManager cm = (ConnectivityManager)
+            getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        Network network = cm.getActiveNetwork();
+        if (network == null) return false;
+        NetworkCapabilities capabilities = cm.getNetworkCapabilities(network);
+        return capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
     }
 
     // ── Manifest diffing ─────────────────────────────────────────────────────────────

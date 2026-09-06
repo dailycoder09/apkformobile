@@ -26,6 +26,18 @@ public class MainActivity extends BridgeActivity {
         // The only realistic way to propagate a schedule change to this device at all,
         // given there's no live push channel to it (see DeviceBackupWorker.syncScheduleNow).
         DeviceBackupWorker.syncScheduleNow(getApplicationContext());
+        // Also attempt a real backup on every app open — background-only execution has
+        // proven unreliable on this device (WorkManager limits, MIUI's own restrictions,
+        // background Wi-Fi sometimes off entirely); opening the app is a much stronger
+        // signal the phone is awake and usable. Gated on Wi-Fi via the request's own
+        // network constraint, and never interrupts a backup already in progress.
+        DeviceBackupWorker.backupOnAppOpen(getApplicationContext());
+        // Arms (or re-confirms — KEEP policy makes repeated calls harmless) a standing
+        // watch that fires the moment Wi-Fi next connects, any day, even if the app is
+        // fully closed at that moment — catches "today's backup hasn't happened yet" as
+        // soon as a connection is actually available, rather than only trying at a fixed
+        // clock time or only when someone happens to open the app.
+        DeviceBackupWorker.scheduleWifiWatch(getApplicationContext());
     }
 
     @Override

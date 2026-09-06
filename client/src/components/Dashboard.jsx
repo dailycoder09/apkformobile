@@ -290,9 +290,7 @@ export default function Dashboard({ session, onSelect, sendMsg, addListener, sho
             addListener={addListener}
             showProfile={showProfile}
             onProfileOpen={onProfileOpen}
-            extraItems={[
-              { label: 'Family Backups', icon: 'cloud_done', onClick: () => onSelect('family-backups') },
-            ]}
+            extraItems={[]}
           />
         </div>
 

@@ -86,6 +86,14 @@ const UPLOAD_TOKEN_SECRET = store.getOrCreateSecret('upload_token_secret')
 // verified anytime after by recomputing the same HMAC — see verifyBackupToken below.
 const BACKUP_TOKEN_SECRET = store.getOrCreateSecret('backup_token_secret')
 
+// Gates the parent-only device-backup controls (setting/overwriting the encryption
+// key, changing the schedule, viewing the device list) behind a PIN the parent sets up
+// once at /parent — previously wide open to anyone with the server URL. Deterministic
+// (HMAC of a fixed string, no per-login nonce) rather than a real expiring session,
+// consistent with this codebase's existing token model above rather than introducing a
+// different, more complex one this app's trust level doesn't otherwise call for.
+const PARENT_TOKEN_SECRET = store.getOrCreateSecret('parent_token_secret')
+
 const MIME = {
   '.html': 'text/html', '.js': 'application/javascript',
   '.css': 'text/css',   '.json': 'application/json',
@@ -409,9 +417,93 @@ const server = http.createServer(async (req, res) => {
       return
     }
 
+    // ── Parent PIN (gates the /parent link — ParentGate.jsx) ──────────────────────────
+    // Global setting, same DEVICE_BACKUP_KEYS table as the parent public key below, just
+    // a different id. Hashed with scrypt + a random per-setup salt — not reversible from
+    // the stored record even though this is a low-stakes personal-app PIN, not a password.
+    if (req.method === 'GET' && urlPath === '/api/device-backup/parent-auth') {
+      const record = store.getList(store.TABLES.DEVICE_BACKUP_KEYS, 'global').find(r => r.id === 'parent_auth')
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ isSet: !!record?.pinHash }))
+      return
+    }
+
+    // Only succeeds once — the first person to reach /parent before any PIN exists gets
+    // to set it (a deliberate, small bootstrap gap on a personal/family server; do this
+    // step soon after deploying to close it). No "change PIN" flow yet — out of scope,
+    // easy to add later the same way parent-key rotation would be.
+    if (req.method === 'POST' && urlPath === '/api/device-backup/parent-auth/setup') {
+      const existing = store.getList(store.TABLES.DEVICE_BACKUP_KEYS, 'global').find(r => r.id === 'parent_auth')
+      if (existing?.pinHash) { res.writeHead(403); res.end('A PIN is already set'); return }
+      const bodyChunks = []
+      let total = 0
+      req.on('data', (chunk) => {
+        total += chunk.length
+        if (total > 1024) return
+        bodyChunks.push(chunk)
+      })
+      req.on('end', () => {
+        let parsed
+        try {
+          parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8'))
+        } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return
+        }
+        const pin = String(parsed.pin || '')
+        if (pin.length < 4) { res.writeHead(400); res.end('PIN must be at least 4 characters'); return }
+        const pinSalt = crypto.randomBytes(16).toString('hex')
+        const pinHash = crypto.scryptSync(pin, pinSalt, 64).toString('hex')
+        const record = { pinSalt, pinHash, updatedAt: Date.now() }
+        const updated = store.updateItem(store.TABLES.DEVICE_BACKUP_KEYS, 'global', 'parent_auth', record)
+        if (!updated) store.appendItem(store.TABLES.DEVICE_BACKUP_KEYS, 'global', { id: 'parent_auth', ...record })
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ token: issueParentToken() }))
+      })
+      req.on('error', () => { res.writeHead(500); res.end('Setup error') })
+      return
+    }
+
+    if (req.method === 'POST' && urlPath === '/api/device-backup/parent-auth/login') {
+      const record = store.getList(store.TABLES.DEVICE_BACKUP_KEYS, 'global').find(r => r.id === 'parent_auth')
+      if (!record?.pinHash) { res.writeHead(400); res.end('No PIN has been set up yet'); return }
+      const bodyChunks = []
+      let total = 0
+      req.on('data', (chunk) => {
+        total += chunk.length
+        if (total > 1024) return
+        bodyChunks.push(chunk)
+      })
+      req.on('end', () => {
+        let parsed
+        try {
+          parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8'))
+        } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return
+        }
+        const pin = String(parsed.pin || '')
+        const presentedHash = crypto.scryptSync(pin, record.pinSalt, 64).toString('hex')
+        const expectedBuf = Buffer.from(record.pinHash)
+        const presentedBuf = Buffer.from(presentedHash)
+        const matches = expectedBuf.length === presentedBuf.length && crypto.timingSafeEqual(expectedBuf, presentedBuf)
+        if (!matches) { res.writeHead(403); res.end('Incorrect PIN'); return }
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ token: issueParentToken() }))
+      })
+      req.on('error', () => { res.writeHead(500); res.end('Login error') })
+      return
+    }
+
     // ── Device-backup parent public key (set once by the parent, read by every child
     // device before its first backup run and by the restore screen to sanity-check) ──
+    // POST (setting/overwriting the key) requires the parent PIN token — previously
+    // anyone with the server URL could call this and silently redirect all future
+    // backups to an attacker-controlled key. GET below stays open (no header check):
+    // the child device (DeviceBackupWorker.java's fetchParentPublicKey()) calls it with
+    // no PIN/token concept at all, so gating it would break every device's backup.
     if (req.method === 'POST' && urlPath === '/api/device-backup/parent-key') {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
       const bodyChunks = []
       let total = 0
       let rejected = false
@@ -459,7 +551,12 @@ const server = http.createServer(async (req, res) => {
     // table — DeviceBackupWorker.java polls this once per run (no live push channel to
     // a child device exists) and re-anchors its own self-rescheduling chain to it, so a
     // change here takes effect starting from the child's next scheduled run.
+    // POST requires the parent PIN token (same reasoning as parent-key's POST above);
+    // GET below stays open since the child device reads its own schedule with no PIN.
     if (req.method === 'POST' && urlPath === '/api/device-backup/schedule') {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
       const bodyChunks = []
       let total = 0
       let rejected = false
@@ -508,7 +605,12 @@ const server = http.createServer(async (req, res) => {
     // `devices` is kept in the response (unchanged shape, callers relying on it still
     // work) alongside a new `deviceIds`-shaped-but-richer array carrying each device's
     // most-recently-reported name, so the UI can show "ali's phone" instead of a raw id.
+    // Both routes here require the parent PIN token — only FamilyBackupsScreen.jsx
+    // calls these, never the child device, so gating them has no impact there.
     if (req.method === 'GET' && urlPath === '/api/device-backup/devices') {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
       const deviceIds = store.listBackupDeviceIds()
       const devices = deviceIds.map((id) => {
         const chunks = store.getList(store.TABLES.DEVICE_BACKUP_CHUNKS, id)
@@ -521,6 +623,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && urlPath.startsWith('/api/device-backup/index/')) {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
       const deviceId = decodeURIComponent(urlPath.replace('/api/device-backup/index/', ''))
       if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
       const chunks = store.getList(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId)
@@ -674,6 +779,19 @@ function verifyBackupToken(deviceId, presentedToken) {
   const expected = issueBackupToken(deviceId)
   const expectedBuf = Buffer.from(expected)
   const presentedBuf = Buffer.from(presentedToken)
+  return expectedBuf.length === presentedBuf.length && crypto.timingSafeEqual(expectedBuf, presentedBuf)
+}
+
+// One fixed token for "whoever correctly entered the parent PIN" — not per-device like
+// the backup token above, since there's exactly one parent session concept here.
+function issueParentToken() {
+  return crypto.createHmac('sha256', PARENT_TOKEN_SECRET).update('parent-session').digest('hex')
+}
+function verifyParentToken(presentedToken) {
+  if (!presentedToken) return false
+  const expected = issueParentToken()
+  const expectedBuf = Buffer.from(expected)
+  const presentedBuf = Buffer.from(String(presentedToken))
   return expectedBuf.length === presentedBuf.length && crypto.timingSafeEqual(expectedBuf, presentedBuf)
 }
 

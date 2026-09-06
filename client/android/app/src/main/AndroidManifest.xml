@@ -56,6 +56,12 @@
 
     <!-- Network -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- DeviceBackupWorker.java's isOnWifi() check — a normal (auto-granted, no runtime
+         prompt) permission required to call ConnectivityManager.getActiveNetwork() /
+         getNetworkCapabilities(), which confirms the active connection is actually
+         Wi-Fi and not just "unmetered" (an unlimited mobile data plan can also count as
+         unmetered) before ever attempting a backup. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- Full file system access (still used by the Capacitor Filesystem plugin's own
          permission checks in Dashboard.jsx, and by backup.js's Documents-folder backup) -->
