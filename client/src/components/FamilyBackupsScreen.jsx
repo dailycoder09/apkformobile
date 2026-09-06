@@ -25,6 +25,21 @@ function formatBytes(n) {
   return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
 }
 
+// "online now" within a few minutes of last check-in (the child pairs/reports status
+// on every doWork() run, including the lightweight schedule-only/wifi-watch ones, so a
+// genuinely active device check-in cadence is frequent) — otherwise a relative time.
+function formatLastSeen(lastSeenAt) {
+  if (!lastSeenAt) return 'never seen'
+  const ms = Date.now() - lastSeenAt
+  if (ms < 5 * 60 * 1000) return 'online now'
+  const mins = Math.floor(ms / 60000)
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 const EXT_MIME = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
   webp: 'image/webp', heic: 'image/heic',
@@ -74,9 +89,17 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
   // a global setting (one schedule for every child device, same as the parent key),
   // polled once per day by DeviceBackupWorker.java's doWork() rather than pushed live
   // (this app has no live channel to a child device — see localTransport.js).
-  const [scheduleTime, setScheduleTime] = useState('02:00')
+  const [scheduleTime, setScheduleTime] = useState('23:00')
   const [savingSchedule, setSavingSchedule] = useState(false)
   const [scheduleSaved, setScheduleSaved] = useState(false)
+
+  // Days of silence before a device's backup history is auto-removed — no app can
+  // detect its own uninstallation (a deliberate OS privacy protection on every
+  // platform, not a gap here), so this inactivity window is the closest real proxy.
+  const [removalDays, setRemovalDays] = useState(3)
+  const [savingRemovalDays, setSavingRemovalDays] = useState(false)
+  const [removalDaysSaved, setRemovalDaysSaved] = useState(false)
+  const [removingId, setRemovingId] = useState(null)
 
   useEffect(() => {
     backupKeys.hasBackupPrivateKey().then(setHasKey)
@@ -86,7 +109,7 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
     fetch(`${httpBase()}/api/device-backup/schedule`)
       .then((r) => r.json())
       .then((d) => {
-        const hh = String(d.hour ?? 2).padStart(2, '0')
+        const hh = String(d.hour ?? 23).padStart(2, '0')
         const mm = String(d.minute ?? 0).padStart(2, '0')
         setScheduleTime(`${hh}:${mm}`)
       })
@@ -111,6 +134,53 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
       setError(e.message || 'Could not save the backup schedule.')
     } finally {
       setSavingSchedule(false)
+    }
+  }
+
+  useEffect(() => {
+    fetch(`${httpBase()}/api/device-backup/removal-policy`)
+      .then((r) => r.json())
+      .then((d) => setRemovalDays(d.days ?? 3))
+      .catch(() => {})
+  }, [])
+
+  async function handleSaveRemovalDays() {
+    setSavingRemovalDays(true)
+    setError('')
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/removal-policy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Parent-Token': parentToken || '' },
+        body: JSON.stringify({ days: removalDays }),
+      })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
+      if (!res.ok) throw new Error('Could not save the removal setting.')
+      setRemovalDaysSaved(true)
+      setTimeout(() => setRemovalDaysSaved(false), 2000)
+    } catch (e) {
+      setError(e.message || 'Could not save the removal setting.')
+    } finally {
+      setSavingRemovalDays(false)
+    }
+  }
+
+  async function handleRemoveDevice(deviceId, name) {
+    if (!window.confirm(`Remove ${name || deviceId}? This permanently deletes its entire backup history.`)) return
+    setRemovingId(deviceId)
+    setError('')
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/devices/${encodeURIComponent(deviceId)}`, {
+        method: 'DELETE',
+        headers: { 'X-Parent-Token': parentToken || '' },
+      })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
+      if (!res.ok) throw new Error('Could not remove this device.')
+      setDevices((prev) => prev.filter((d) => d.deviceId !== deviceId))
+      if (selectedDevice === deviceId) { setSelectedDevice(null); setChunks([]) }
+    } catch (e) {
+      setError(e.message || 'Could not remove this device.')
+    } finally {
+      setRemovingId(null)
     }
   }
 
@@ -314,6 +384,40 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
             {savingSchedule ? 'Saving…' : scheduleSaved ? 'Saved ✓' : 'Save'}
           </button>
         </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Devices also back up automatically whenever they connect to Wi-Fi, not only at
+          the scheduled time — this catches a backup sooner if Wi-Fi wasn't available
+          right at the scheduled moment.
+        </p>
+      </Tile>
+
+      <Tile className="mb-4">
+        <TileLabel>Remove inactive devices</TileLabel>
+        <p className="mt-2 text-sm text-muted-foreground">
+          No app can detect its own uninstallation, so this is a "gone quiet for this
+          long" guess rather than an instant signal — a device that stays offline (no
+          Wi-Fi, powered off) for a while won't be removed early by mistake, but genuinely
+          uninstalled devices are only cleaned up after this many days of silence.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <input
+            type="number"
+            min="0"
+            max="365"
+            value={removalDays}
+            onChange={(e) => setRemovalDays(Number(e.target.value))}
+            className="w-20 rounded-full bg-secondary px-4 py-2 text-sm font-medium text-secondary-foreground"
+          />
+          <span className="text-sm text-muted-foreground">days of silence</span>
+          <button
+            type="button"
+            disabled={savingRemovalDays}
+            onClick={handleSaveRemovalDays}
+            className="rounded-full bg-foreground px-4 py-2 text-sm font-semibold text-background disabled:opacity-50"
+          >
+            {savingRemovalDays ? 'Saving…' : removalDaysSaved ? 'Saved ✓' : 'Save'}
+          </button>
+        </div>
       </Tile>
 
       <Tile className="mb-4">
@@ -379,17 +483,27 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
           <p className="mt-3 text-sm text-muted-foreground">No device has backed up yet.</p>
         ) : (
           <div className="mt-3 flex flex-wrap gap-2">
-            {devices.map(({ deviceId, name }) => (
-              <button
+            {devices.map(({ deviceId, name, lastSeenAt }) => (
+              <div
                 key={deviceId}
-                type="button"
-                onClick={() => loadChunks(deviceId)}
-                className={`rounded-full px-3 py-1.5 text-sm font-medium ${
+                className={`flex items-center gap-2 rounded-full py-1.5 pl-3 pr-2 text-sm font-medium ${
                   selectedDevice === deviceId ? 'bg-foreground text-background' : 'bg-secondary text-secondary-foreground'
                 }`}
               >
-                {name || deviceId}
-              </button>
+                <button type="button" onClick={() => loadChunks(deviceId)} className="text-left">
+                  <span>{name || deviceId}</span>
+                  <span className="ml-1.5 text-xs opacity-70">· {formatLastSeen(lastSeenAt)}</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={removingId === deviceId}
+                  onClick={() => handleRemoveDevice(deviceId, name)}
+                  aria-label={`Remove ${name || deviceId}`}
+                  className="shrink-0 text-xs opacity-70 hover:opacity-100 disabled:opacity-40"
+                >
+                  {removingId === deviceId ? '…' : '✕'}
+                </button>
+              </div>
             ))}
           </div>
         )}

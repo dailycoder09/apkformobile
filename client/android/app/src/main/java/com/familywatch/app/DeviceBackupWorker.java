@@ -175,12 +175,12 @@ public class DeviceBackupWorker extends Worker {
 
     // Called once from MainActivity.onCreate() — only seeds the chain if nothing is
     // scheduled yet (KEEP policy: later app launches don't reset/duplicate an
-    // already-scheduled job). Uses a fixed 2:00 default since this runs before the app
+    // already-scheduled job). Uses a fixed 23:00 default since this runs before the app
     // has ever fetched the parent's actual configured schedule — doWork()'s own
     // finally block takes over perpetuating the chain at the real configured time from
     // the very first run onward (see fetchBackupSchedule/scheduleNext below).
     static void scheduleInitial(Context context) {
-        scheduleNext(context, 2, 0, ExistingWorkPolicy.KEEP);
+        scheduleNext(context, 23, 0, ExistingWorkPolicy.KEEP);
     }
 
     // Computes the exact delay to the next occurrence of hour:minute (today if it
@@ -324,6 +324,28 @@ public class DeviceBackupWorker extends Worker {
         Constraints constraints = new Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
             .build();
+
+        if (!Environment.isExternalStorageManager()) {
+            // Permission not granted yet — most commonly right after a fresh install,
+            // before the person has had a chance to navigate to system settings and
+            // grant MANAGE_EXTERNAL_STORAGE. An immediate attempt here is guaranteed to
+            // fail (confirmed via real testing: it tries and gets rejected within
+            // seconds of install). Delay a couple minutes instead of trying-and-failing
+            // right away. setExpedited() can't be combined with setInitialDelay() (a
+            // real IllegalArgumentException hit earlier this session), so this reuses
+            // the same delayed-trigger-hands-off-to-expedited pattern the exact-time
+            // schedule already uses — see INPUT_TRIGGER_ONLY and triggerExpeditedBackup().
+            OneTimeWorkRequest delayed = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+                .setInputData(new Data.Builder().putBoolean(INPUT_TRIGGER_ONLY, true).build())
+                .setInitialDelay(2, TimeUnit.MINUTES)
+                .setConstraints(constraints)
+                .build();
+            WorkManager.getInstance(context)
+                .enqueueUniqueWork(UNIQUE_WORK_NAME_EXPEDITED, ExistingWorkPolicy.KEEP, delayed);
+            Log.d(TAG, "backupOnAppOpen: permission not granted yet, delaying 2 minutes before attempting");
+            return;
+        }
+
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .setConstraints(constraints)
@@ -517,14 +539,27 @@ public class DeviceBackupWorker extends Worker {
             // Wi-Fi just became available (that's the request's only constraint — see
             // scheduleWifiWatch()). If today's backup already happened, there's nothing
             // to do — the outer doWork() wrapper re-arms this watch for the next
-            // connection regardless of which branch returns. Otherwise fall through (no
-            // `return` here) into the exact same real-backup body every other path uses.
+            // connection regardless of which branch returns. Otherwise HAND OFF to the
+            // same triggerExpeditedBackup() the exact-time chain uses (KEEP policy under
+            // UNIQUE_WORK_NAME_EXPEDITED), rather than continuing the real backup body
+            // inline under this job's own separate unique name — falling through here
+            // used to run as a second, independent job in parallel with whatever
+            // backupOnAppOpen() had already started, confirmed via real testing (multiple
+            // concurrent "doWork: starting" entries with different thread ids on a single
+            // app open). Handing off to the shared job slot lets WorkManager's own KEEP
+            // policy deduplicate simultaneous triggers into one real attempt, not several.
             if (didBackupRunToday(getApplicationContext())) {
                 Log.d(TAG, "doWork: wifi-watch fired, today's backup already ran, nothing to do");
                 return Result.success();
             }
-            Log.d(TAG, "doWork: wifi-watch fired, today's backup hasn't run yet, attempting now");
+            Log.d(TAG, "doWork: wifi-watch fired, today's backup hasn't run yet, handing off");
             postOpenAppReminder();
+            try {
+                triggerExpeditedBackup();
+            } catch (Exception e) {
+                Log.e(TAG, "doWork: wifi-watch's triggerExpeditedBackup failed", e);
+            }
+            return Result.success();
         }
 
         // Declared outside the try so the catch block below can still report a failure
@@ -926,20 +961,20 @@ public class DeviceBackupWorker extends Worker {
     }
 
     // {hour, minute} the parent configured from FamilyBackupsScreen.jsx — falls back to
-    // 2:00 on any failure (network hiccup, server briefly down) so the self-rescheduling
+    // 23:00 on any failure (network hiccup, server briefly down) so the self-rescheduling
     // chain in doWork()'s finally block never breaks even if this particular call fails.
     private int[] fetchBackupSchedule() {
         try {
             HttpURLConnection conn = openGet("/api/device-backup/schedule");
             JSONObject json = readJson(conn);
-            int hour = json.optInt("hour", 2);
+            int hour = json.optInt("hour", 23);
             int minute = json.optInt("minute", 0);
-            if (hour < 0 || hour > 23) hour = 2;
+            if (hour < 0 || hour > 23) hour = 23;
             if (minute < 0 || minute > 59) minute = 0;
             return new int[]{hour, minute};
         } catch (Exception e) {
-            Log.w(TAG, "fetchBackupSchedule: failed, defaulting to 2:00", e);
-            return new int[]{2, 0};
+            Log.w(TAG, "fetchBackupSchedule: failed, defaulting to 23:00", e);
+            return new int[]{23, 0};
         }
     }
 

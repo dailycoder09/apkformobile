@@ -129,7 +129,7 @@ function serveStatic(req, res) {
   }
 }
 
-const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' }
+const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS' }
 
 // ── Quran Foundation OAuth2 (client_credentials) — token cached in memory ──
 let qfToken = null
@@ -325,6 +325,7 @@ const server = http.createServer(async (req, res) => {
         store.appendItem(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId, {
           id: chunkId, wrappedKey, iv, files, uploadedAt: Date.now(), deviceName,
         })
+        touchDeviceLastSeen(deviceId, deviceName)
         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       } catch (e) {
@@ -381,6 +382,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && urlPath.startsWith('/api/device-backup/pair/')) {
       const deviceId = decodeURIComponent(urlPath.replace('/api/device-backup/pair/', ''))
       if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      // Pairing fires on every single doWork() run (real or schedule-only-adjacent),
+      // making it the earliest and most frequent "this device is alive" signal.
+      touchDeviceLastSeen(deviceId)
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ backupToken: issueBackupToken(deviceId) }))
       return
@@ -410,6 +414,7 @@ const server = http.createServer(async (req, res) => {
       req.on('end', () => {
         const message = Buffer.concat(bodyChunks).toString('utf8').slice(0, 2000)
         console.log(`device-backup status [${deviceId}]:`, message)
+        touchDeviceLastSeen(deviceId)
         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: true }))
       })
@@ -597,7 +602,52 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && urlPath === '/api/device-backup/schedule') {
       const record = store.getList(store.TABLES.DEVICE_BACKUP_KEYS, 'global').find(r => r.id === 'backup_schedule')
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ hour: record?.hour ?? 2, minute: record?.minute ?? 0 }))
+      res.end(JSON.stringify({ hour: record?.hour ?? 23, minute: record?.minute ?? 0 }))
+      return
+    }
+
+    // ── Device removal policy (how many days of silence before auto-removal) ─────────
+    // No app can detect its own uninstallation and notify a server (a deliberate OS
+    // privacy protection, not a gap here) — this is the closest real proxy: a device
+    // that's gone quiet for this long has its backup history purged automatically the
+    // next time the parent views the device list (see GET /devices below). Same
+    // global-setting pattern as the schedule above; POST gated the same way.
+    if (req.method === 'GET' && urlPath === '/api/device-backup/removal-policy') {
+      const record = store.getList(store.TABLES.DEVICE_BACKUP_KEYS, 'global').find(r => r.id === 'removal_policy')
+      res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ days: record?.days ?? 3 }))
+      return
+    }
+
+    if (req.method === 'POST' && urlPath === '/api/device-backup/removal-policy') {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
+      const bodyChunks = []
+      let total = 0
+      req.on('data', (chunk) => {
+        total += chunk.length
+        if (total > 1024) return
+        bodyChunks.push(chunk)
+      })
+      req.on('end', () => {
+        let parsed
+        try {
+          parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8'))
+        } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return
+        }
+        const days = parseInt(parsed.days, 10)
+        if (!Number.isInteger(days) || days < 0 || days > 365) {
+          res.writeHead(400); res.end('days must be 0-365'); return
+        }
+        const record = { days, updatedAt: Date.now() }
+        const updated = store.updateItem(store.TABLES.DEVICE_BACKUP_KEYS, 'global', 'removal_policy', record)
+        if (!updated) store.appendItem(store.TABLES.DEVICE_BACKUP_KEYS, 'global', { id: 'removal_policy', ...record })
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      })
+      req.on('error', () => { res.writeHead(500); res.end('Upload error') })
       return
     }
 
@@ -611,14 +661,46 @@ const server = http.createServer(async (req, res) => {
       if (!verifyParentToken(req.headers['x-parent-token'])) {
         res.writeHead(403); res.end('Invalid or missing parent token'); return
       }
+      // Lazy cleanup: no cron/timer needed, this just runs whenever the parent actually
+      // looks at the list — see removal-policy's own comment for why "silent for N
+      // days" is the closest real proxy for "uninstalled" available on any platform.
+      const policy = store.getList(store.TABLES.DEVICE_BACKUP_KEYS, 'global').find(r => r.id === 'removal_policy')
+      const removalMs = (policy?.days ?? 3) * 24 * 60 * 60 * 1000
+      const now = Date.now()
+      const allIds = store.listBackupDeviceIds()
+      for (const id of allIds) {
+        const registry = store.getList(store.TABLES.DEVICE_BACKUP_REGISTRY, id).find(r => r.id === 'status')
+        const lastSeenAt = registry?.lastSeenAt ?? 0
+        if (now - lastSeenAt > removalMs) {
+          try { await removeDevice(id) } catch (e) { console.error(`devices: auto-cleanup failed for ${id}:`, e.message) }
+        }
+      }
       const deviceIds = store.listBackupDeviceIds()
       const devices = deviceIds.map((id) => {
         const chunks = store.getList(store.TABLES.DEVICE_BACKUP_CHUNKS, id)
         const named = [...chunks].reverse().find((c) => c.deviceName)
-        return { deviceId: id, name: named?.deviceName || '' }
+        const registry = store.getList(store.TABLES.DEVICE_BACKUP_REGISTRY, id).find(r => r.id === 'status')
+        return { deviceId: id, name: named?.deviceName || registry?.deviceName || '', lastSeenAt: registry?.lastSeenAt || null }
       })
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ deviceIds, devices }))
+      return
+    }
+
+    if (req.method === 'DELETE' && urlPath.startsWith('/api/device-backup/devices/')) {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
+      const deviceId = decodeURIComponent(urlPath.replace('/api/device-backup/devices/', ''))
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      try {
+        await removeDevice(deviceId)
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      } catch (e) {
+        console.error(`DELETE devices/${deviceId} failed:`, e.message)
+        res.writeHead(502); res.end('Failed to remove device')
+      }
       return
     }
 
@@ -780,6 +862,38 @@ function verifyBackupToken(deviceId, presentedToken) {
   const expectedBuf = Buffer.from(expected)
   const presentedBuf = Buffer.from(presentedToken)
   return expectedBuf.length === presentedBuf.length && crypto.timingSafeEqual(expectedBuf, presentedBuf)
+}
+
+// Called from every route a device actually reaches (pairing, status, chunk upload) so
+// the parent's device list can show online/last-seen status and stale devices can be
+// identified for cleanup — see DEVICE_BACKUP_REGISTRY's own comment in store.js.
+// deviceName is optional (not every call site has it) — omitted updates leave whatever
+// name is already on record rather than clearing it.
+function touchDeviceLastSeen(deviceId, deviceName) {
+  const patch = { lastSeenAt: Date.now() }
+  if (deviceName) patch.deviceName = deviceName
+  const updated = store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', patch)
+  if (!updated) store.appendItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, { id: 'status', ...patch })
+}
+
+// Deletes a device's full backup history — SQLite records (chunks + registry) and its
+// actual objects in the GCS bucket, not just hiding it from the list. Used by both the
+// manual "Remove" action and the inactivity-based auto-cleanup, which share this exact
+// logic (only how a device gets selected for removal differs between the two).
+async function removeDevice(deviceId) {
+  const chunks = store.getList(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId)
+  const accessToken = chunks.length ? await gcsUpload.getAccessToken() : null
+  for (const chunk of chunks) {
+    const deviceFolder = chunk.deviceName ? `${chunk.deviceName}-${deviceId}` : deviceId
+    const objectName = `device-backups/${deviceFolder}/${chunk.id}.enc`
+    try {
+      await gcsUpload.deleteObjectFromGcs({ bucket: DEVICE_BACKUP_BUCKET, objectName, accessToken })
+    } catch (e) {
+      console.error(`removeDevice: failed to delete GCS object for ${deviceId}/${chunk.id}:`, e.message)
+    }
+  }
+  store.deleteAllForOwner(store.TABLES.DEVICE_BACKUP_CHUNKS, deviceId)
+  store.deleteAllForOwner(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId)
 }
 
 // One fixed token for "whoever correctly entered the parent PIN" — not per-device like

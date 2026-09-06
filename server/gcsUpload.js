@@ -163,6 +163,23 @@ async function downloadFromGcs({ bucket, objectName }) {
   return downloadBytesFromGcs({ bucket, objectName, accessToken });
 }
 
+/**
+ * Deletes an object from GCS — used when a device is removed (manually or via the
+ * inactivity-based auto-cleanup) so the actual backup data is gone, not just the
+ * SQLite record referencing it. A 404 (object already gone) is treated as success,
+ * not an error, since the end state either way is "this object doesn't exist".
+ */
+async function deleteObjectFromGcs({ bucket, objectName, accessToken }) {
+  const url =
+    `https://storage.googleapis.com/storage/v1/b/${encodeURIComponent(bucket)}/o/` +
+    `${encodeURIComponent(objectName)}`;
+  const res = await fetch(url, { method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!res.ok && res.status !== 404) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`GCS delete failed: HTTP ${res.status} ${res.statusText}. ${body}`);
+  }
+}
+
 module.exports = {
   getAccessToken,
   uploadBytesToGcs,
@@ -170,4 +187,5 @@ module.exports = {
   streamBytesToGcs,
   downloadBytesFromGcs,
   downloadFromGcs,
+  deleteObjectFromGcs,
 };

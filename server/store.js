@@ -27,6 +27,13 @@ const TABLES = {
   // multi-tenant concept, so one global key is the right scope here.
   DEVICE_BACKUP_CHUNKS: 'device_backup_chunks',
   DEVICE_BACKUP_KEYS: 'device_backup_keys',
+  // One row per device (owner_user_id = deviceId, id = fixed string 'status'), data =
+  // { deviceName, lastSeenAt }. Updated on every point a device actually reaches the
+  // server (pairing, status report, chunk upload) — lets the parent's device list show
+  // online/last-seen status and lets stale devices be identified for cleanup, entirely
+  // server-side with no Android changes needed (DeviceBackupWorker.java already calls
+  // all three of those routes on every run).
+  DEVICE_BACKUP_REGISTRY: 'device_backup_registry',
 }
 
 // Mechanical schema fixup for DBs created before the name→phone-number identity
