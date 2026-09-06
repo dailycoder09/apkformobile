@@ -277,6 +277,26 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
     setSettingUp(true)
     setError('')
     try {
+      // hasKey only reflects whether THIS BROWSER has a private key locally — the
+      // server (whichever one httpBase() currently points at: production, or a local
+      // server used for testing) may already have a DIFFERENT public key registered,
+      // e.g. set up from another browser, or from this same browser while pointed at a
+      // different server. Generating a fresh keypair unconditionally would silently
+      // overwrite that key and PERMANENTLY orphan every backup already encrypted
+      // against it, on every device — confirmed as the real cause of a real
+      // "Decryption failed" report (a key generated during local testing overwrote
+      // what was live, with no warning at all). Checking first, and requiring an
+      // explicit confirmation to overwrite, is the fix.
+      const existing = await fetch(`${httpBase()}/api/device-backup/parent-key`).then((r) => r.json()).catch(() => null)
+      if (existing?.publicKeyJwk) {
+        const proceed = window.confirm(
+          'A backup encryption key already exists on this server. Generating a new one here ' +
+          'will PERMANENTLY make every backup already uploaded unreadable, on every device — ' +
+          'there is no way to reverse this. If you have the existing recovery file, cancel and ' +
+          'restore it below instead. Continue and overwrite the existing key anyway?'
+        )
+        if (!proceed) { setSettingUp(false); return }
+      }
       const { publicKeyJwk } = await backupKeys.generateBackupKeypair()
       const res = await fetch(`${httpBase()}/api/device-backup/parent-key`, {
         method: 'POST',

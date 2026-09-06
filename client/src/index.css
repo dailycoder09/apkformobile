@@ -98,6 +98,24 @@
   padding: 0;
 }
 
+/* /parent (ParentGate -> FamilyBackupsScreen) renders standalone, bypassing App.jsx
+   normal .app flex layout entirely (see App.jsx IS_PARENT_PATH early return) - unlike
+   every .khata-screen/.health-screen-style module below, which gets its scroll behavior
+   for free as a flex:1/min-height:0 child of .app own fixed-height flex column. These
+   two screens have no such parent to inherit a bounded height from, so PageShell own
+   min-h-full/overflow-y-auto never engages (a percentage height is ignored against an
+   unconstrained ancestor) and a long device/backup list was silently clipped by body
+   overflow:hidden with no way to scroll to it. Establishing the same bounded box body/
+   .app use, directly here, fixes that without needing a wrapper element in either
+   component. */
+.family-backups-screen, .parent-gate-screen {
+  height: 100svh;
+  max-height: 100svh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
 html {
   /* Prevent font scaling on mobile orientation change */
   -webkit-text-size-adjust: 100%;
