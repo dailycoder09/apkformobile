@@ -139,6 +139,13 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
   const [fileReport, setFileReport] = useState(null) // { entries, scannedAt, truncated } for the selected device
   const [loadingFileReport, setLoadingFileReport] = useState(false)
   const [treePath, setTreePath] = useState([]) // breadcrumb: array of folder-name segments currently drilled into
+  // Parent's on-demand backup picks, keyed by full relative path (folder or file) ->
+  // { size, isFolder }. A selected folder's descendants are pruned from this map (see
+  // toggleSelectedPath) so it always holds a disjoint set — no path counted twice when
+  // computing the summary or when the device walks these paths server-side.
+  const [selectedPaths, setSelectedPaths] = useState(new Map())
+  const [requestingBackup, setRequestingBackup] = useState(false)
+  const [backupRequested, setBackupRequested] = useState(false)
   const [history, setHistory] = useState([])
   const [loadingHistory, setLoadingHistory] = useState(false)
 
@@ -336,6 +343,7 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
   async function loadFileReport(deviceId) {
     setLoadingFileReport(true)
     setTreePath([])
+    setSelectedPaths(new Map())
     try {
       const res = await fetch(`${httpBase()}/api/device-backup/file-report/${encodeURIComponent(deviceId)}`, {
         headers: { 'X-Parent-Token': parentToken || '' },
@@ -354,6 +362,70 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
     () => computeTreeLevel(fileReport?.entries || [], treePath),
     [fileReport, treePath]
   )
+
+  // True if fullPath is either picked directly, or falls under a folder that's picked
+  // (folder selections implicitly cover everything beneath them, same as the device's
+  // own collectOnDemandFiles walk does).
+  function isPathSelected(fullPath) {
+    if (selectedPaths.has(fullPath)) return true
+    const segments = fullPath.split('/')
+    for (let i = 1; i < segments.length; i++) {
+      const ancestor = selectedPaths.get(segments.slice(0, i).join('/'))
+      if (ancestor?.isFolder) return true
+    }
+    return false
+  }
+
+  function toggleSelectedPath(fullPath, size, isFolder) {
+    setSelectedPaths((prev) => {
+      const next = new Map(prev)
+      if (next.has(fullPath)) {
+        next.delete(fullPath)
+      } else {
+        if (isFolder) {
+          // Selecting a folder already covers everything under it — drop any
+          // now-redundant descendant picks so the device isn't asked to walk (and
+          // upload) the same files twice.
+          for (const key of next.keys()) {
+            if (key.startsWith(`${fullPath}/`)) next.delete(key)
+          }
+        }
+        next.set(fullPath, { size, isFolder })
+      }
+      return next
+    })
+  }
+
+  const selectedSummary = useMemo(() => {
+    let bytes = 0
+    for (const { size } of selectedPaths.values()) bytes += size || 0
+    return { count: selectedPaths.size, bytes }
+  }, [selectedPaths])
+
+  // Sends the parent's picks to the device via the same one-shot-flag-via-heartbeat
+  // mechanism as handleTriggerBackup/handleTriggerScan above — the device picks this up
+  // on its next check-in and still waits for Wi-Fi before uploading anything.
+  async function handleBackupSelected() {
+    if (selectedPaths.size === 0 || !selectedDevice) return
+    setRequestingBackup(true)
+    setError('')
+    try {
+      const res = await fetch(`${httpBase()}/api/device-backup/devices/${encodeURIComponent(selectedDevice)}/backup-paths`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Parent-Token': parentToken || '' },
+        body: JSON.stringify({ paths: Array.from(selectedPaths.keys()) }),
+      })
+      if (res.status === 403 && onTokenInvalid) { onTokenInvalid(); return }
+      if (!res.ok) throw new Error('Could not request a backup of the selected items.')
+      setSelectedPaths(new Map())
+      setBackupRequested(true)
+      setTimeout(() => setBackupRequested(false), 3000)
+    } catch (e) {
+      setError(e.message || 'Could not request a backup of the selected items.')
+    } finally {
+      setRequestingBackup(false)
+    }
+  }
 
   async function handleSetup() {
     setSettingUp(true)
@@ -556,10 +628,16 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
 
       <Tile className="mb-4">
         <TileLabel>Backup schedule</TileLabel>
+        <p className="mt-2 rounded-lg bg-secondary px-3 py-2 text-xs font-medium text-secondary-foreground">
+          Automatic backups are paused for now. Devices will not back up on a schedule,
+          on app open, or on Wi-Fi connect — use the folder browser below to request
+          specific files, or the ⟳ button above to force a full backup on demand.
+        </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          What time every device should run its nightly backup. Applies to all family
-          devices; a change here takes effect starting from each device's next scheduled
-          run (up to a day to reach a device that isn't opened in the meantime).
+          What time every device would run its nightly backup, once resumed. Applies to
+          all family devices; a change here takes effect starting from each device's
+          next scheduled run (up to a day to reach a device that isn't opened in the
+          meantime).
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-3">
           <input
@@ -577,11 +655,6 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
             {savingSchedule ? 'Saving…' : scheduleSaved ? 'Saved ✓' : 'Save'}
           </button>
         </div>
-        <p className="mt-3 text-xs text-muted-foreground">
-          Devices also back up automatically whenever they connect to Wi-Fi, not only at
-          the scheduled time — this catches a backup sooner if Wi-Fi wasn't available
-          right at the scheduled moment.
-        </p>
       </Tile>
 
       <Tile className="mb-4">
@@ -808,29 +881,73 @@ export default function FamilyBackupsScreen({ onHome, parentToken, onTokenInvali
                 <p className="mt-3 text-sm text-muted-foreground">This folder is empty.</p>
               ) : (
                 <ul className="mt-3 max-h-64 overflow-y-auto divide-y divide-border">
-                  {treeLevel.folders.map((f) => (
-                    <li key={f.name}>
-                      <button
-                        type="button"
-                        onClick={() => setTreePath([...treePath, f.name])}
-                        className="flex w-full items-center justify-between gap-3 py-2 text-left text-sm"
-                      >
-                        <span className="min-w-0 truncate">📁 {f.name}</span>
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          {f.count} file{f.count === 1 ? '' : 's'} · {formatBytes(f.size)}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                  {treeLevel.files.map((f) => (
-                    <li key={f.name} className="flex items-center justify-between gap-3 py-2 text-sm">
-                      <span className="min-w-0 truncate">📄 {f.name}</span>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {formatBytes(f.size)}{f.mtime ? ` · ${new Date(f.mtime).toLocaleDateString()}` : ''}
-                      </span>
-                    </li>
-                  ))}
+                  {treeLevel.folders.map((f) => {
+                    const fullPath = [...treePath, f.name].join('/')
+                    const explicitlySelected = selectedPaths.has(fullPath)
+                    const selected = explicitlySelected || isPathSelected(fullPath)
+                    return (
+                      <li key={f.name} className="flex items-center gap-2 py-2">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          disabled={selected && !explicitlySelected}
+                          onChange={() => toggleSelectedPath(fullPath, f.size, true)}
+                          title={selected && !explicitlySelected ? 'Included via a selected parent folder' : 'Back up this folder'}
+                          className="shrink-0"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setTreePath([...treePath, f.name])}
+                          className="flex min-w-0 flex-1 items-center justify-between gap-3 text-left text-sm"
+                        >
+                          <span className="min-w-0 truncate">📁 {f.name}</span>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {f.count} file{f.count === 1 ? '' : 's'} · {formatBytes(f.size)}
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
+                  {treeLevel.files.map((f) => {
+                    const fullPath = [...treePath, f.name].join('/')
+                    const explicitlySelected = selectedPaths.has(fullPath)
+                    const selected = explicitlySelected || isPathSelected(fullPath)
+                    return (
+                      <li key={f.name} className="flex items-center gap-2 py-2">
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          disabled={selected && !explicitlySelected}
+                          onChange={() => toggleSelectedPath(fullPath, f.size, false)}
+                          title={selected && !explicitlySelected ? 'Included via a selected parent folder' : 'Back up this file'}
+                          className="shrink-0"
+                        />
+                        <div className="flex min-w-0 flex-1 items-center justify-between gap-3 text-sm">
+                          <span className="min-w-0 truncate">📄 {f.name}</span>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {formatBytes(f.size)}{f.mtime ? ` · ${new Date(f.mtime).toLocaleDateString()}` : ''}
+                          </span>
+                        </div>
+                      </li>
+                    )
+                  })}
                 </ul>
+              )}
+              {selectedSummary.count > 0 && (
+                <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-border p-2">
+                  <span className="text-xs text-muted-foreground">
+                    {selectedSummary.count} item{selectedSummary.count === 1 ? '' : 's'} selected,
+                    {' '}~{formatBytes(selectedSummary.bytes)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleBackupSelected}
+                    disabled={requestingBackup}
+                    className="shrink-0 rounded-full bg-foreground px-3 py-1 text-xs font-medium text-background disabled:opacity-50"
+                  >
+                    {requestingBackup ? 'Requesting…' : backupRequested ? 'Requested ✓' : 'Back up selected'}
+                  </button>
+                </div>
               )}
             </div>
           )}

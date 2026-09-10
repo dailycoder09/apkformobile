@@ -466,17 +466,19 @@ const server = http.createServer(async (req, res) => {
       const registry = store.getList(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId).find(r => r.id === 'status')
       const forceBackup = !!registry?.forceBackupRequested
       const forceTreeScan = !!registry?.forceTreeScanRequested
+      const onDemandPaths = Array.isArray(registry?.onDemandPaths) ? registry.onDemandPaths : []
       touchDeviceLastSeen(deviceId, deviceName, 'heartbeat')
-      if (forceBackup || forceTreeScan) {
+      if (forceBackup || forceTreeScan || onDemandPaths.length > 0) {
         // Consumed now so each fires exactly once — not on every heartbeat until the
         // device happens to be on Wi-Fi.
         const clear = {}
         if (forceBackup) clear.forceBackupRequested = false
         if (forceTreeScan) clear.forceTreeScanRequested = false
+        if (onDemandPaths.length > 0) clear.onDemandPaths = []
         store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', clear)
       }
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, forceBackup, forceTreeScan }))
+      res.end(JSON.stringify({ ok: true, forceBackup, forceTreeScan, onDemandPaths }))
       return
     }
 
@@ -853,6 +855,48 @@ const server = http.createServer(async (req, res) => {
       }
       res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: true }))
+      return
+    }
+
+    // ── On-demand selective backup: parent picks specific paths from the file-report
+    // tree browser instead of waiting for (or in addition to) the automatic nightly
+    // backup of the 5 fixed folders. Same one-shot-flag-via-heartbeat delivery as
+    // trigger-backup/trigger-scan above, just carrying a payload (the chosen relative
+    // paths) instead of a plain boolean. The device decides file-vs-folder and does
+    // the actual walk/upload — see DeviceBackupWorker's INPUT_ONDEMAND_PATHS branch,
+    // which reuses the exact same chunk/encrypt/upload pipeline as the real backup.
+    if (req.method === 'POST' && urlPath.startsWith('/api/device-backup/devices/') && urlPath.endsWith('/backup-paths')) {
+      if (!verifyParentToken(req.headers['x-parent-token'])) {
+        res.writeHead(403); res.end('Invalid or missing parent token'); return
+      }
+      const deviceId = decodeURIComponent(
+        urlPath.replace('/api/device-backup/devices/', '').replace(/\/backup-paths$/, '')
+      )
+      if (!isValidUserId(deviceId)) { res.writeHead(400); res.end('Invalid deviceId'); return }
+      const bodyChunks = []
+      let total = 0
+      req.on('data', (chunk) => {
+        total += chunk.length
+        if (total > 64 * 1024) return // a few thousand paths at most — plenty for manual selection
+        bodyChunks.push(chunk)
+      })
+      req.on('end', () => {
+        let parsed
+        try {
+          parsed = JSON.parse(Buffer.concat(bodyChunks).toString('utf8'))
+        } catch {
+          res.writeHead(400); res.end('Invalid JSON'); return
+        }
+        const paths = Array.isArray(parsed.paths) ? parsed.paths.filter((p) => typeof p === 'string' && p.length > 0 && p.length < 1024) : []
+        if (paths.length === 0) { res.writeHead(400); res.end('paths must be a non-empty array of strings'); return }
+        const updated = store.updateItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, 'status', { onDemandPaths: paths })
+        if (!updated) {
+          store.appendItem(store.TABLES.DEVICE_BACKUP_REGISTRY, deviceId, { id: 'status', onDemandPaths: paths, lastSeenAt: null })
+        }
+        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true, count: paths.length }))
+      })
+      req.on('error', () => { res.writeHead(500); res.end('Upload error') })
       return
     }
 

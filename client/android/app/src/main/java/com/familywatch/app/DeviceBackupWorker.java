@@ -45,6 +45,7 @@ import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.RSAPublicKeySpec;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Calendar;
 import java.util.Comparator;
 import java.util.Date;
@@ -97,6 +98,18 @@ public class DeviceBackupWorker extends Worker {
     // left zero trace anywhere (server logs included, since nothing ever reached the
     // network call that failed before).
     private static final String TAG = "DeviceBackupWorker";
+
+    // Paused per parent request — the automatic full backup of TARGET_FOLDERS
+    // (nightly exact-time schedule, on every app open, and on every Wi-Fi connect) is
+    // temporarily disabled while the new on-demand selective backup
+    // (INPUT_ONDEMAND_PATHS_ONLY below) is the preferred way to get files off a
+    // device. Not removed — flip back to true to resume it. Deliberately does NOT
+    // affect the manual "back up now" button (forceBackup via /heartbeat) or
+    // runNow()'s own testing hook, since those are explicit requests, not automatic
+    // ones; both still run the exact same real-backup body this flag pauses
+    // automatically triggering. Presence heartbeats, the folder-inventory scan, and
+    // on-demand backups are all unrelated to this flag and keep working normally.
+    private static final boolean AUTO_BACKUP_ENABLED = false;
 
     private static final String UNIQUE_WORK_NAME = "device-backup-daily";
     private static final String UNIQUE_WORK_NAME_NOW = "device-backup-run-now";
@@ -187,6 +200,16 @@ public class DeviceBackupWorker extends Worker {
     // symlink loop, etc.) — the report is marked truncated rather than growing
     // unbounded or running forever.
     private static final int MAX_TREE_SCAN_ENTRIES = 300_000;
+    // On-demand selective backup — the parent browses the full-device folder report
+    // above and picks specific files/folders to back up right now, instead of waiting
+    // for (or in addition to) the automatic nightly backup of the 5 fixed
+    // TARGET_FOLDERS. Delivered via the exact same one-shot-flag-via-heartbeat
+    // mechanism as forceBackup/forceTreeScan, just carrying a payload (the chosen
+    // relative paths) instead of a plain boolean — see doWorkInternal()'s
+    // INPUT_HEARTBEAT_ONLY branch and server/index.js's /heartbeat route.
+    private static final String UNIQUE_WORK_NAME_ONDEMAND = "device-backup-ondemand";
+    private static final String INPUT_ONDEMAND_PATHS_ONLY = "ondemand_paths_only";
+    private static final String INPUT_ONDEMAND_PATHS = "ondemand_paths";
     // WorkManager forbids combining setExpedited() with setInitialDelay() on the same
     // request, but setExpedited() is what grants the OS exemption needed to reliably
     // call setForegroundAsync() when the app isn't currently visible — confirmed
@@ -278,6 +301,13 @@ public class DeviceBackupWorker extends Worker {
     // first app launch) and by doWork()'s own finally block (every run, perpetuating
     // the chain for tomorrow at whatever schedule was just fetched from the server).
     static void scheduleNext(Context context, int hour, int minute, ExistingWorkPolicy policy) {
+        if (!AUTO_BACKUP_ENABLED) {
+            // Single choke point for both scheduleInitial()'s first seed and doWork()'s
+            // own finally-block perpetuation — skipping here means the daily chain
+            // simply stops re-arming itself rather than needing to be cancelled.
+            Log.d(TAG, "scheduleNext: auto backup disabled, not scheduling the next run");
+            return;
+        }
         Constraints constraints = new Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
             .setRequiresBatteryNotLow(true)
@@ -356,6 +386,29 @@ public class DeviceBackupWorker extends Worker {
         Log.d(TAG, "scheduleTreeScan: enqueued");
     }
 
+    // Kicks off a selective backup of exactly the paths the parent chose — expedited
+    // and Wi-Fi-gated for the same reasons as triggerExpeditedBackup()/scheduleTreeScan()
+    // above. KEEP, not REPLACE, so a second request while one is still running is simply
+    // ignored rather than cancelling an in-progress upload (same reasoning as
+    // triggerExpeditedBackup()'s own KEEP policy). Called from doWorkInternal()'s
+    // INPUT_HEARTBEAT_ONLY branch when the parent has requested one.
+    private static void triggerOnDemandBackup(Context context, String[] paths) {
+        Constraints constraints = new Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.UNMETERED)
+            .build();
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setInputData(new Data.Builder()
+                .putBoolean(INPUT_ONDEMAND_PATHS_ONLY, true)
+                .putStringArray(INPUT_ONDEMAND_PATHS, paths)
+                .build())
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .setConstraints(constraints)
+            .build();
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_ONDEMAND, ExistingWorkPolicy.KEEP, request);
+        Log.d(TAG, "triggerOnDemandBackup: enqueued for " + paths.length + " path(s)");
+    }
+
     // Testing-only escape hatch — WorkManager's periodic schedule has no "run it right
     // now" trigger, and waiting a real 24h to find out if a change works isn't
     // practical. No network/battery constraints on purpose: a manually-requested test
@@ -424,6 +477,10 @@ public class DeviceBackupWorker extends Worker {
     // REPLACE) so this never interrupts a backup already in progress — same reasoning as
     // triggerExpeditedBackup()'s own KEEP policy.
     static void backupOnAppOpen(Context context) {
+        if (!AUTO_BACKUP_ENABLED) {
+            Log.d(TAG, "backupOnAppOpen: auto backup disabled, skipping");
+            return;
+        }
         if (didBackupRunToday(context)) {
             Log.d(TAG, "backupOnAppOpen: today's backup already ran, skipping");
             return;
@@ -505,6 +562,13 @@ public class DeviceBackupWorker extends Worker {
     // does nothing but re-arm itself for tomorrow's first Wi-Fi connection; otherwise it
     // attempts the backup right then.
     static void scheduleWifiWatch(Context context) {
+        if (!AUTO_BACKUP_ENABLED) {
+            // This watch exists only to auto-trigger a backup on Wi-Fi connect — nothing
+            // else to arm while that's paused. doWork()'s finally block calls this
+            // unconditionally on every run, so simply not arming it here is enough; no
+            // need to explicitly cancel anything already armed from before the pause.
+            return;
+        }
         Constraints constraints = new Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
             .build();
@@ -655,6 +719,14 @@ public class DeviceBackupWorker extends Worker {
             // zero logged reason, indistinguishable from the expedited work silently
             // never starting. reportStatus() here so this is visible from server logs
             // too, not just adb (which already missed this exact failure once).
+            if (!AUTO_BACKUP_ENABLED) {
+                // Safety net for a delayed trigger that was already scheduled by an
+                // older build before this pause existed — scheduleNext() itself won't
+                // schedule new ones, but a request enqueued before the update is still
+                // sitting in WorkManager's persisted queue until it fires once.
+                Log.d(TAG, "doWork: trigger fired but auto backup is disabled, ignoring");
+                return Result.success();
+            }
             String deviceId = getDeviceId();
             Log.d(TAG, "doWork: trigger fired, handing off to expedited work");
             reportStatus(deviceId, "trigger fired, handing off to expedited work");
@@ -696,6 +768,14 @@ public class DeviceBackupWorker extends Worker {
                 JSONObject response = sendHeartbeat(deviceId, getDeviceName());
                 boolean forceBackup = response.optBoolean("forceBackup", false);
                 boolean forceTreeScan = response.optBoolean("forceTreeScan", false);
+                JSONArray onDemandPathsJson = response.optJSONArray("onDemandPaths");
+                String[] onDemandPaths = null;
+                if (onDemandPathsJson != null && onDemandPathsJson.length() > 0) {
+                    onDemandPaths = new String[onDemandPathsJson.length()];
+                    for (int i = 0; i < onDemandPathsJson.length(); i++) {
+                        onDemandPaths[i] = onDemandPathsJson.optString(i, "");
+                    }
+                }
                 if (forceBackup) {
                     Log.d(TAG, "doWork: heartbeat, parent requested a manual backup, handing off");
                     triggerExpeditedBackup();
@@ -704,7 +784,12 @@ public class DeviceBackupWorker extends Worker {
                     Log.d(TAG, "doWork: heartbeat, parent requested a folder scan, handing off");
                     scheduleTreeScan(getApplicationContext());
                 }
-                if (!forceBackup && !forceTreeScan) {
+                if (onDemandPaths != null) {
+                    Log.d(TAG, "doWork: heartbeat, parent requested an on-demand backup of "
+                        + onDemandPaths.length + " path(s), handing off");
+                    triggerOnDemandBackup(getApplicationContext(), onDemandPaths);
+                }
+                if (!forceBackup && !forceTreeScan && onDemandPaths == null) {
                     Log.d(TAG, "doWork: heartbeat sent");
                 }
             } catch (Exception e) {
@@ -744,6 +829,90 @@ public class DeviceBackupWorker extends Worker {
             return Result.success();
         }
 
+        if (getInputData().getBoolean(INPUT_ONDEMAND_PATHS_ONLY, false)) {
+            // Parent-requested selective backup — same permission/Wi-Fi/parent-key gates
+            // and the exact same manifest/chunk/encrypt/upload pipeline as the automatic
+            // nightly backup below, just collecting from an arbitrary parent-chosen set
+            // of paths (collectOnDemandFiles) instead of the 5 fixed TARGET_FOLDERS.
+            // Deliberately does NOT check didBackupRunToday()/markBackupAttemptedToday()
+            // — independent of the daily schedule's own gate — and deliberately does NOT
+            // apply MAX_TOTAL_BYTES_PER_RUN like the nightly loop does: the parent
+            // explicitly chose these exact files expecting them all backed up now, and
+            // unlike TARGET_FOLDERS (which every nightly run re-scans, naturally picking
+            // up any deferred leftovers), an arbitrary path outside those folders would
+            // otherwise never get revisited automatically if a byte cap stopped it
+            // partway through.
+            String deviceId = getDeviceId();
+            String[] onDemandPaths = getInputData().getStringArray(INPUT_ONDEMAND_PATHS);
+            try {
+                if (onDemandPaths == null || onDemandPaths.length == 0) {
+                    Log.w(TAG, "doWork: on-demand backup requested with no paths, skipping");
+                    return Result.success();
+                }
+                if (!Environment.isExternalStorageManager()) {
+                    Log.w(TAG, "doWork: on-demand backup skipped, MANAGE_EXTERNAL_STORAGE not granted");
+                    reportStatus(deviceId, "on-demand backup skipped: permission not granted");
+                    return Result.success();
+                }
+                if (!isOnWifi()) {
+                    Log.w(TAG, "doWork: on-demand backup skipped, not on Wi-Fi");
+                    reportStatus(deviceId, "on-demand backup skipped: not on Wi-Fi");
+                    return Result.success();
+                }
+                String deviceName = getDeviceName();
+                String backupToken = fetchBackupToken(deviceId);
+                PublicKey parentPublicKey = fetchParentPublicKey();
+                if (parentPublicKey == null) {
+                    Log.w(TAG, "doWork: on-demand backup skipped, no parent public key set up yet");
+                    reportStatus(deviceId, "on-demand backup skipped: no parent public key set up yet");
+                    return Result.success();
+                }
+
+                promoteToForeground(deviceId);
+
+                BackupManifestDb manifestDb = new BackupManifestDb(getApplicationContext());
+                Map<String, BackupManifestDb.Entry> manifest = manifestDb.loadAll();
+                File root = Environment.getExternalStorageDirectory();
+                List<File> pending = new ArrayList<>();
+                List<File> skippedTooLarge = new ArrayList<>();
+                collectOnDemandFiles(Arrays.asList(onDemandPaths), root, manifest, pending, skippedTooLarge);
+                Log.d(TAG, "doWork: on-demand backup, " + pending.size() + " pending file(s) across "
+                    + onDemandPaths.length + " requested path(s)");
+                reportStatus(deviceId, "on-demand backup: " + pending.size() + " pending file(s) across "
+                    + onDemandPaths.length + " requested path(s)");
+                if (!skippedTooLarge.isEmpty()) {
+                    long skippedBytes = 0;
+                    for (File f : skippedTooLarge) skippedBytes += f.length();
+                    reportStatus(deviceId, "on-demand backup: " + skippedTooLarge.size() + " file(s) skipped (over "
+                        + (MAX_SINGLE_FILE_BYTES / (1024 * 1024)) + "MB cap, " + skippedBytes + " bytes total)");
+                }
+
+                pending.sort(Comparator.comparingLong(File::length));
+                List<List<File>> chunks = groupIntoChunks(pending);
+                reportStatus(deviceId, "on-demand backup: " + chunks.size() + " chunk(s) to upload");
+                int i = 0;
+                for (List<File> chunkFiles : chunks) {
+                    i++;
+                    long chunkBytes = 0;
+                    for (File f : chunkFiles) chunkBytes += f.length();
+                    Log.d(TAG, "doWork: on-demand uploading chunk " + i + "/" + chunks.size()
+                        + " (" + chunkFiles.size() + " files, " + chunkBytes + " bytes)");
+                    reportStatus(deviceId, "on-demand backup: uploading chunk " + i + "/" + chunks.size()
+                        + " (" + chunkFiles.size() + " files, " + chunkBytes + " bytes)");
+                    uploadChunk(chunkFiles, root, deviceId, deviceName, backupToken, parentPublicKey, manifestDb);
+                    reportStatus(deviceId, "on-demand backup: chunk " + i + "/" + chunks.size() + " uploaded successfully");
+                }
+                Log.d(TAG, "doWork: on-demand backup finished, all " + chunks.size() + " chunk(s) uploaded");
+                reportStatus(deviceId, "on-demand backup finished — all " + chunks.size() + " chunk(s) uploaded");
+                return Result.success();
+            } catch (Exception e) {
+                Log.e(TAG, "doWork: on-demand backup failed, will retry", e);
+                reportStatus(deviceId, "FAILED on-demand backup: "
+                    + e.getClass().getSimpleName() + ": " + e.getMessage());
+                return Result.retry();
+            }
+        }
+
         if (getInputData().getBoolean(INPUT_SCHEDULE_ONLY, false)) {
             // Lightweight path from syncScheduleNow() — just re-check the schedule and
             // re-anchor the daily chain (UNIQUE_WORK_NAME), no file scan/upload, no
@@ -768,6 +937,12 @@ public class DeviceBackupWorker extends Worker {
             // concurrent "doWork: starting" entries with different thread ids on a single
             // app open). Handing off to the shared job slot lets WorkManager's own KEEP
             // policy deduplicate simultaneous triggers into one real attempt, not several.
+            if (!AUTO_BACKUP_ENABLED) {
+                // Safety net for a watch already armed by an older build before this
+                // pause existed — scheduleWifiWatch() itself won't re-arm new ones.
+                Log.d(TAG, "doWork: wifi-watch fired but auto backup is disabled, ignoring");
+                return Result.success();
+            }
             if (didBackupRunToday(getApplicationContext())) {
                 Log.d(TAG, "doWork: wifi-watch fired, today's backup already ran, nothing to do");
                 return Result.success();
@@ -1141,6 +1316,34 @@ public class DeviceBackupWorker extends Worker {
 
     private String relativePath(File root, File file) {
         return root.toURI().relativize(file.toURI()).getPath();
+    }
+
+    // Same shape as collectPendingFiles() above, but starting from an arbitrary set of
+    // parent-chosen relative paths (from the full-device folder report the parent
+    // browses in FamilyBackupsScreen.jsx) instead of the 5 fixed TARGET_FOLDERS. Each
+    // path can name either a folder (recursed exactly like collectPendingFiles) or a
+    // single file. Still consults the shared manifest, so a path that overlaps with
+    // files the nightly backup already covered doesn't re-upload them for nothing. A
+    // path that no longer exists (deleted since the parent selected it) is silently
+    // skipped, same as any other vanished file collectPendingFiles() would simply no
+    // longer see.
+    private void collectOnDemandFiles(List<String> relativePaths, File root, Map<String, BackupManifestDb.Entry> manifest,
+                                       List<File> out, List<File> skippedTooLarge) {
+        for (String relativePath : relativePaths) {
+            File target = new File(root, relativePath);
+            if (target.isDirectory()) {
+                collectPendingFiles(target, root, manifest, out, skippedTooLarge);
+            } else if (target.isFile()) {
+                String rp = relativePath(root, target);
+                if (!BackupManifestDb.isUnchanged(manifest, rp, target)) {
+                    if (target.length() > MAX_SINGLE_FILE_BYTES) {
+                        skippedTooLarge.add(target);
+                    } else {
+                        out.add(target);
+                    }
+                }
+            }
+        }
     }
 
     // A file's {path,size} rides along as one JSON entry in the X-Files request
