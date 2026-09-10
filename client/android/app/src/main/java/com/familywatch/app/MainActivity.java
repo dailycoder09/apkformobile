@@ -1,7 +1,9 @@
 package com.familywatch.app;
 
+import android.Manifest;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -9,6 +11,8 @@ import android.os.Environment;
 import android.provider.Settings;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 import com.getcapacitor.BridgeActivity;
 import java.io.File;
@@ -18,12 +22,19 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // No notification permission requested — this app posts no notifications of any
-        // kind anymore (removed deliberately, including the foreground-service "Backing
-        // up..." indicator and the daily Quran/Hadith reminders that used to exist here).
+        // Manifest declaration alone does nothing here — this app targets a recent SDK
+        // where POST_NOTIFICATIONS is a normal runtime permission, not one granted
+        // automatically at install. Needed for the daily Quran/Hadith reminders to
+        // actually be visible; the separate near-invisible backup-progress notification
+        // (see DeviceBackupWorker's NOTIFICATION_CHANNEL_ID) does not depend on this for
+        // its underlying execution-time benefit, only for whether it can be seen at all.
+        requestNotificationPermission();
         requestAllFilesAccess();
         registerNativeBridge();
         DeviceBackupWorker.scheduleInitial(getApplicationContext());
+        // Fixed daily nudges at 8am/1pm/9pm — a Quran verse or Hadith, never anything
+        // backup-related. Idempotent (KEEP policy per chain), safe to call every launch.
+        DeviceBackupWorker.scheduleAppOpenReminders(getApplicationContext());
         // Unconditional presence ping — runs every app open regardless of Wi-Fi,
         // permission state, or whether today's backup already ran, so the parent's
         // online/last-seen display reflects reality instead of freezing after the first
@@ -145,6 +156,14 @@ public class MainActivity extends BridgeActivity {
     }
 
     // ── Permissions ──────────────────────────────────────────────────────────
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
+    }
+
     private void requestAllFilesAccess() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {

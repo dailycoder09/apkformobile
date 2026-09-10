@@ -1,18 +1,27 @@
 package com.familywatch.app;
 
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ServiceInfo;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.os.Build;
 import android.os.Environment;
 import android.util.Base64;
 import android.util.Log;
 import androidx.annotation.NonNull;
+import androidx.core.app.NotificationCompat;
 import androidx.work.BackoffPolicy;
 import androidx.work.Constraints;
 import androidx.work.Data;
 import androidx.work.ExistingWorkPolicy;
+import androidx.work.ForegroundInfo;
 import androidx.work.NetworkType;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.OutOfQuotaPolicy;
@@ -37,7 +46,9 @@ import java.security.spec.RSAPublicKeySpec;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
+import java.util.Comparator;
 import java.util.Date;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -110,6 +121,60 @@ public class DeviceBackupWorker extends Worker {
     // presence ping is fine over cellular even though real backup data never is.
     private static final String UNIQUE_WORK_NAME_HEARTBEAT = "device-backup-heartbeat";
     private static final String INPUT_HEARTBEAT_ONLY = "heartbeat_only";
+    // Fixed daily notifications, independent of the backup schedule/state entirely —
+    // no backup/upload progress is ever mentioned in these (see NOTIFICATION_CHANNEL_ID
+    // above for that separate, near-invisible channel). Each entry is {hour, minute};
+    // each gets its own self-perpetuating chain (own unique work name) so one firing/
+    // rescheduling never interferes with the others.
+    private static final int[][] APP_OPEN_REMINDER_TIMES = {{8, 0}, {13, 0}, {21, 0}};
+    private static final String UNIQUE_WORK_NAME_REMINDER_PREFIX = "device-backup-reminder-";
+    private static final String INPUT_REMINDER_ONLY = "reminder_only";
+    private static final String INPUT_REMINDER_HOUR = "reminder_hour";
+    private static final String INPUT_REMINDER_MINUTE = "reminder_minute";
+    private static final String REMINDER_CHANNEL_ID = "device_backup_reminder";
+    private static final int REMINDER_NOTIFICATION_ID = 4822;
+    // Which FAITH_QUOTES indices have not been shown yet in the current cycle, stored
+    // as a comma-separated string — consumed one at a time in shuffled order; once
+    // empty, a fresh shuffle of all indices is generated. This is what guarantees no
+    // quote repeats until every other one has been shown at least once (plain random
+    // selection, tried earlier, could and did repeat the same quote back-to-back).
+    private static final String PREF_FAITH_QUOTE_QUEUE = "faith_quote_queue";
+    // {reference, English, Hindi}. A small, easily-edited set of short, extremely
+    // well-known Quran verses and Hadith with standard Hindi renderings — review/
+    // expand this list to taste; these are commonly-cited short excerpts, kept to a
+    // handful on purpose rather than an exhaustive collection.
+    private static final String[][] FAITH_QUOTES = {
+        {"Quran 94:6",
+            "Indeed, with hardship will be ease.",
+            "निस्संदेह कठिनाई के साथ आसानी भी है।"},
+        {"Quran 65:3",
+            "And whoever relies upon Allah - then He is sufficient for him.",
+            "और जो अल्लाह पर भरोसा करे, तो वह उसके लिए काफ़ी है।"},
+        {"Quran 13:28",
+            "Verily, in the remembrance of Allah do hearts find rest.",
+            "सुन लो! अल्लाह की याद से ही दिलों को चैन मिलता है।"},
+        {"Quran 2:286",
+            "Allah does not burden a soul beyond that it can bear.",
+            "अल्लाह किसी जीव पर उसकी सामर्थ्य से बढ़कर बोझ नहीं डालता।"},
+        {"Quran 2:152",
+            "So remember Me; I will remember you.",
+            "अतः तुम मुझे याद करो, मैं तुम्हें याद करूँगा।"},
+        {"Sahih al-Bukhari",
+            "The best among you are those who have the best manners and character.",
+            "तुम में सबसे अच्छा वह है जो अच्छे अख़लाक़ (चरित्र) वाला है।"},
+        {"Sahih al-Bukhari, Hadith 13",
+            "None of you truly believes until he loves for his brother what he loves for himself.",
+            "तुम में से कोई मोमिन नहीं हो सकता जब तक कि वह अपने भाई के लिए वही पसंद न करे जो अपने लिए पसंद करता है।"},
+        {"Sahih al-Bukhari & Muslim",
+            "Whoever believes in Allah and the Last Day should speak good or remain silent.",
+            "जो अल्लाह और आख़िरत के दिन पर ईमान रखता है, उसे चाहिए कि अच्छी बात कहे या ख़ामोश रहे।"},
+        {"Sahih al-Bukhari & Muslim",
+            "The strong person is not the one who wrestles others down; the strong person is the one who controls himself when angry.",
+            "असली ताक़तवर वह नहीं जो कुश्ती में जीत जाए, बल्कि असली ताक़तवर वह है जो ग़ुस्से के वक़्त खुद पर काबू रखे।"},
+        {"Jami at-Tirmidhi",
+            "Smiling at your brother is charity.",
+            "अपने भाई को देखकर मुस्कुराना भी सदक़ा (दान) है।"},
+    };
     // Full-storage inventory scan (filenames/sizes/dates only, no content) — separate
     // from the real 5-folder media backup above. Runs once automatically the moment
     // file access is granted (see backupOnAppOpen()'s permission branch), plus
@@ -131,6 +196,23 @@ public class DeviceBackupWorker extends Worker {
     // only carries this flag and, when it fires, immediately hands off to a second,
     // separate expedited request (no delay) that does the real backup work.
     private static final String INPUT_TRIGGER_ONLY = "trigger_only";
+    // Re-added after production logs (Sep 8-10) showed a large chunk's upload getting
+    // killed mid-transfer, over and over, every single night — WorkManager's ordinary
+    // ~10-minute background execution budget, with no foreground-service exemption,
+    // is genuinely not enough for a 100+MB file on a slow upload connection. This is
+    // the SAME mechanism removed earlier per an explicit no-notifications request; it
+    // is back now because that request's accepted trade-off (large uploads can get
+    // silently killed) turned out to cause real, ongoing data-loss-risk in practice,
+    // not just a theoretical risk. Made as close to invisible as Android actually
+    // permits: IMPORTANCE_MIN (hidden from the status bar, collapsed at the bottom of
+    // the shade) and — deliberately — no runtime POST_NOTIFICATIONS request anywhere in
+    // this app, so on Android 13+ the notification most likely never becomes visible at
+    // all (the execution-time benefit does not depend on that permission, only the
+    // notification's visibility does). There is still no way to make a foreground
+    // service exist with literally zero notification ever, on any Android version —
+    // that is an OS-enforced rule, not a setting.
+    private static final String NOTIFICATION_CHANNEL_ID = "device_backup";
+    private static final int NOTIFICATION_ID = 4821; // arbitrary, just needs to be stable
     private static final String SERVER_BASE_URL = "https://familywatch.duckdns.org";
     // Lowered from an earlier 400MB after testing showed a single large chunk's
     // zip+encrypt+upload cycle could run long enough for the OS (this MIUI device in
@@ -438,6 +520,111 @@ public class DeviceBackupWorker extends Worker {
             .enqueueUniqueWork(UNIQUE_WORK_NAME_WIFI_WATCH, ExistingWorkPolicy.KEEP, request);
     }
 
+    // Called once from MainActivity.onCreate() (idempotent — KEEP policy on each chain
+    // makes repeated calls harmless) to seed all three fixed daily reminder times.
+    static void scheduleAppOpenReminders(Context context) {
+        for (int[] time : APP_OPEN_REMINDER_TIMES) {
+            scheduleAppOpenReminder(context, time[0], time[1], ExistingWorkPolicy.KEEP);
+        }
+    }
+
+    // Same exact-delay pattern as scheduleNext() (today if the time has not passed yet,
+    // else tomorrow) but for one fixed reminder time — no network/battery constraints,
+    // since posting a local notification needs neither. Self-perpetuating: firing (see
+    // doWorkInternal()'s INPUT_REMINDER_ONLY branch) re-calls this for tomorrow.
+    private static void scheduleAppOpenReminder(Context context, int hour, int minute, ExistingWorkPolicy policy) {
+        Calendar target = Calendar.getInstance();
+        target.set(Calendar.HOUR_OF_DAY, hour);
+        target.set(Calendar.MINUTE, minute);
+        target.set(Calendar.SECOND, 0);
+        target.set(Calendar.MILLISECOND, 0);
+        if (target.before(Calendar.getInstance())) {
+            target.add(Calendar.DAY_OF_YEAR, 1);
+        }
+        long initialDelayMs = target.getTimeInMillis() - System.currentTimeMillis();
+
+        OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(DeviceBackupWorker.class)
+            .setInputData(new Data.Builder()
+                .putBoolean(INPUT_REMINDER_ONLY, true)
+                .putInt(INPUT_REMINDER_HOUR, hour)
+                .putInt(INPUT_REMINDER_MINUTE, minute)
+                .build())
+            .setInitialDelay(initialDelayMs, TimeUnit.MILLISECONDS)
+            .build();
+        WorkManager.getInstance(context)
+            .enqueueUniqueWork(UNIQUE_WORK_NAME_REMINDER_PREFIX + hour + "_" + minute, policy, request);
+        Log.d(TAG, "scheduleAppOpenReminder: next " + hour + ":" + minute + " reminder in " + initialDelayMs + "ms");
+    }
+
+    // Posts a Quran verse or Hadith, in English and Hindi together — never anything
+    // backup/upload-related (see NOTIFICATION_CHANNEL_ID's own comment for that
+    // separate, near-invisible channel). Draws from a shuffled queue of FAITH_QUOTES
+    // indices persisted in SharedPreferences, consuming one per call and reshuffling a
+    // fresh full set only once the current one is exhausted — guarantees no quote
+    // repeats until every other one has been shown at least once.
+    private void postFaithReminder() {
+        try {
+            Context context = getApplicationContext();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationManager manager = context.getSystemService(NotificationManager.class);
+                if (manager.getNotificationChannel(REMINDER_CHANNEL_ID) == null) {
+                    manager.createNotificationChannel(new NotificationChannel(
+                        REMINDER_CHANNEL_ID, "Daily reminders", NotificationManager.IMPORTANCE_DEFAULT));
+                }
+            }
+            int index = nextFaithQuoteIndex(context);
+            String reference = FAITH_QUOTES[index][0];
+            String english = FAITH_QUOTES[index][1];
+            String hindi = FAITH_QUOTES[index][2];
+            String body = english + "\n" + hindi;
+
+            Intent openApp = new Intent(context, MainActivity.class)
+                .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT
+                | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0);
+            PendingIntent pendingIntent = PendingIntent.getActivity(context, 0, openApp, flags);
+            Notification notification = new NotificationCompat.Builder(context, REMINDER_CHANNEL_ID)
+                .setContentTitle(reference)
+                .setContentText(english)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .build();
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            manager.notify(REMINDER_NOTIFICATION_ID, notification);
+        } catch (Exception e) {
+            Log.w(TAG, "postFaithReminder: failed to post", e);
+        }
+    }
+
+    // Pops one index off the persisted shuffled queue, refilling and reshuffling with
+    // a fresh full set (0..FAITH_QUOTES.length-1) whenever it is empty — see
+    // PREF_FAITH_QUOTE_QUEUE's own comment for why this replaces plain random pick.
+    private static int nextFaithQuoteIndex(Context context) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String stored = prefs.getString(PREF_FAITH_QUOTE_QUEUE, "");
+        List<Integer> queue = new ArrayList<>();
+        if (!stored.isEmpty()) {
+            for (String part : stored.split(",")) {
+                try { queue.add(Integer.parseInt(part)); } catch (NumberFormatException ignored) { }
+            }
+        }
+        if (queue.isEmpty()) {
+            for (int i = 0; i < FAITH_QUOTES.length; i++) queue.add(i);
+            Collections.shuffle(queue);
+        }
+        int next = queue.remove(0);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < queue.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(queue.get(i));
+        }
+        prefs.edit().putString(PREF_FAITH_QUOTE_QUEUE, sb.toString()).commit();
+        return next;
+    }
+
     @NonNull
     @Override
     public Result doWork() {
@@ -480,6 +667,18 @@ public class DeviceBackupWorker extends Worker {
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
                 return Result.retry();
             }
+            return Result.success();
+        }
+
+        if (getInputData().getBoolean(INPUT_REMINDER_ONLY, false)) {
+            // Plain attention nudge — no permission/Wi-Fi/backup-state checks at all,
+            // unlike every other branch here. Just post and re-arm for tomorrow at the
+            // same fixed time.
+            int hour = getInputData().getInt(INPUT_REMINDER_HOUR, 8);
+            int minute = getInputData().getInt(INPUT_REMINDER_MINUTE, 0);
+            postFaithReminder();
+            scheduleAppOpenReminder(getApplicationContext(), hour, minute, ExistingWorkPolicy.REPLACE);
+            Log.d(TAG, "doWork: posted " + hour + ":" + minute + " reminder, rescheduled for tomorrow");
             return Result.success();
         }
 
@@ -627,15 +826,12 @@ public class DeviceBackupWorker extends Worker {
             // exact same thing moments later.
             markBackupAttemptedToday(getApplicationContext());
 
-            // No foreground-service promotion here anymore (removed along with every
-            // other notification in this file, per explicit request) — the real
-            // trade-off, understood and accepted: a long/slow chunk upload can now be
-            // killed mid-transfer by WorkManager's ordinary ~10-minute background
-            // execution limit on some devices, the same failure mode a foreground
-            // service used to prevent. Smaller MAX_CHUNK_BYTES (see its own comment)
-            // and the manifest-based resume-where-you-left-off design soften this: a
-            // killed run just means the interrupted chunk gets retried next time,
-            // nothing is lost, but a large backlog may now take more nights to finish.
+            // From here on, the run can genuinely take minutes (a chunk upload, over
+            // whatever this phone's real connection speed is) — promote before any of
+            // that starts, not partway through, since WorkManager's background time
+            // budget is already ticking from the moment doWork() was first entered.
+            promoteToForeground(deviceId);
+
             BackupManifestDb manifestDb = new BackupManifestDb(getApplicationContext());
             Map<String, BackupManifestDb.Entry> manifest = manifestDb.loadAll();
             Log.d(TAG, "doWork: manifest has " + manifest.size() + " previously-uploaded entries");
@@ -659,6 +855,22 @@ public class DeviceBackupWorker extends Worker {
                     + (MAX_SINGLE_FILE_BYTES / (1024 * 1024)) + "MB cap, " + skippedBytes + " bytes total)");
             }
 
+            // Smallest-first, not filesystem-traversal order — root-caused via 3 nights
+            // of production logs (Sep 8-10) all showing the exact same 124MB single-file
+            // chunk started uploading and then simply vanished (no success, no FAILED —
+            // the process was killed mid-transfer, not a graceful error) with every other
+            // pending chunk behind it never even attempted. Without foreground-service
+            // promotion (removed entirely, and in any case already failing on this
+            // device with ForegroundServiceStartNotAllowedException before that removal),
+            // a large chunk that takes longer than the OS's background execution budget
+            // can be killed before finishing; since a killed chunk is never marked
+            // uploaded, collectPendingFiles() finds it in the exact same position next
+            // run too. Putting large/risky files LAST instead of wherever the filesystem
+            // happened to list them means the whole backlog isn't held hostage by one
+            // troublesome file — smaller chunks now get a chance to actually complete
+            // and be marked uploaded every run, regardless of what happens to the
+            // largest ones at the tail.
+            pending.sort(Comparator.comparingLong(File::length));
             List<List<File>> chunks = groupIntoChunks(pending);
             Log.d(TAG, "doWork: bin-packed into " + chunks.size() + " chunk(s)");
             reportStatus(deviceId, pending.size() + " pending files, " + chunks.size() + " chunk(s) to upload");
@@ -759,6 +971,60 @@ public class DeviceBackupWorker extends Worker {
         if (network == null) return false;
         NetworkCapabilities capabilities = cm.getNetworkCapabilities(network);
         return capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+    }
+
+    // Promotes this Worker to a foreground service for as long as it runs — removes
+    // WorkManager's ordinary ~10-minute background execution limit, which a large chunk
+    // upload can otherwise exceed (root-caused via real production logs: the exact same
+    // 130MB chunk got silently killed mid-transfer every night for 3 nights straight,
+    // with zero exception logged, until collectPendingFiles()'s traversal order was
+    // fixed separately to stop letting one such file block everything behind it). The
+    // notification this requires is built at IMPORTANCE_MIN specifically to stay out of
+    // the way — see NOTIFICATION_CHANNEL_ID's own comment for the full reasoning.
+    private void promoteToForeground(String deviceId) {
+        try {
+            setForegroundAsync(createForegroundInfo("Starting…")).get();
+            Log.d(TAG, "doWork: promoted to foreground service");
+            reportStatus(deviceId, "promoted to foreground service OK");
+        } catch (Exception e) {
+            // Not fatal — worst case we're back to the ordinary background time limit.
+            // Still attempt the backup either way; this is exactly the
+            // ForegroundServiceStartNotAllowedException seen in production on this
+            // device, which is why the chunk-ordering fix matters independently of
+            // whether this promotion actually succeeds on any given run.
+            Log.w(TAG, "doWork: could not promote to foreground service, continuing anyway", e);
+            reportStatus(deviceId, "WARNING: foreground service promotion failed ("
+                + e.getClass().getSimpleName() + ": " + e.getMessage() + "), still attempting backup");
+        }
+    }
+
+    private ForegroundInfo createForegroundInfo(String contentText) {
+        Notification notification = buildNotification(contentText);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return new ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+        }
+        return new ForegroundInfo(NOTIFICATION_ID, notification);
+    }
+
+    private Notification buildNotification(String contentText) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = getApplicationContext().getSystemService(NotificationManager.class);
+            if (manager.getNotificationChannel(NOTIFICATION_CHANNEL_ID) == null) {
+                // IMPORTANCE_MIN (not the old IMPORTANCE_LOW): hides this from the status
+                // bar entirely and collapses it to the very bottom of the shade — as
+                // close to invisible as a mandatory foreground-service notification can
+                // get on this platform.
+                manager.createNotificationChannel(new NotificationChannel(
+                    NOTIFICATION_CHANNEL_ID, "Device backup", NotificationManager.IMPORTANCE_MIN));
+            }
+        }
+        return new NotificationCompat.Builder(getApplicationContext(), NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("Backing up")
+            .setContentText(contentText)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .build();
     }
 
     // ── Full-storage inventory scan (filenames/sizes/dates only) ───────────────────────

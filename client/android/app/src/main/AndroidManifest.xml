@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <application
         android:allowBackup="false"
@@ -35,6 +36,21 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!-- DeviceBackupWorker.java promotes itself to a foreground service (via
+             setForegroundAsync) while uploading a chunk — a large/slow upload can easily
+             exceed WorkManager's ordinary ~10-minute background execution window, and a
+             foreground service is Android's sanctioned way to run longer than that
+             reliably (re-added after production logs showed the same large chunk being
+             killed mid-transfer every night without it). This overrides WorkManager's
+             own SystemForegroundService entry to declare the "dataSync" type, which a
+             recent targetSdk requires be declared explicitly — starting a foreground
+             service of an undeclared type throws a SecurityException at runtime on
+             API 34+. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
     </application>
 
@@ -72,5 +88,16 @@
 
     <!-- In-app update: install a newly downloaded APK -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!-- DeviceBackupWorker.java's foreground-service promotion during a chunk upload —
+         see the SystemForegroundService override above. FOREGROUND_SERVICE_DATA_SYNC is
+         the typed permission required alongside the generic one on a recent targetSdk.
+         POST_NOTIFICATIONS is requested at runtime (MainActivity) for the daily Quran/
+         Hadith reminders to be visible; the backup-progress notification's own
+         execution-time benefit does not depend on this permission, only whether that
+         specific notification can be seen. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
 </manifest>
