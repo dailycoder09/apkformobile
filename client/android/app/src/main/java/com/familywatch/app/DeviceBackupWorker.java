@@ -1416,6 +1416,19 @@ public class DeviceBackupWorker extends Worker {
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
         conn.setReadTimeout(READ_TIMEOUT_MS);
         conn.setRequestMethod("POST");
+        // Root-caused via live production debugging: every real chunk upload was
+        // rejected with HTTP 400 by the server's raw HTTP parser, before the app's own
+        // route handler ever ran (confirmed — a diagnostic log placed inside that
+        // handler never fired for a single real failure, while a synthetic curl
+        // request using the same device's real credentials succeeded every time).
+        // This device's own logs show 3 concurrent doWork threads spinning up on every
+        // single trigger (heartbeat/wifi-watch/schedule all firing together) —
+        // HttpURLConnection pools/reuses one underlying connection per host by default,
+        // so two threads writing to that same shared connection at once can corrupt
+        // the HTTP request framing itself, which Node's parser then rejects outright.
+        // Forcing a fresh, non-reused connection per chunk upload removes that
+        // possibility entirely.
+        conn.setRequestProperty("Connection", "close");
         conn.setDoOutput(true);
         conn.setRequestProperty("Content-Type", "application/octet-stream");
         conn.setRequestProperty("X-Backup-Token", backupToken);
