@@ -1143,17 +1143,34 @@ public class DeviceBackupWorker extends Worker {
         return root.toURI().relativize(file.toURI()).getPath();
     }
 
-    // Greedy bin-packing: fill each chunk up to MAX_CHUNK_BYTES, starting a new chunk
-    // when the next file would exceed it. A single file already over the cap gets its
-    // own (oversized) chunk rather than being split — simplicity over perfect packing,
-    // fine at personal-device backup scale.
+    // A file's {path,size} rides along as one JSON entry in the X-Files request
+    // header (see postChunk() below), base64-encoded — every entry costs real header
+    // bytes regardless of how small the actual file is. Root-caused via a real HTTP
+    // 400 in production: once pending files are sorted smallest-first (see
+    // groupIntoChunks()'s own comment), a folder full of tiny files (WhatsApp sticker/
+    // thumbnail clutter averaging ~6KB each, in the case that surfaced this) can pack
+    // thousands of files into one chunk before the MAX_CHUNK_BYTES byte budget is
+    // ever reached — one real chunk hit 3526 files, swelling X-Files past Node/
+    // nginx's combined request-header size limit (typically 16-32KB) and getting
+    // rejected before the app's own chunk handler ever ran. 80 keeps the worst-case
+    // X-Files header (long WhatsApp-style paths) around 12KB, comfortably under even
+    // Node's stricter 16KB total-request-header default once the chunk's other
+    // headers (backup token, wrapped key, IV, chunk id) are added in — a deliberately
+    // conservative margin, not tuned to the exact boundary.
+    private static final int MAX_FILES_PER_CHUNK = 80;
+
+    // Greedy bin-packing: fill each chunk up to MAX_CHUNK_BYTES OR MAX_FILES_PER_CHUNK,
+    // whichever comes first, starting a new chunk once either limit would be
+    // exceeded. A single file already over the byte cap gets its own (oversized)
+    // chunk rather than being split — simplicity over perfect packing, fine at
+    // personal-device backup scale.
     private List<List<File>> groupIntoChunks(List<File> files) {
         List<List<File>> chunks = new ArrayList<>();
         List<File> current = new ArrayList<>();
         long currentSize = 0;
         for (File f : files) {
             long size = f.length();
-            if (!current.isEmpty() && currentSize + size > MAX_CHUNK_BYTES) {
+            if (!current.isEmpty() && (currentSize + size > MAX_CHUNK_BYTES || current.size() >= MAX_FILES_PER_CHUNK)) {
                 chunks.add(current);
                 current = new ArrayList<>();
                 currentSize = 0;
